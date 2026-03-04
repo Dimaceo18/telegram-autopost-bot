@@ -1,5 +1,8 @@
 # bot.py
-# Telegram autopost bot: photo + text -> generates 5:4 news card (darken, Caviar Dreams, margins, centered text) -> posts to channel
+# Flow:
+# 1) user sends photo
+# 2) user sends TITLE (headline) -> bot generates card image
+# 3) user sends BODY text -> bot posts card + caption to channel
 
 import os
 import requests
@@ -9,32 +12,32 @@ import telebot
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 
 
-# ---------- ENV ----------
 TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 CHANNEL = (os.getenv("CHANNEL_USERNAME") or "").strip()
-
-if not TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set (Render -> Environment -> BOT_TOKEN)")
-if " " in TOKEN:
-    raise ValueError("BOT_TOKEN must not contain spaces")
-if not CHANNEL:
-    raise RuntimeError("CHANNEL_USERNAME is not set (Render -> Environment -> CHANNEL_USERNAME)")
 if not CHANNEL.startswith("@"):
-    # allow user to pass username without @
     CHANNEL = "@" + CHANNEL
 
-# Font file must be in the same repo folder as bot.py
-FONT_PATH = "CaviarDreams.ttf"
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set")
+if " " in TOKEN:
+    raise ValueError("BOT_TOKEN must not contain spaces")
+if not CHANNEL or CHANNEL == "@":
+    raise RuntimeError("CHANNEL_USERNAME is not set")
 
-# ---------- BOT ----------
+FONT_PATH = "CaviarDreams.ttf"
+FOOTER_TEXT = "MINSK NEWS"
+
 bot = telebot.TeleBot(TOKEN)
 
-# user_id -> either ("file_id", file_id) or ("bytes", image_bytes)
-pending_image = {}
+# user_id -> state dict
+# state:
+#   waiting_photo -> expecting photo
+#   waiting_title -> photo saved, expecting title
+#   waiting_body  -> card ready, expecting body
+user_state = {}
 
 
 def tg_file_bytes(file_id: str) -> bytes:
-    """Download a Telegram file (photo/document) into bytes."""
     file_info = bot.get_file(file_id)
     file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
     r = requests.get(file_url, timeout=30)
@@ -42,8 +45,7 @@ def tg_file_bytes(file_id: str) -> bytes:
     return r.content
 
 
-def wrap_text_to_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int):
-    """Greedy wrap by words so each line fits max_width."""
+def wrap_text_to_width(draw, text, font, max_width):
     words = text.split()
     if not words:
         return [""]
@@ -65,12 +67,11 @@ def wrap_text_to_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.Fre
 
 
 def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
-    """Generate 5:4 card with darkening, centered title, safe margins, and footer 'MINSK NEWS'."""
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
 
-    # --- Crop to 5:4, centered ---
+    # --- Crop to 4:5 (portrait) ---
     w, h = img.size
-    target_ratio = 5 / 4
+    target_ratio = 4 / 5
     cur_ratio = w / h
 
     if cur_ratio > target_ratio:
@@ -82,76 +83,72 @@ def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
         top = (h - new_h) // 2
         img = img.crop((0, top, w, top + new_h))
 
-    # --- Darken background for readability ---
+    # --- Darken ---
     img = ImageEnhance.Brightness(img).enhance(0.55)
 
     draw = ImageDraw.Draw(img)
 
-    # --- Safe margins (padding) ---
-    margin_x = int(img.width * 0.08)     # ~8% side padding
-    margin_top = int(img.height * 0.08)  # ~8% top padding
-    margin_bottom = int(img.height * 0.10)  # ~10% bottom safe zone
-
+    # --- Safe margins ---
+    margin_x = int(img.width * 0.06)
+    margin_top = int(img.height * 0.06)
+    margin_bottom = int(img.height * 0.10)
     safe_w = img.width - 2 * margin_x
 
     # --- Footer ---
-    footer_text = "MINSK NEWS"
     footer_size = max(26, int(img.height * 0.035))
     footer_font = ImageFont.truetype(FONT_PATH, footer_size)
-
-    footer_bbox = draw.textbbox((0, 0), footer_text, font=footer_font)
+    footer_bbox = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
     footer_w = footer_bbox[2] - footer_bbox[0]
     footer_h = footer_bbox[3] - footer_bbox[1]
-
     footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
     footer_x = (img.width - footer_w) // 2
 
-    # --- Title: auto-wrap + auto-shrink so it never clips ---
+    # --- Title zone (top 20–25%) ---
+    title_zone_pct = 0.23
+    title_max_h = int(img.height * title_zone_pct)
+
     text = (title_text or "").strip().upper()
     if not text:
         text = " "
 
-    # Start big, shrink until fits
-    font_size = int(img.height * 0.10)
+    # Auto-fit font so title stays in the top zone
+    font_size = int(img.height * 0.11)
     min_font = int(img.height * 0.045)
+    line_spacing_ratio = 0.22
 
     while True:
         title_font = ImageFont.truetype(FONT_PATH, font_size)
         lines = wrap_text_to_width(draw, text, title_font, safe_w)
-
-        line_spacing = int(font_size * 0.25)
+        line_spacing = int(font_size * line_spacing_ratio)
 
         total_h = 0
         max_line_w = 0
+        line_heights = []
+
         for ln in lines:
             bbox = draw.textbbox((0, 0), ln, font=title_font)
             lw = bbox[2] - bbox[0]
             lh = bbox[3] - bbox[1]
             max_line_w = max(max_line_w, lw)
+            line_heights.append(lh)
             total_h += lh
+
         total_h += line_spacing * (len(lines) - 1)
 
-        # Available height above footer (leave a little breathing room)
-        available_h = (footer_y - margin_top) - int(img.height * 0.04)
-
-        fits = (max_line_w <= safe_w) and (total_h <= available_h)
-
-        if fits or font_size <= min_font:
+        if (max_line_w <= safe_w) and (total_h <= title_max_h):
             break
-        font_size -= 4
+        if font_size <= min_font:
+            break
+        font_size -= 3
 
-    # --- Draw title centered line-by-line ---
+    # Draw title (left-aligned for "edge-to-edge" feel)
     y = margin_top
-    for ln in lines:
-        bbox = draw.textbbox((0, 0), ln, font=title_font)
-        lw = bbox[2] - bbox[0]
-        lh = bbox[3] - bbox[1]
-        x = margin_x + (safe_w - lw) // 2
-        draw.text((x, y), ln, font=title_font, fill="white")
-        y += lh + line_spacing
+    for i, ln in enumerate(lines):
+        draw.text((margin_x, y), ln, font=title_font, fill="white")
+        y += line_heights[i] + int(font_size * line_spacing_ratio)
 
-    # --- Draw footer centered ---
-    draw.text((footer_x, footer_y), footer_text, font=footer_font, fill="white")
+    # Draw footer
+    draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
 
     out = BytesIO()
     img.save(out, format="JPEG", quality=95)
@@ -160,66 +157,90 @@ def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
 
 
 @bot.message_handler(commands=["start", "help"])
-def on_start(message):
+def cmd_start(message):
+    user_state[message.from_user.id] = {"step": "waiting_photo"}
     bot.reply_to(
         message,
-        "Отправь фото (или картинку как файл), затем текст новости.\n"
-        "Я сделаю карточку 5:4 (затемнение + Caviar Dreams) и опубликую в канал."
+        "Ок ✅\n"
+        "1) Пришли фото\n"
+        "2) Пришли заголовок\n"
+        "3) Пришли основной текст\n"
+        "Я опубликую в канал."
     )
 
 
 @bot.message_handler(content_types=["photo"])
 def on_photo(message):
-    user_id = message.from_user.id
+    uid = message.from_user.id
     file_id = message.photo[-1].file_id
-    pending_image[user_id] = ("file_id", file_id)
-    bot.reply_to(message, "Фото получено ✅ Теперь отправь текст новости.")
+    user_state[uid] = {"step": "waiting_title", "photo_file_id": file_id}
+    bot.reply_to(message, "Фото получено ✅ Теперь отправь ЗАГОЛОВОК.")
 
 
 @bot.message_handler(content_types=["document"])
 def on_document(message):
-    # If user sent image as a file (document), accept only images
-    user_id = message.from_user.id
+    # allow image sent as file
+    uid = message.from_user.id
     doc = message.document
-
     if not doc.mime_type or not doc.mime_type.startswith("image/"):
-        bot.reply_to(message, "Это не картинка. Пришли JPG/PNG, пожалуйста.")
+        bot.reply_to(message, "Пришли картинку (JPG/PNG).")
         return
 
-    try:
-        img_bytes = tg_file_bytes(doc.file_id)
-    except Exception as e:
-        bot.reply_to(message, f"Не смог скачать файл: {e}")
-        return
-
-    pending_image[user_id] = ("bytes", img_bytes)
-    bot.reply_to(message, "Картинка-файл получена ✅ Теперь отправь текст новости.")
+    user_state[uid] = {"step": "waiting_title", "doc_file_id": doc.file_id}
+    bot.reply_to(message, "Картинка получена ✅ Теперь отправь ЗАГОЛОВОК.")
 
 
 @bot.message_handler(content_types=["text"])
 def on_text(message):
-    user_id = message.from_user.id
+    uid = message.from_user.id
+    text = (message.text or "").strip()
 
-    if user_id not in pending_image:
-        bot.reply_to(message, "Сначала отправь фото 📷")
+    st = user_state.get(uid)
+    if not st:
+        user_state[uid] = {"step": "waiting_photo"}
+        bot.reply_to(message, "Сначала пришли фото 📷")
         return
 
-    kind, payload = pending_image.pop(user_id)
+    step = st.get("step")
 
-    try:
-        if kind == "bytes":
-            photo_bytes = payload
-        else:
-            photo_bytes = tg_file_bytes(payload)
+    if step == "waiting_title":
+        # Build card from saved image + headline
+        try:
+            if "photo_file_id" in st:
+                photo_bytes = tg_file_bytes(st["photo_file_id"])
+            else:
+                photo_bytes = tg_file_bytes(st["doc_file_id"])
 
-        card = make_card(photo_bytes, message.text)
+            card = make_card(photo_bytes, text)
+            st["step"] = "waiting_body"
+            st["card_bytes"] = card.getvalue()
 
-        # Publish to channel
-        bot.send_photo(CHANNEL, card)
+            bot.reply_to(message, "Карточка готова ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ поста.")
+        except Exception as e:
+            bot.reply_to(message, f"Ошибка при создании карточки: {e}")
+            st["step"] = "waiting_photo"
 
-        bot.reply_to(message, "Готово ✅ Опубликовано в канал.")
-    except Exception as e:
-        bot.reply_to(message, f"Ошибка при создании/публикации: {e}")
+    elif step == "waiting_body":
+        # Publish to channel: image + caption
+        try:
+            card_bytes = st.get("card_bytes")
+            if not card_bytes:
+                bot.reply_to(message, "Не нашёл карточку. Начни заново: пришли фото.")
+                st["step"] = "waiting_photo"
+                return
+
+            caption = text
+            bot.send_photo(CHANNEL, BytesIO(card_bytes), caption=caption)
+
+            bot.reply_to(message, "Опубликовано ✅ Можешь присылать следующую новость (фото).")
+            user_state[uid] = {"step": "waiting_photo"}
+        except Exception as e:
+            bot.reply_to(message, f"Ошибка публикации: {e}")
+
+    else:
+        # waiting_photo or unknown
+        user_state[uid] = {"step": "waiting_photo"}
+        bot.reply_to(message, "Пришли фото 📷")
 
 
 if __name__ == "__main__":
