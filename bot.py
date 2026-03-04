@@ -1,39 +1,44 @@
 # bot.py
 # Flow:
-# 1) user sends photo
-# 2) user sends TITLE (headline) -> bot generates card image
-# 3) user sends BODY text -> bot posts card + caption to channel
+# 1) photo
+# 2) title -> generate card (4:5, darken, Caviar Dreams)
+# 3) body text
+# 4) preview + inline buttons: Publish / Edit / Cancel
 
 import os
 import requests
 from io import BytesIO
 
 import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 
 
+# ---------- ENV ----------
 TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 CHANNEL = (os.getenv("CHANNEL_USERNAME") or "").strip()
-if not CHANNEL.startswith("@"):
+if CHANNEL and not CHANNEL.startswith("@"):
     CHANNEL = "@" + CHANNEL
 
 if not TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set")
+    raise RuntimeError("BOT_TOKEN is not set (Render -> Environment -> BOT_TOKEN)")
 if " " in TOKEN:
     raise ValueError("BOT_TOKEN must not contain spaces")
 if not CHANNEL or CHANNEL == "@":
-    raise RuntimeError("CHANNEL_USERNAME is not set")
+    raise RuntimeError("CHANNEL_USERNAME is not set (Render -> Environment -> CHANNEL_USERNAME)")
 
 FONT_PATH = "CaviarDreams.ttf"
 FOOTER_TEXT = "MINSK NEWS"
 
 bot = telebot.TeleBot(TOKEN)
 
-# user_id -> state dict
-# state:
-#   waiting_photo -> expecting photo
-#   waiting_title -> photo saved, expecting title
-#   waiting_body  -> card ready, expecting body
+# user_state[uid] = {
+#   step: waiting_photo | waiting_title | waiting_body | waiting_action
+#   photo_file_id / doc_file_id
+#   card_bytes: bytes
+#   body_text: str
+#   preview_msg_id: int
+# }
 user_state = {}
 
 
@@ -69,7 +74,7 @@ def wrap_text_to_width(draw, text, font, max_width):
 def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
 
-    # --- Crop to 4:5 (portrait) ---
+    # --- Crop to 4:5 (portrait), centered ---
     w, h = img.size
     target_ratio = 4 / 5
     cur_ratio = w / h
@@ -89,7 +94,7 @@ def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
     draw = ImageDraw.Draw(img)
 
     # --- Safe margins ---
-    margin_x = int(img.width * 0.06)
+    margin_x = int(img.width * 0.06)       # "широко" по краям
     margin_top = int(img.height * 0.06)
     margin_bottom = int(img.height * 0.10)
     safe_w = img.width - 2 * margin_x
@@ -97,9 +102,9 @@ def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
     # --- Footer ---
     footer_size = max(26, int(img.height * 0.035))
     footer_font = ImageFont.truetype(FONT_PATH, footer_size)
-    footer_bbox = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
-    footer_w = footer_bbox[2] - footer_bbox[0]
-    footer_h = footer_bbox[3] - footer_bbox[1]
+    fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
+    footer_w = fb[2] - fb[0]
+    footer_h = fb[3] - fb[1]
     footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
     footer_x = (img.width - footer_w) // 2
 
@@ -111,7 +116,6 @@ def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
     if not text:
         text = " "
 
-    # Auto-fit font so title stays in the top zone
     font_size = int(img.height * 0.11)
     min_font = int(img.height * 0.045)
     line_spacing_ratio = 0.22
@@ -126,9 +130,9 @@ def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
         line_heights = []
 
         for ln in lines:
-            bbox = draw.textbbox((0, 0), ln, font=title_font)
-            lw = bbox[2] - bbox[0]
-            lh = bbox[3] - bbox[1]
+            bb = draw.textbbox((0, 0), ln, font=title_font)
+            lw = bb[2] - bb[0]
+            lh = bb[3] - bb[1]
             max_line_w = max(max_line_w, lw)
             line_heights.append(lh)
             total_h += lh
@@ -141,19 +145,32 @@ def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
             break
         font_size -= 3
 
-    # Draw title (left-aligned for "edge-to-edge" feel)
+    # --- Draw title: always top, left-aligned for "edge-to-edge" feel ---
     y = margin_top
+    spacing = int(font_size * line_spacing_ratio)
     for i, ln in enumerate(lines):
         draw.text((margin_x, y), ln, font=title_font, fill="white")
-        y += line_heights[i] + int(font_size * line_spacing_ratio)
+        y += line_heights[i] + spacing
 
-    # Draw footer
+    # --- Draw footer ---
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
 
     out = BytesIO()
     img.save(out, format="JPEG", quality=95)
     out.seek(0)
     return out
+
+
+def action_kb():
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("✅ Опубликовать", callback_data="publish"),
+        InlineKeyboardButton("✏️ Изменить текст", callback_data="edit"),
+    )
+    kb.row(
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel")
+    )
+    return kb
 
 
 @bot.message_handler(commands=["start", "help"])
@@ -165,7 +182,7 @@ def cmd_start(message):
         "1) Пришли фото\n"
         "2) Пришли заголовок\n"
         "3) Пришли основной текст\n"
-        "Я опубликую в канал."
+        "Потом покажу превью и кнопки: Опубликовать / Изменить / Отмена."
     )
 
 
@@ -179,13 +196,11 @@ def on_photo(message):
 
 @bot.message_handler(content_types=["document"])
 def on_document(message):
-    # allow image sent as file
     uid = message.from_user.id
     doc = message.document
     if not doc.mime_type or not doc.mime_type.startswith("image/"):
-        bot.reply_to(message, "Пришли картинку (JPG/PNG).")
+        bot.reply_to(message, "Пришли картинку (JPG/PNG) как файл, пожалуйста.")
         return
-
     user_state[uid] = {"step": "waiting_title", "doc_file_id": doc.file_id}
     bot.reply_to(message, "Картинка получена ✅ Теперь отправь ЗАГОЛОВОК.")
 
@@ -194,8 +209,8 @@ def on_document(message):
 def on_text(message):
     uid = message.from_user.id
     text = (message.text or "").strip()
-
     st = user_state.get(uid)
+
     if not st:
         user_state[uid] = {"step": "waiting_photo"}
         bot.reply_to(message, "Сначала пришли фото 📷")
@@ -204,7 +219,6 @@ def on_text(message):
     step = st.get("step")
 
     if step == "waiting_title":
-        # Build card from saved image + headline
         try:
             if "photo_file_id" in st:
                 photo_bytes = tg_file_bytes(st["photo_file_id"])
@@ -212,35 +226,87 @@ def on_text(message):
                 photo_bytes = tg_file_bytes(st["doc_file_id"])
 
             card = make_card(photo_bytes, text)
-            st["step"] = "waiting_body"
             st["card_bytes"] = card.getvalue()
-
+            st["step"] = "waiting_body"
             bot.reply_to(message, "Карточка готова ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ поста.")
         except Exception as e:
-            bot.reply_to(message, f"Ошибка при создании карточки: {e}")
             st["step"] = "waiting_photo"
+            bot.reply_to(message, f"Ошибка при создании карточки: {e}")
 
     elif step == "waiting_body":
-        # Publish to channel: image + caption
+        # Save body text and show preview with buttons
+        st["body_text"] = text
+        st["step"] = "waiting_action"
+
+        card_bytes = st.get("card_bytes")
+        if not card_bytes:
+            st["step"] = "waiting_photo"
+            bot.reply_to(message, "Карточка потерялась. Начни заново: пришли фото.")
+            return
+
         try:
-            card_bytes = st.get("card_bytes")
-            if not card_bytes:
-                bot.reply_to(message, "Не нашёл карточку. Начни заново: пришли фото.")
-                st["step"] = "waiting_photo"
-                return
-
-            caption = text
-            bot.send_photo(CHANNEL, BytesIO(card_bytes), caption=caption)
-
-            bot.reply_to(message, "Опубликовано ✅ Можешь присылать следующую новость (фото).")
-            user_state[uid] = {"step": "waiting_photo"}
+            preview = bot.send_photo(
+                chat_id=message.chat.id,
+                photo=BytesIO(card_bytes),
+                caption=text,
+                reply_markup=action_kb()
+            )
+            st["preview_msg_id"] = preview.message_id
+            bot.reply_to(message, "Проверь превью и нажми кнопку ✅✏️❌")
         except Exception as e:
-            bot.reply_to(message, f"Ошибка публикации: {e}")
+            st["step"] = "waiting_body"
+            bot.reply_to(message, f"Не смог отправить превью: {e}")
+
+    elif step == "waiting_action":
+        bot.reply_to(message, "Сейчас ждём кнопку под превью: ✅ Опубликовать / ✏️ Изменить / ❌ Отмена.")
 
     else:
-        # waiting_photo or unknown
         user_state[uid] = {"step": "waiting_photo"}
         bot.reply_to(message, "Пришли фото 📷")
+
+
+@bot.callback_query_handler(func=lambda call: call.data in ["publish", "edit", "cancel"])
+def on_action(call):
+    uid = call.from_user.id
+    st = user_state.get(uid)
+
+    if not st or st.get("step") != "waiting_action":
+        bot.answer_callback_query(call.id, "Нет активного превью. Начни с фото.")
+        return
+
+    if call.data == "publish":
+        try:
+            card_bytes = st.get("card_bytes")
+            body = st.get("body_text", "")
+            bot.send_photo(CHANNEL, BytesIO(card_bytes), caption=body)
+            bot.answer_callback_query(call.id, "Опубликовано ✅")
+
+            # optionally remove buttons on preview
+            try:
+                bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            except Exception:
+                pass
+
+            bot.send_message(call.message.chat.id, "Готово ✅ Можешь присылать следующую новость (фото).")
+            user_state[uid] = {"step": "waiting_photo"}
+
+        except Exception as e:
+            bot.answer_callback_query(call.id, "Ошибка публикации")
+            bot.send_message(call.message.chat.id, f"Не смог опубликовать: {e}")
+
+    elif call.data == "edit":
+        st["step"] = "waiting_body"
+        bot.answer_callback_query(call.id, "Ок, редактируем")
+        bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ поста (заголовок на картинке останется прежним).")
+
+    elif call.data == "cancel":
+        bot.answer_callback_query(call.id, "Отменено")
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        user_state[uid] = {"step": "waiting_photo"}
+        bot.send_message(call.message.chat.id, "Отменил ❌ Можешь прислать новое фото для следующей новости.")
 
 
 if __name__ == "__main__":
