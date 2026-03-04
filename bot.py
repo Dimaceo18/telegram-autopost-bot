@@ -1,11 +1,6 @@
-# bot.py
-# Flow:
-# 1) photo
-# 2) title -> generate card (4:5, darken, Caviar Dreams)
-# 3) body text
-# 4) preview + inline buttons: Publish / Edit / Cancel
-
 import os
+import re
+import html
 import requests
 from io import BytesIO
 
@@ -17,6 +12,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 # ---------- ENV ----------
 TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 CHANNEL = (os.getenv("CHANNEL_USERNAME") or "").strip()
+BOT_USERNAME = (os.getenv("BOT_USERNAME") or "").strip().lstrip("@")  # например Newsautoposting_bot
+
 if CHANNEL and not CHANNEL.startswith("@"):
     CHANNEL = "@" + CHANNEL
 
@@ -30,16 +27,53 @@ if not CHANNEL or CHANNEL == "@":
 FONT_PATH = "CaviarDreams.ttf"
 FOOTER_TEXT = "MINSK NEWS"
 
+SUGGEST_URL = (os.getenv("SUGGEST_URL") or "").strip()
+if not SUGGEST_URL and BOT_USERNAME:
+    SUGGEST_URL = f"https://t.me/{BOT_USERNAME}?start=suggest"
+
+
 bot = telebot.TeleBot(TOKEN)
 
 # user_state[uid] = {
-#   step: waiting_photo | waiting_title | waiting_body | waiting_action
-#   photo_file_id / doc_file_id
+#   step: waiting_photo | waiting_title | waiting_body | waiting_source | waiting_action
+#   photo_bytes: bytes
+#   title: str
 #   card_bytes: bytes
-#   body_text: str
-#   preview_msg_id: int
+#   body_raw: str
+#   source_url: str
 # }
 user_state = {}
+
+
+# ---------- helpers ----------
+URL_RE = re.compile(r"(https?://[^\s]+)", re.IGNORECASE)
+
+
+RU_STOP = {
+    "и","в","во","на","но","а","что","это","как","к","по","из","за","для","с","со","у","от","до",
+    "при","без","над","под","же","ли","то","не","ни","да","нет","уже","еще","ещё","там","тут",
+    "снова","будет","начнут","начал","началась","начался","начали","может","могут","нужно","надо"
+}
+
+CATEGORY_RULES = [
+    ("🚨", ["дтп", "авар", "пожар", "взрыв", "происшеств", "чп", "полици", "милици", "убий", "ранен", "пострад"]),
+    ("✈️", ["белавиа", "рейс", "аэропорт", "самолет", "самолёт", "полет", "полёт", "оаэ", "дуба", "ави"]),
+    ("🚇", ["метро", "станци", "маршрут", "автобус", "троллейбус", "трамвай", "дорог", "пробк"]),
+    ("💳", ["банк", "технобанк", "карта", "налог", "tax free", "global blue", "выплат", "платеж", "платёж"]),
+    ("🏷️", ["скидк", "распрод", "акци", "дешев", "бесплат", "купон", "sale", "%"]),
+    ("🎫", ["концерт", "афиша", "выставк", "фестиваль", "событи", "матч", "театр", "кино"]),
+    ("🌦️", ["погод", "шторм", "ветер", "снег", "дожд", "мороз", "жара"]),
+    ("🏥", ["больниц", "врач", "здоров", "вакцин", "грипп", "ковид", "covid"]),
+    ("🏛️", ["власт", "закон", "указ", "постанов", "министер", "исполком"]),
+]
+
+def pick_category_emoji(title: str, body: str) -> str:
+    text = (title + " " + body).lower()
+    for emoji, keys in CATEGORY_RULES:
+        for k in keys:
+            if k in text:
+                return emoji
+    return "📰"
 
 
 def tg_file_bytes(file_id: str) -> bytes:
@@ -55,8 +89,7 @@ def wrap_text_to_width(draw, text, font, max_width):
     if not words:
         return [""]
 
-    lines = []
-    line = ""
+    lines, line = [], ""
     for w in words:
         test = (line + " " + w).strip()
         bbox = draw.textbbox((0, 0), test, font=font)
@@ -72,9 +105,12 @@ def wrap_text_to_width(draw, text, font, max_width):
 
 
 def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
+    """
+    4:5, заголовок всегда сверху, <= ~23% высоты, широкий по краям, затемнение, Caviar Dreams, footer.
+    """
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
 
-    # --- Crop to 4:5 (portrait), centered ---
+    # Crop to 4:5
     w, h = img.size
     target_ratio = 4 / 5
     cur_ratio = w / h
@@ -88,18 +124,16 @@ def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
         top = (h - new_h) // 2
         img = img.crop((0, top, w, top + new_h))
 
-    # --- Darken ---
+    # Darken
     img = ImageEnhance.Brightness(img).enhance(0.55)
-
     draw = ImageDraw.Draw(img)
 
-    # --- Safe margins ---
-    margin_x = int(img.width * 0.06)       # "широко" по краям
+    margin_x = int(img.width * 0.06)
     margin_top = int(img.height * 0.06)
     margin_bottom = int(img.height * 0.10)
     safe_w = img.width - 2 * margin_x
 
-    # --- Footer ---
+    # Footer
     footer_size = max(26, int(img.height * 0.035))
     footer_font = ImageFont.truetype(FONT_PATH, footer_size)
     fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
@@ -108,13 +142,11 @@ def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
     footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
     footer_x = (img.width - footer_w) // 2
 
-    # --- Title zone (top 20–25%) ---
+    # Title zone (20–25%)
     title_zone_pct = 0.23
     title_max_h = int(img.height * title_zone_pct)
 
-    text = (title_text or "").strip().upper()
-    if not text:
-        text = " "
+    text = (title_text or "").strip().upper() or " "
 
     font_size = int(img.height * 0.11)
     min_font = int(img.height * 0.045)
@@ -123,36 +155,34 @@ def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
     while True:
         title_font = ImageFont.truetype(FONT_PATH, font_size)
         lines = wrap_text_to_width(draw, text, title_font, safe_w)
-        line_spacing = int(font_size * line_spacing_ratio)
+        spacing = int(font_size * line_spacing_ratio)
 
         total_h = 0
         max_line_w = 0
-        line_heights = []
-
+        heights = []
         for ln in lines:
             bb = draw.textbbox((0, 0), ln, font=title_font)
             lw = bb[2] - bb[0]
             lh = bb[3] - bb[1]
             max_line_w = max(max_line_w, lw)
-            line_heights.append(lh)
+            heights.append(lh)
             total_h += lh
+        total_h += spacing * (len(lines) - 1)
 
-        total_h += line_spacing * (len(lines) - 1)
-
-        if (max_line_w <= safe_w) and (total_h <= title_max_h):
+        if max_line_w <= safe_w and total_h <= title_max_h:
             break
         if font_size <= min_font:
             break
         font_size -= 3
 
-    # --- Draw title: always top, left-aligned for "edge-to-edge" feel ---
+    # Draw title (top, left-aligned for "wide" look)
     y = margin_top
     spacing = int(font_size * line_spacing_ratio)
     for i, ln in enumerate(lines):
         draw.text((margin_x, y), ln, font=title_font, fill="white")
-        y += line_heights[i] + spacing
+        y += heights[i] + spacing
 
-    # --- Draw footer ---
+    # Draw footer
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
 
     out = BytesIO()
@@ -161,18 +191,98 @@ def make_card(photo_bytes: bytes, title_text: str) -> BytesIO:
     return out
 
 
-def action_kb():
+def extract_source_url(text: str) -> str:
+    m = URL_RE.search(text or "")
+    return m.group(1) if m else ""
+
+
+def pick_keywords(title: str, body: str, max_words: int = 6):
+    """
+    Простая эвристика:
+    - числа/проценты/валюта
+    - “длинные” слова (>=7) не стоп-слова
+    """
+    txt = (title + " " + body).lower()
+
+    # числа, проценты, BYN/USD/EUR/₽ etc.
+    nums = re.findall(r"\b\d+[.,]?\d*\b|[%₽$€]|bYn|byn|usd|eur|rub", txt, flags=re.IGNORECASE)
+
+    words = re.findall(r"[а-яёa-z]{4,}", txt, flags=re.IGNORECASE)
+    candidates = []
+    for w in words:
+        wl = w.strip().lower()
+        if wl in RU_STOP:
+            continue
+        if len(wl) >= 7:
+            candidates.append(wl)
+
+    # уникальные, сначала числа/символы, потом слова
+    seen = set()
+    out = []
+    for w in nums + candidates:
+        w2 = w.lower()
+        if w2 in seen:
+            continue
+        seen.add(w2)
+        out.append(w)
+        if len(out) >= max_words:
+            break
+    return out
+
+
+def highlight_keywords_html(text: str, keywords):
+    """
+    Безопасно: сначала экранируем HTML, потом подсвечиваем по экранированной строке.
+    """
+    safe = html.escape(text or "")
+    for kw in keywords:
+        kw_safe = html.escape(kw)
+        if not kw_safe.strip():
+            continue
+        # Подсветка целых слов (если это слово), или просто вхождение (если символ/валюта/%)
+        if re.match(r"^[а-яёa-z0-9]+$", kw, flags=re.IGNORECASE):
+            pattern = re.compile(rf"(?<![а-яёa-z0-9])({re.escape(kw_safe)})(?![а-яёa-z0-9])", re.IGNORECASE)
+        else:
+            pattern = re.compile(rf"({re.escape(kw_safe)})", re.IGNORECASE)
+        safe = pattern.sub(r"<b>\1</b>", safe)
+    return safe
+
+
+def build_caption_html(title: str, body: str) -> str:
+    emoji = pick_category_emoji(title, body)
+    keywords = pick_keywords(title, body)
+
+    title_safe = html.escape((title or "").strip())
+    body_high = highlight_keywords_html((body or "").strip(), keywords)
+
+    # Заголовок жирный, основной текст обычный (но с подсветкой ключевых слов)
+    return f"<b>{emoji} {title_safe}</b>\n\n{body_high}".strip()
+
+
+def action_kb(source_url: str):
     kb = InlineKeyboardMarkup()
+
     kb.row(
         InlineKeyboardButton("✅ Опубликовать", callback_data="publish"),
-        InlineKeyboardButton("✏️ Изменить текст", callback_data="edit"),
+        InlineKeyboardButton("✏️ Изменить текст", callback_data="edit_body"),
     )
     kb.row(
-        InlineKeyboardButton("❌ Отмена", callback_data="cancel")
+        InlineKeyboardButton("✏️ Изменить заголовок", callback_data="edit_title"),
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel"),
     )
+
+    # Источник (если есть ссылка)
+    if source_url:
+        kb.row(InlineKeyboardButton("Источник", url=source_url))
+
+    # Предложить новость (если есть)
+    if SUGGEST_URL:
+        kb.row(InlineKeyboardButton("Предложить новость", url=SUGGEST_URL))
+
     return kb
 
 
+# ---------- handlers ----------
 @bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
     user_state[message.from_user.id] = {"step": "waiting_photo"}
@@ -182,7 +292,8 @@ def cmd_start(message):
         "1) Пришли фото\n"
         "2) Пришли заголовок\n"
         "3) Пришли основной текст\n"
-        "Потом покажу превью и кнопки: Опубликовать / Изменить / Отмена."
+        "4) (опционально) Пришли ссылку на источник\n"
+        "Потом покажу превью и кнопки."
     )
 
 
@@ -190,7 +301,8 @@ def cmd_start(message):
 def on_photo(message):
     uid = message.from_user.id
     file_id = message.photo[-1].file_id
-    user_state[uid] = {"step": "waiting_title", "photo_file_id": file_id}
+    photo_bytes = tg_file_bytes(file_id)
+    user_state[uid] = {"step": "waiting_title", "photo_bytes": photo_bytes}
     bot.reply_to(message, "Фото получено ✅ Теперь отправь ЗАГОЛОВОК.")
 
 
@@ -199,9 +311,11 @@ def on_document(message):
     uid = message.from_user.id
     doc = message.document
     if not doc.mime_type or not doc.mime_type.startswith("image/"):
-        bot.reply_to(message, "Пришли картинку (JPG/PNG) как файл, пожалуйста.")
+        bot.reply_to(message, "Пришли картинку (JPG/PNG).")
         return
-    user_state[uid] = {"step": "waiting_title", "doc_file_id": doc.file_id}
+
+    photo_bytes = tg_file_bytes(doc.file_id)
+    user_state[uid] = {"step": "waiting_title", "photo_bytes": photo_bytes}
     bot.reply_to(message, "Картинка получена ✅ Теперь отправь ЗАГОЛОВОК.")
 
 
@@ -219,13 +333,9 @@ def on_text(message):
     step = st.get("step")
 
     if step == "waiting_title":
+        st["title"] = text
         try:
-            if "photo_file_id" in st:
-                photo_bytes = tg_file_bytes(st["photo_file_id"])
-            else:
-                photo_bytes = tg_file_bytes(st["doc_file_id"])
-
-            card = make_card(photo_bytes, text)
+            card = make_card(st["photo_bytes"], st["title"])
             st["card_bytes"] = card.getvalue()
             st["step"] = "waiting_body"
             bot.reply_to(message, "Карточка готова ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ поста.")
@@ -234,38 +344,52 @@ def on_text(message):
             bot.reply_to(message, f"Ошибка при создании карточки: {e}")
 
     elif step == "waiting_body":
-        # Save body text and show preview with buttons
-        st["body_text"] = text
-        st["step"] = "waiting_action"
-
-        card_bytes = st.get("card_bytes")
-        if not card_bytes:
-            st["step"] = "waiting_photo"
-            bot.reply_to(message, "Карточка потерялась. Начни заново: пришли фото.")
-            return
-
-        try:
+        st["body_raw"] = text
+        # Если ссылка уже есть в тексте, источник можно не спрашивать
+        st["source_url"] = extract_source_url(text)
+        if st["source_url"]:
+            st["step"] = "waiting_action"
+            caption = build_caption_html(st["title"], st["body_raw"])
             preview = bot.send_photo(
                 chat_id=message.chat.id,
-                photo=BytesIO(card_bytes),
-                caption=text,
-                reply_markup=action_kb()
+                photo=BytesIO(st["card_bytes"]),
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=action_kb(st["source_url"]),
             )
             st["preview_msg_id"] = preview.message_id
-            bot.reply_to(message, "Проверь превью и нажми кнопку ✅✏️❌")
-        except Exception as e:
-            st["step"] = "waiting_body"
-            bot.reply_to(message, f"Не смог отправить превью: {e}")
+            bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
+        else:
+            st["step"] = "waiting_source"
+            bot.reply_to(message, "Если есть источник, пришли ссылку (или напиши: - чтобы пропустить).")
+
+    elif step == "waiting_source":
+        if text == "-" or text.lower() in {"нет", "не", "пропустить"}:
+            st["source_url"] = ""
+        else:
+            st["source_url"] = extract_source_url(text)
+
+        st["step"] = "waiting_action"
+        caption = build_caption_html(st["title"], st["body_raw"])
+        preview = bot.send_photo(
+            chat_id=message.chat.id,
+            photo=BytesIO(st["card_bytes"]),
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=action_kb(st["source_url"]),
+        )
+        st["preview_msg_id"] = preview.message_id
+        bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
 
     elif step == "waiting_action":
-        bot.reply_to(message, "Сейчас ждём кнопку под превью: ✅ Опубликовать / ✏️ Изменить / ❌ Отмена.")
+        bot.reply_to(message, "Сейчас ждём кнопку под превью: ✅✏️❌")
 
     else:
         user_state[uid] = {"step": "waiting_photo"}
         bot.reply_to(message, "Пришли фото 📷")
 
 
-@bot.callback_query_handler(func=lambda call: call.data in ["publish", "edit", "cancel"])
+@bot.callback_query_handler(func=lambda call: call.data in ["publish", "edit_body", "edit_title", "cancel"])
 def on_action(call):
     uid = call.from_user.id
     st = user_state.get(uid)
@@ -276,28 +400,34 @@ def on_action(call):
 
     if call.data == "publish":
         try:
-            card_bytes = st.get("card_bytes")
-            body = st.get("body_text", "")
-            bot.send_photo(CHANNEL, BytesIO(card_bytes), caption=body)
+            caption = build_caption_html(st["title"], st["body_raw"])
+            bot.send_photo(
+                CHANNEL,
+                BytesIO(st["card_bytes"]),
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=action_kb(st.get("source_url", ""))  # кнопки пойдут и в канал
+            )
             bot.answer_callback_query(call.id, "Опубликовано ✅")
-
-            # optionally remove buttons on preview
             try:
                 bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
             except Exception:
                 pass
-
             bot.send_message(call.message.chat.id, "Готово ✅ Можешь присылать следующую новость (фото).")
             user_state[uid] = {"step": "waiting_photo"}
-
         except Exception as e:
             bot.answer_callback_query(call.id, "Ошибка публикации")
             bot.send_message(call.message.chat.id, f"Не смог опубликовать: {e}")
 
-    elif call.data == "edit":
+    elif call.data == "edit_body":
         st["step"] = "waiting_body"
-        bot.answer_callback_query(call.id, "Ок, редактируем")
-        bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ поста (заголовок на картинке останется прежним).")
+        bot.answer_callback_query(call.id, "Ок")
+        bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ (заголовок на картинке не меняем).")
+
+    elif call.data == "edit_title":
+        st["step"] = "waiting_title"
+        bot.answer_callback_query(call.id, "Ок")
+        bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК (перерисую карточку).")
 
     elif call.data == "cancel":
         bot.answer_callback_query(call.id, "Отменено")
@@ -306,7 +436,7 @@ def on_action(call):
         except Exception:
             pass
         user_state[uid] = {"step": "waiting_photo"}
-        bot.send_message(call.message.chat.id, "Отменил ❌ Можешь прислать новое фото для следующей новости.")
+        bot.send_message(call.message.chat.id, "Отменил ❌ Пришли новое фото для следующей новости.")
 
 
 if __name__ == "__main__":
