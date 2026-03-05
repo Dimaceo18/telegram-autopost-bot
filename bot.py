@@ -3,11 +3,12 @@ import re
 import html
 import time
 import hashlib
+import json
 from io import BytesIO
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree as ET
 
 import requests
@@ -17,6 +18,8 @@ from telebot.types import (
     ReplyKeyboardMarkup, KeyboardButton
 )
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+
+from bs4 import BeautifulSoup  # NEW
 
 
 # =========================
@@ -84,7 +87,6 @@ NEWS_CACHE_TTL_SEC = 10 * 60
 NEWS_PER_SOURCE_CAP = 6
 
 NEWS_SOURCES = [
-
     {
         "id": "onliner",
         "name": "Onliner",
@@ -92,7 +94,6 @@ NEWS_SOURCES = [
         "url": "https://www.onliner.by/feed",
         "limit": 80
     },
-
     {
         "id": "sputnik",
         "name": "Sputnik",
@@ -100,7 +101,6 @@ NEWS_SOURCES = [
         "url": "https://sputnik.by/export/rss2/index.xml",
         "limit": 80
     },
-
     {
         "id": "sb",
         "name": "SB.by",
@@ -109,12 +109,13 @@ NEWS_SOURCES = [
         "limit": 80
     },
 
+    # NEW: Tochka via /articles/ (как ты просил)
     {
         "id": "tochka",
         "name": "Tochka",
-        "kind": "tochka_sitemap",
-        "url": "https://tochka.by/sitemap.xml",
-        "limit": 160
+        "kind": "tochka_articles",
+        "url": "https://tochka.by/articles/",
+        "limit": 60
     },
 
     {
@@ -124,7 +125,6 @@ NEWS_SOURCES = [
         "url": "https://smartpress.by/rss/",
         "limit": 80
     },
-
     {
         "id": "minsknews",
         "name": "Minsknews",
@@ -132,7 +132,6 @@ NEWS_SOURCES = [
         "url": "https://minsknews.by/feed/",
         "limit": 80
     },
-
     {
         "id": "telegraf",
         "name": "Telegraf",
@@ -140,7 +139,6 @@ NEWS_SOURCES = [
         "url": "https://telegraf.news/feed/",
         "limit": 80
     },
-
     {
         "id": "mlyn",
         "name": "Mlyn",
@@ -148,7 +146,6 @@ NEWS_SOURCES = [
         "url": "https://mlyn.by/feed/",
         "limit": 80
     },
-
     {
         "id": "ont",
         "name": "ONT",
@@ -156,7 +153,6 @@ NEWS_SOURCES = [
         "url": "https://ont.by/news/rss",
         "limit": 80
     }
-
 ]
 
 # =========================
@@ -323,88 +319,167 @@ def parse_rss(url: str, source_name: str, limit: int = 80) -> List[Dict]:
     return out
 
 
-def parse_sb_feed_html(url: str, limit: int = 120) -> List[Dict]:
+# --- NEW: Tochka list parser via /articles/ ---
+TOCHKA_BASE = "https://tochka.by"
+
+def _tochka_extract_datetime_from_page(page_html: str) -> Optional[datetime]:
+    try:
+        soup = BeautifulSoup(page_html, "lxml")
+    except Exception:
+        soup = BeautifulSoup(page_html, "html.parser")
+
+    # 1) LD+JSON
+    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            raw = (tag.get_text() or "").strip()
+            if not raw:
+                continue
+            obj = json.loads(raw)
+            candidates = obj if isinstance(obj, list) else [obj]
+            for o in candidates:
+                if not isinstance(o, dict):
+                    continue
+                t = o.get("@type")
+                if isinstance(t, list):
+                    ok = any(x in ("NewsArticle", "Article") for x in t)
+                else:
+                    ok = t in ("NewsArticle", "Article")
+                if not ok:
+                    continue
+                d = o.get("datePublished") or o.get("dateModified")
+                dt = parse_dt(d or "")
+                if dt:
+                    return dt
+        except Exception:
+            continue
+
+    # 2) <time datetime="...">
+    try:
+        time_tag = soup.find("time", attrs={"datetime": True})
+        if time_tag:
+            dt = parse_dt(time_tag.get("datetime") or "")
+            if dt:
+                return dt
+    except Exception:
+        pass
+
+    return None
+
+
+def parse_tochka_articles_list(url: str, limit: int = 60) -> List[Dict]:
+    """
+    Берем страницу https://tochka.by/articles/ и вытаскиваем статьи вида:
+    /articles/<section>/<slug>/
+    Потом по каждой статье берем og-meta и дату (если есть).
+    """
     page = http_get(url, timeout=25)
 
-    pat = re.compile(
-        r'href="(?P<href>/articles/[^"]+)"[^>]*>(?P<title>[^<]{5,220})</a>',
-        re.IGNORECASE
-    )
-
+    # собираем ссылки на статьи
+    links = []
     seen = set()
-    out = []
-    now_dt = datetime.now(timezone.utc) - timedelta(hours=1)
 
-    for m in pat.finditer(page):
-        href = m.group("href")
-        title = html.unescape(m.group("title")).strip()
+    # Быстрое извлечение ссылок (без привязки к классам)
+    for href in re.findall(r'href=["\']([^"\']+)["\']', page, flags=re.IGNORECASE):
         full = normalize_url(url, href)
-        key = (title, full)
-        if key in seen:
+        p = urlparse(full)
+        if p.netloc and p.netloc != urlparse(TOCHKA_BASE).netloc:
             continue
-        seen.add(key)
-        if not title or not full:
-            continue
-        out.append({
-            "source": "SB.by",
-            "title": title,
-            "url": full,
-            "summary": "",
-            "image": "",
-            "published_raw": "",
-            "dt_utc": now_dt.isoformat(),
-        })
-        if len(out) >= limit:
+        if re.search(r"^/articles/[^/]+/[^/]+/?$", p.path):
+            final = urljoin(TOCHKA_BASE, p.path)
+            if final in seen:
+                continue
+            seen.add(final)
+            links.append(final)
+        if len(links) >= limit:
             break
-    return out
-
-
-def parse_tochka_sitemap_og(url: str, limit: int = 160) -> List[Dict]:
-    xml_text = http_get(url, timeout=35)
-
-    locs: List[Tuple[str, str]] = []
-    for loc, lastmod in re.findall(
-        r"<loc>(.*?)</loc>\s*(?:<lastmod>(.*?)</lastmod>)?",
-        xml_text, flags=re.DOTALL | re.IGNORECASE
-    ):
-        loc = (loc or "").strip()
-        lastmod = (lastmod or "").strip()
-        if "/articles/" not in loc:
-            continue
-        locs.append((loc, lastmod))
-
-    locs.sort(key=lambda x: x[1], reverse=True)
-    locs = locs[:limit]
 
     out = []
-    for (loc, lastmod) in locs:
-        dt = parse_dt(lastmod)
-        if dt and not is_last_24h(dt):
-            continue
-
+    for link in links[:limit]:
         try:
-            page = http_get(loc, timeout=25)
-            og = extract_og_meta(page)
+            art_html = http_get(link, timeout=25)
+            og = extract_og_meta(art_html)
             title = (og.get("title") or "").strip()
             desc = (og.get("desc") or "").strip()
             img = (og.get("image") or "").strip()
             if img:
-                img = normalize_url(loc, img)
+                img = normalize_url(link, img)
 
-            if title and loc:
+            dt = _tochka_extract_datetime_from_page(art_html)
+
+            # фильтр 24ч: если дата есть и она старая, пропускаем
+            if dt and not is_last_24h(dt):
+                continue
+
+            if title and link:
                 out.append({
                     "source": "Tochka",
                     "title": title,
-                    "url": loc,
+                    "url": link,
                     "summary": desc,
                     "image": img,
-                    "published_raw": lastmod,
+                    "published_raw": dt.isoformat() if dt else "",
                     "dt_utc": dt.isoformat() if dt else "",
                 })
         except Exception:
             continue
 
     return out
+
+
+def fetch_tochka_full_text(url: str) -> str:
+    """
+    Достает полный текст статьи Tochka.by.
+    Сначала пробуем LD+JSON articleBody, потом собираем из <article> параграфы.
+    """
+    page_html = http_get(url, timeout=25)
+    try:
+        soup = BeautifulSoup(page_html, "lxml")
+    except Exception:
+        soup = BeautifulSoup(page_html, "html.parser")
+
+    # 1) LD+JSON articleBody
+    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            raw = (tag.get_text() or "").strip()
+            if not raw:
+                continue
+            obj = json.loads(raw)
+            candidates = obj if isinstance(obj, list) else [obj]
+            for o in candidates:
+                if not isinstance(o, dict):
+                    continue
+                t = o.get("@type")
+                if isinstance(t, list):
+                    ok = any(x in ("NewsArticle", "Article") for x in t)
+                else:
+                    ok = t in ("NewsArticle", "Article")
+                if not ok:
+                    continue
+                body = o.get("articleBody")
+                if isinstance(body, str) and body.strip():
+                    return _clean_text(body)
+        except Exception:
+            continue
+
+    # 2) fallback: <article> + p/li/blockquote
+    root = soup.find("article") or soup
+    parts = []
+    for el in root.find_all(["p", "li", "blockquote"], recursive=True):
+        t = el.get_text(" ", strip=True)
+        if not t:
+            continue
+        # немного отсекаем мусор
+        if len(t) < 25 and re.search(r"(подпис|реклама|читайте|смотрите)", t.lower()):
+            continue
+        parts.append(t)
+
+    return _clean_text("\n\n".join(parts))
+
+
+def _clean_text(text: str) -> str:
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def fetch_all_news_last24h() -> List[Dict]:
@@ -416,10 +491,8 @@ def fetch_all_news_last24h() -> List[Dict]:
         try:
             if kind == "rss":
                 items = parse_rss(src["url"], src["name"], limit=src.get("limit", 80))
-            elif kind == "sb_feed_html":
-                items = parse_sb_feed_html(src["url"], limit=src.get("limit", 120))
-            elif kind == "tochka_sitemap_og":
-                items = parse_tochka_sitemap_og(src["url"], limit=src.get("limit", 160))
+            elif kind == "tochka_articles":
+                items = parse_tochka_articles_list(src["url"], limit=src.get("limit", 60))
             else:
                 items = []
         except Exception:
@@ -485,10 +558,10 @@ CATEGORY_RULES = [
 
 def pick_category_emoji(title: str, body: str) -> str:
     text = (title + " " + body).lower()
-    for emoji, keys in CATEGORY_RULES:
+    for emoji_, keys in CATEGORY_RULES:
         for k in keys:
             if k in text:
-                return emoji
+                return emoji_
     return "📰"
 
 def pick_keywords(title: str, body: str, max_words: int = 6):
@@ -529,11 +602,11 @@ def highlight_keywords_html(text: str, keywords):
     return safe
 
 def build_caption_html(title: str, body: str) -> str:
-    emoji = pick_category_emoji(title, body)
+    emoji_ = pick_category_emoji(title, body)
     keywords = pick_keywords(title, body)
     title_safe = html.escape((title or "").strip())
     body_high = highlight_keywords_html((body or "").strip(), keywords)
-    return f"<b>{emoji} {title_safe}</b>\n\n{body_high}".strip()
+    return f"<b>{emoji_} {title_safe}</b>\n\n{body_high}".strip()
 
 
 # =========================
@@ -690,7 +763,6 @@ def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
 
     margin_x = int(img.width * 0.06)
     margin_top = int(img.height * 0.06)
-    # Футер ниже
     margin_bottom = int(img.height * 0.07)
 
     safe_w = img.width - 2 * margin_x
@@ -718,12 +790,11 @@ def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
         line_spacing_ratio=0.22
     )
 
-    # Блок по центру, текст внутри блока по левому краю
     block_w = 0
     for ln in lines:
         block_w = max(block_w, text_width(draw, ln, font))
     block_x = (img.width - block_w) // 2
-    block_x = max(margin_x, block_x)  # защита, чтобы блок не уехал в поля
+    block_x = max(margin_x, block_x)
 
     y = margin_top
     for i, ln in enumerate(lines):
@@ -1028,7 +1099,9 @@ def on_news_item_action(c):
     title = (it.get("title") or "").strip()
     link = (it.get("url") or "").strip()
     image_url = (it.get("image") or "").strip()
+    source_name = (it.get("source") or "").strip()
 
+    # 1) пробуем взять картинку
     photo_bytes = b""
     if image_url:
         try:
@@ -1041,10 +1114,22 @@ def on_news_item_action(c):
     st["title"] = title
     st["source_url"] = link
 
+    # 2) NEW: если Tochka, подтягиваем полный текст автоматически
+    auto_body = ""
+    if source_name.lower() == "tochka":
+        try:
+            auto_body = fetch_tochka_full_text(link)
+        except Exception:
+            auto_body = ""
+
+    # если нет картинки, просим фото как раньше
     if not photo_bytes:
         st["step"] = "waiting_photo"
         st["prefill_title"] = title
         st["prefill_source"] = link
+        # сохраним авто-текст, если успели достать
+        if auto_body:
+            st["prefill_body"] = auto_body
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Нужно фото")
         bot.send_message(
@@ -1060,10 +1145,30 @@ def on_news_item_action(c):
     try:
         card = make_card(photo_bytes, title, st["template"])
         st["card_bytes"] = card.getvalue()
+
+        # если есть авто-текст (Tochka) сразу делаем превью и кнопки
+        if auto_body:
+            st["body_raw"] = auto_body
+            st["step"] = "waiting_action"
+            user_state[uid] = st
+
+            caption = build_caption_html(st["title"], st["body_raw"])
+            bot.send_photo(
+                chat_id=c.message.chat.id,
+                photo=BytesIO(st["card_bytes"]),
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=preview_kb(st.get("source_url", "")),
+            )
+            bot.answer_callback_query(c.id, "Оформил ✅")
+            return
+
+        # иначе как было: попросить основной текст
         st["step"] = "waiting_body"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Ок ✅")
         bot.send_message(c.message.chat.id, "Карточка готова ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ поста.", reply_markup=main_menu_kb())
+
     except Exception as e:
         bot.answer_callback_query(c.id, "Ошибка карточки", show_alert=True)
         bot.send_message(c.message.chat.id, f"Ошибка при создании карточки: {e}", reply_markup=main_menu_kb())
@@ -1095,9 +1200,31 @@ def on_photo(message):
     if st.get("prefill_title"):
         st["title"] = st["prefill_title"]
         st["source_url"] = st.get("prefill_source", "") or ""
+
         try:
             card = make_card(st["photo_bytes"], st["title"], st["template"])
             st["card_bytes"] = card.getvalue()
+
+            # NEW: если у нас был авто-текст (Tochka), сразу делаем превью
+            if st.get("prefill_body"):
+                st["body_raw"] = st["prefill_body"]
+                st.pop("prefill_body", None)
+                st.pop("prefill_title", None)
+                st.pop("prefill_source", None)
+                st["step"] = "waiting_action"
+                user_state[uid] = st
+
+                caption = build_caption_html(st["title"], st["body_raw"])
+                bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=BytesIO(st["card_bytes"]),
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=preview_kb(st.get("source_url", "")),
+                )
+                bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
+                return
+
             st["step"] = "waiting_body"
             st.pop("prefill_title", None)
             st.pop("prefill_source", None)
