@@ -113,7 +113,7 @@ NEWS_SOURCES = [
     {
         "id": "tochka",
         "name": "Tochka",
-        "kind": "tochka_articles",
+        "kind": "tochka_sitemap_og"
         "url": "https://tochka.by/articles/",
         "limit": 60
     },
