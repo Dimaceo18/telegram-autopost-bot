@@ -622,7 +622,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
 
     margin_x = int(img.width * 0.06)
     margin_top = int(img.height * 0.06)
-    # Опустили футер ниже (ближе к краю)
+    # Футер ниже
     margin_bottom = int(img.height * 0.07)
 
     safe_w = img.width - 2 * margin_x
@@ -650,12 +650,16 @@ def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
         line_spacing_ratio=0.22
     )
 
-    # Заголовок по ЦЕНТРУ (равные расстояния слева/справа)
+    # Блок по центру, текст внутри блока по левому краю
+    block_w = 0
+    for ln in lines:
+        block_w = max(block_w, text_width(draw, ln, font))
+    block_x = (img.width - block_w) // 2
+    block_x = max(margin_x, block_x)  # защита, чтобы блок не уехал в поля
+
     y = margin_top
     for i, ln in enumerate(lines):
-        lw = text_width(draw, ln, font)
-        x = (img.width - lw) // 2
-        draw.text((x, y), ln, font=font, fill="white")
+        draw.text((block_x, y), ln, font=font, fill="white")
         y += heights[i] + spacing
 
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
