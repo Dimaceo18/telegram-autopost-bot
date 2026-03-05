@@ -16,7 +16,7 @@ from telebot.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton
 )
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 
 
 # =========================
@@ -105,7 +105,6 @@ SESSION.headers.update({
 
 URL_RE = re.compile(r"(https?://[^\s]+)", re.IGNORECASE)
 
-# user_state[uid] = {...}
 user_state: Dict[int, Dict] = {}
 
 
@@ -157,7 +156,6 @@ def ensure_fonts():
 def warn_if_too_small(chat_id, photo_bytes: bytes):
     try:
         im = Image.open(BytesIO(photo_bytes))
-        # предупреждение "на глаз" под 4:5
         if im.width < 900 or im.height < 1100:
             bot.send_message(
                 chat_id,
@@ -267,7 +265,6 @@ def parse_sb_feed_html(url: str, limit: int = 120) -> List[Dict]:
 
     seen = set()
     out = []
-    # MVP: считаем свежими
     now_dt = datetime.now(timezone.utc) - timedelta(hours=1)
 
     for m in pat.finditer(page):
@@ -398,7 +395,7 @@ def fetch_all_news_last24h() -> List[Dict]:
 
 
 # =========================
-# Caption formatting (keywords/emoji)
+# Caption formatting
 # =========================
 RU_STOP = {
     "и","в","во","на","но","а","что","это","как","к","по","из","за","для","с","со","у","от","до",
@@ -492,11 +489,6 @@ def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) 
 
 def wrap_no_truncate(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
                      max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
-    """
-    (lines, ok)
-    ok=True если ВСЕ слова уместились в max_lines и каждая строка <= max_width.
-    Никаких многоточий.
-    """
     words = [w for w in (text or "").split() if w.strip()]
     if not words:
         return [""], True
@@ -513,7 +505,6 @@ def wrap_no_truncate(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeT
             i += 1
         else:
             if not cur:
-                # одно слово слишком длинное для max_width при данном font
                 return [words[i]], False
             lines.append(cur)
             cur = ""
@@ -575,10 +566,6 @@ def fit_text_block(
     min_size: int = 16,
     line_spacing_ratio: float = 0.22,
 ) -> Tuple[ImageFont.FreeTypeFont, List[str], List[int], int, int]:
-    """
-    Подбирает font size так, чтобы ВСЕ слова влезли (ok=True) и блок по высоте не превышал max_block_h.
-    Возвращает: font, lines, heights, spacing, total_h
-    """
     text = (text or "").strip()
     if not text:
         text = " "
@@ -606,7 +593,6 @@ def fit_text_block(
 
         size -= 2
 
-    # fallback on min_size even if not ok; (практически не должно случаться)
     font = ImageFont.truetype(font_path, min_size)
     lines, _ = wrap_no_truncate(draw, text, font, safe_w, max_lines=max_lines)
     spacing = int(min_size * line_spacing_ratio)
@@ -630,17 +616,17 @@ def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=170, threshold=3))
 
     img = ImageEnhance.Brightness(img).enhance(0.55)
     draw = ImageDraw.Draw(img)
 
     margin_x = int(img.width * 0.06)
     margin_top = int(img.height * 0.06)
-    margin_bottom = int(img.height * 0.10)
+    # Опустили футер ниже (ближе к краю)
+    margin_bottom = int(img.height * 0.07)
+
     safe_w = img.width - 2 * margin_x
 
-    # footer
     footer_size = max(24, int(img.height * 0.034))
     footer_font = ImageFont.truetype(FONT_MN, footer_size)
     fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
@@ -649,7 +635,6 @@ def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
     footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
     footer_x = (img.width - footer_w) // 2
 
-    # title zone
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     text = (title_text or "").strip().upper()
 
@@ -665,9 +650,12 @@ def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
         line_spacing_ratio=0.22
     )
 
+    # Заголовок по ЦЕНТРУ (равные расстояния слева/справа)
     y = margin_top
     for i, ln in enumerate(lines):
-        draw.text((margin_x, y), ln, font=font, fill="white")
+        lw = text_width(draw, ln, font)
+        x = (img.width - lw) // 2
+        draw.text((x, y), ln, font=font, fill="white")
         y += heights[i] + spacing
 
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
@@ -684,13 +672,11 @@ def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=170, threshold=3))
 
     img = ImageEnhance.Brightness(img).enhance(0.85)
     img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
     draw = ImageDraw.Draw(img)
 
-    # positioning rules "like MN", but anchored to bottom
     margin_x = int(img.width * 0.06)
     margin_bottom = int(img.height * 0.08)
     safe_w = img.width - 2 * margin_x
@@ -836,11 +822,7 @@ def cmd_start(message):
     st["step"] = "idle"
     user_state[uid] = st
 
-    bot.send_message(
-        message.chat.id,
-        "Выбери действие 👇",
-        reply_markup=main_menu_kb()
-    )
+    bot.send_message(message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
     bot.send_message(
         message.chat.id,
         "Команды:\n"
@@ -944,9 +926,6 @@ def on_news_nav(c):
     send_news_batch(c.message.chat.id, uid, NEWS_MORE_BATCH)
 
 
-# =========================
-# News item actions
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("nfmt:") or c.data.startswith("nskip:"))
 def on_news_item_action(c):
     if not is_admin(c):
@@ -1041,7 +1020,6 @@ def on_photo(message):
 
     st["photo_bytes"] = photo_bytes
 
-    # prefilled from /news fallback
     if st.get("prefill_title"):
         st["title"] = st["prefill_title"]
         st["source_url"] = st.get("prefill_source", "") or ""
@@ -1098,7 +1076,7 @@ def on_text(message):
     text = (message.text or "").strip()
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
 
-    # ---- GLOBAL MENU HANDLING (works in any step) ----
+    # GLOBAL MENU HANDLING
     if text == BTN_POST or text.lower() in {"оформить пост", "оформление поста"}:
         cmd_post(message)
         return
@@ -1106,7 +1084,6 @@ def on_text(message):
     if text == BTN_NEWS or text.lower() in {"получить новости", "новости", "дай новости"}:
         cmd_news(message)
         return
-    # ---- end ----
 
     step = st.get("step")
 
@@ -1166,7 +1143,6 @@ def on_text(message):
         bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
 
     elif step == "waiting_action":
-        # Не ругаемся, а подсказываем куда нажимать
         bot.reply_to(message, "Нажми кнопку под превью ✅✏️❌ (или выбери действие в меню снизу).", reply_markup=main_menu_kb())
 
     elif step == "waiting_template":
@@ -1177,9 +1153,6 @@ def on_text(message):
         bot.send_message(message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
 
 
-# =========================
-# Preview actions
-# =========================
 @bot.callback_query_handler(func=lambda call: call.data in ["publish", "edit_body", "edit_title", "cancel"])
 def on_action(call):
     if not is_admin(call):
