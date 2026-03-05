@@ -44,6 +44,17 @@ if not SUGGEST_URL and BOT_USERNAME:
     SUGGEST_URL = f"https://t.me/{BOT_USERNAME}?start=suggest"
 
 
+
+def extract_og_meta(html_text):
+    og = {}
+    m = re.search(r'<meta property="og:image" content="(.*?)"', html_text)
+    if m:
+        og["image"] = m.group(1)
+    m = re.search(r'<meta property="og:description" content="(.*?)"', html_text)
+    if m:
+        og["desc"] = m.group(1)
+    return og
+
 # =========================
 # UI BUTTONS
 # =========================
@@ -84,80 +95,12 @@ NEWS_CACHE_TTL_SEC = 10 * 60
 NEWS_PER_SOURCE_CAP = 6
 
 NEWS_SOURCES = [
-
-    {
-        "id": "onliner",
-        "name": "Onliner",
-        "kind": "rss",
-        "url": "https://www.onliner.by/feed",
-        "limit": 80
-    },
-
-    {
-        "id": "sputnik",
-        "name": "Sputnik",
-        "kind": "rss",
-        "url": "https://sputnik.by/export/rss2/index.xml",
-        "limit": 80
-    },
-
-    {
-        "id": "sb",
-        "name": "SB.by",
-        "kind": "rss",
-        "url": "https://www.sb.by/news-rss/google-xml/",
-        "limit": 80
-    },
-
-    {
-        "id": "tochka",
-        "name": "Tochka",
-        "kind": "tochka_sitemap",
-        "url": "https://tochka.by/sitemap.xml",
-        "limit": 160
-    },
-
-    {
-        "id": "smartpress",
-        "name": "Smartpress",
-        "kind": "rss",
-        "url": "https://smartpress.by/rss/",
-        "limit": 80
-    },
-
-    {
-        "id": "minsknews",
-        "name": "Minsknews",
-        "kind": "rss",
-        "url": "https://minsknews.by/feed/",
-        "limit": 80
-    },
-
-    {
-        "id": "telegraf",
-        "name": "Telegraf",
-        "kind": "rss",
-        "url": "https://telegraf.news/feed/",
-        "limit": 80
-    },
-
-    {
-        "id": "mlyn",
-        "name": "Mlyn",
-        "kind": "rss",
-        "url": "https://mlyn.by/feed/",
-        "limit": 80
-    },
-
-    {
-        "id": "ont",
-        "name": "ONT",
-        "kind": "rss",
-        "url": "https://ont.by/news/rss",
-        "limit": 80
-    }
-
+    {"id": "onliner", "name": "Onliner", "kind": "rss", "url": "https://www.onliner.by/feed", "limit": 80},
+    {"id": "sputnik", "name": "Sputnik", "kind": "rss", "url": "https://sputnik.by/export/rss2/smi/index.xml", "limit": 80},
+    {"id": "sb", "name": "SB.by", "kind": "sb_feed_html", "url": "https://www.sb.by/feed/", "limit": 120},
+    {"id": "tochka", "name": "Tochka", "kind": "tochka_sitemap_og", "url": "https://tochka.by/sitemap.xml", "limit": 160},
 ]
+
 
 # =========================
 # BOT + SESSION
@@ -968,7 +911,25 @@ def send_news_batch(chat_id: int, uid: int, batch: int):
         by_key[key] = it
 
         msg = f"<b>{html.escape(title)}</b>\n\n{html.escape(src)}"
-        bot.send_message(chat_id, msg, parse_mode="HTML", reply_markup=news_item_kb(key, link))
+        
+        image = it.get("image")
+        if not image:
+            try:
+                page = http_get(link)
+                og = extract_og_meta(page)
+                image = og.get("image")
+            except:
+                image = None
+
+        caption = f"<b>{html.escape(title)}</b>
+
+🔗 {link}"
+
+        if image:
+            bot.send_photo(chat_id, image, caption=caption, parse_mode="HTML", reply_markup=news_item_kb(key, link))
+        else:
+            bot.send_message(chat_id, caption, parse_mode="HTML", reply_markup=news_item_kb(key, link))
+
 
     cache["pos"] = end
     cache["by_key"] = by_key
