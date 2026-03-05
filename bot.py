@@ -1,6 +1,10 @@
 # bot.py
 # /post: Photo -> Template -> Title -> Body -> (optional Source) -> Preview -> Publish
 # /news: fetch news (last 24h) from sources -> send 20 + show more 10 -> "✅ Оформить" -> continues post flow
+#
+# Templates:
+# 1) MN: title top, darken all, footer "MINSK NEWS" (Caviar Dreams)
+# 2) CHP VM: bottom gradient, Inter ExtraBold, CAPS, centered block at bottom, never overflows (ellipsis)
 
 import os
 import re
@@ -11,7 +15,7 @@ from io import BytesIO
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 from xml.etree import ElementTree as ET
 
 import requests
@@ -58,11 +62,11 @@ TARGET_W, TARGET_H = 720, 900  # 4:5
 # MN: title zone <= 23% height
 MN_TITLE_ZONE_PCT = 0.23
 
-# CHP: bottom title zone (space for text)
-CHP_TITLE_ZONE_PCT = 0.34   # height reserved for title block
-CHP_GRADIENT_PCT = 0.45     # gradient height from bottom
-CHP_PAD_X_PCT = 0.06
-CHP_PAD_BOTTOM_PCT = 0.07
+# CHP VM: tune to match your reference
+CHP_TITLE_ZONE_PCT = 0.36      # reserved bottom title area
+CHP_GRADIENT_PCT = 0.48        # how high the bottom gradient goes
+CHP_PAD_X_PCT = 0.06           # left/right padding
+CHP_PAD_BOTTOM_PCT = 0.085     # bottom padding (text sits above this)
 
 
 # =========================
@@ -78,7 +82,7 @@ NEWS_SOURCES = [
     {"id": "onliner", "name": "Onliner", "kind": "rss", "url": "https://www.onliner.by/feed", "limit": 60},
     {"id": "sputnik", "name": "Sputnik", "kind": "rss", "url": "https://sputnik.by/export/rss2/smi/index.xml", "limit": 60},
 
-    # SB: has /feed/ but sometimes returns 403 for deeper pages; we still show link/title from feed
+    # SB: show link/title from feed (some pages can be blocked)
     {"id": "sb", "name": "SB.by", "kind": "sb_feed_html", "url": "https://www.sb.by/feed/", "limit": 80},
 
     # Tochka: sitemap + og meta
@@ -100,16 +104,6 @@ SESSION.headers.update({
 
 URL_RE = re.compile(r"(https?://[^\s]+)", re.IGNORECASE)
 
-# user_state[uid] = {
-#   template: "MN" | "CHP"
-#   step: waiting_template | waiting_photo | waiting_title | waiting_body | waiting_source | waiting_action
-#   photo_bytes: bytes
-#   title: str
-#   card_bytes: bytes
-#   body_raw: str
-#   source_url: str
-#   news_cache: {ts: float, items: list[dict], pos: int}
-# }
 user_state: Dict[int, Dict] = {}
 
 
@@ -225,13 +219,11 @@ def parse_rss(url: str, source_name: str, limit: int = 60) -> List[Dict]:
         desc = (item.findtext("description") or "").strip()
         pub = (item.findtext("pubDate") or "").strip() or (item.findtext("{http://purl.org/dc/elements/1.1/}date") or "").strip()
 
-        # image
         image = ""
         enc = item.find("enclosure")
         if enc is not None and enc.get("url"):
             image = enc.get("url") or ""
         if not image:
-            # media:content
             for child in item:
                 tag = (child.tag or "").lower()
                 if "content" in tag and child.get("url"):
@@ -255,7 +247,6 @@ def parse_rss(url: str, source_name: str, limit: int = 60) -> List[Dict]:
     return out
 
 def parse_sb_feed_html(url: str, limit: int = 80) -> List[Dict]:
-    # This is an HTML page, pull article links+titles
     page = http_get(url, timeout=25)
 
     pat = re.compile(
@@ -265,7 +256,7 @@ def parse_sb_feed_html(url: str, limit: int = 80) -> List[Dict]:
 
     seen = set()
     out = []
-    now_dt = datetime.now(timezone.utc) - timedelta(hours=1)  # MVP fallback to be "fresh"
+    now_dt = datetime.now(timezone.utc) - timedelta(hours=1)  # MVP fallback freshness
     for m in pat.finditer(page):
         href = m.group("href")
         title = html.unescape(m.group("title")).strip()
@@ -293,7 +284,10 @@ def parse_tochka_sitemap_og(url: str, limit: int = 120) -> List[Dict]:
     xml_text = http_get(url, timeout=35)
 
     locs: List[Tuple[str, str]] = []
-    for loc, lastmod in re.findall(r"<loc>(.*?)</loc>\s*(?:<lastmod>(.*?)</lastmod>)?", xml_text, flags=re.DOTALL | re.IGNORECASE):
+    for loc, lastmod in re.findall(
+        r"<loc>(.*?)</loc>\s*(?:<lastmod>(.*?)</lastmod>)?",
+        xml_text, flags=re.DOTALL | re.IGNORECASE
+    ):
         loc = (loc or "").strip()
         lastmod = (lastmod or "").strip()
         if "/articles/" not in loc:
@@ -306,7 +300,6 @@ def parse_tochka_sitemap_og(url: str, limit: int = 120) -> List[Dict]:
     out = []
     for (loc, lastmod) in locs:
         dt = parse_dt(lastmod)
-        # quick 24h prefilter to avoid fetching too much
         if dt and not is_last_24h(dt):
             continue
         try:
@@ -355,24 +348,19 @@ def fetch_all_news_last24h() -> List[Dict]:
             if not u or u in by_url:
                 continue
             by_url.add(u)
-            # attach dt
             dt = parse_dt(it.get("dt_utc") or "") or parse_dt(it.get("published_raw") or "")
             it["_dt"] = dt
             merged.append(it)
 
-    # Filter 24h, but if dt is missing allow as fallback
     last24 = [it for it in merged if is_last_24h(it.get("_dt"))]
     nodt = [it for it in merged if it.get("_dt") is None]
-
     base = last24 if len(last24) >= 10 else (last24 + nodt)
 
-    # Sort: newest first, unknown dates at end
     base.sort(
         key=lambda x: (x.get("_dt") is not None, x.get("_dt") or datetime.min.replace(tzinfo=timezone.utc)),
         reverse=True
     )
 
-    # Cap per source in the front
     counts = {}
     diversified = []
     for it in base:
@@ -383,7 +371,6 @@ def fetch_all_news_last24h() -> List[Dict]:
         counts[src] += 1
         diversified.append(it)
 
-    # If too few, append remaining
     if len(diversified) < 60:
         for it in base:
             if it in diversified:
@@ -479,7 +466,7 @@ def tg_file_bytes(file_id: str) -> bytes:
 
 
 # =========================
-# Wrapping + drawing
+# Wrapping + drawing helpers
 # =========================
 def text_bbox(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont):
     return draw.textbbox((0, 0), s, font=font)
@@ -490,11 +477,10 @@ def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) 
 
 def balanced_wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
                   max_width: int, max_lines: int = 5) -> List[str]:
-    words = [w for w in text.split() if w.strip()]
+    words = [w for w in (text or "").split() if w.strip()]
     if not words:
         return [""]
 
-    # Greedy (stable + fast)
     lines = []
     cur = ""
     for w in words:
@@ -511,6 +497,51 @@ def balanced_wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeType
         lines.append(cur)
     return lines
 
+def wrap_with_ellipsis(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
+                       max_width: int, max_lines: int = 5) -> List[str]:
+    """
+    Greedy wrap. If text doesn't fit into max_lines, truncate last line with ellipsis.
+    Guaranteed: no line exceeds max_width.
+    """
+    words = [w for w in (text or "").split() if w.strip()]
+    if not words:
+        return [""]
+
+    lines = []
+    cur = ""
+    i = 0
+
+    while i < len(words) and len(lines) < max_lines:
+        w = words[i]
+        test = (cur + " " + w).strip()
+        if text_width(draw, test, font) <= max_width:
+            cur = test
+            i += 1
+        else:
+            if cur:
+                lines.append(cur)
+                cur = ""
+            else:
+                # single very long word: cut it
+                cut = w
+                while cut and text_width(draw, cut + "…", font) > max_width:
+                    cut = cut[:-1]
+                lines.append((cut + "…") if cut else "…")
+                i += 1
+
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+
+    # If we didn't consume all words, add ellipsis to last line
+    if i < len(words) and lines:
+        last = lines[-1]
+        if not last.endswith("…"):
+            while last and text_width(draw, last + "…", font) > max_width:
+                last = last[:-1].rstrip()
+            lines[-1] = (last + "…") if last else "…"
+
+    return lines
+
 def crop_to_4x5(img: Image.Image) -> Image.Image:
     w, h = img.size
     target_ratio = 4 / 5
@@ -524,7 +555,7 @@ def crop_to_4x5(img: Image.Image) -> Image.Image:
         top = (h - new_h) // 2
         return img.crop((0, top, w, top + new_h))
 
-def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 210):
+def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
     """
     Adds black gradient from transparent (top) to black (bottom) over bottom part of image.
     """
@@ -533,20 +564,18 @@ def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 
     if gh <= 0:
         return img
 
-    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    overlay_alpha = Image.new("L", (w, h), 0)
     grad = Image.new("L", (1, gh), 0)
     for y in range(gh):
         a = int(max_alpha * (y / max(1, gh - 1)))
         grad.putpixel((0, y), a)
-
     grad = grad.resize((w, gh))
-    overlay.paste(Image.new("RGBA", (w, gh), (0, 0, 0, 0)), (0, h - gh))
-    overlay_alpha = Image.new("L", (w, h), 0)
     overlay_alpha.paste(grad, (0, h - gh))
 
     black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-    overlay = Image.composite(black, overlay, overlay_alpha)  # black where alpha>0
-    out = Image.alpha_composite(img.convert("RGBA"), overlay)
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    out = Image.alpha_composite(base, overlay)
     return out.convert("RGB")
 
 
@@ -568,7 +597,6 @@ def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
     margin_bottom = int(img.height * 0.10)
     safe_w = img.width - 2 * margin_x
 
-    # Footer
     footer_size = max(24, int(img.height * 0.034))
     footer_font = ImageFont.truetype(FONT_MN, footer_size)
     fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
@@ -577,7 +605,6 @@ def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
     footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
     footer_x = (img.width - footer_w) // 2
 
-    # Title zone
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     text = (title_text or "").strip().upper() or " "
 
@@ -628,10 +655,9 @@ def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
     img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
     img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=170, threshold=3))
 
-    # Slight global darken (not as strong as MN)
+    # slight global dim
     img = ImageEnhance.Brightness(img).enhance(0.85)
-
-    # Bottom gradient
+    # bottom gradient
     img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
 
     draw = ImageDraw.Draw(img)
@@ -640,7 +666,6 @@ def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
     pad_bottom = int(img.height * CHP_PAD_BOTTOM_PCT)
     safe_w = img.width - 2 * pad_x
 
-    # Bottom title area
     zone_h = int(img.height * CHP_TITLE_ZONE_PCT)
     zone_top = img.height - pad_bottom - zone_h
     if zone_top < 0:
@@ -648,7 +673,7 @@ def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
 
     text = (title_text or "").strip().upper() or " "
 
-    # Auto font sizing (Inter ExtraBold)
+    # Auto font sizing (Inter ExtraBold) + ellipsis for overflow
     font_size = int(img.height * 0.10)
     min_font = int(img.height * 0.045)
     spacing_ratio = 0.18
@@ -656,7 +681,7 @@ def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
     best = None
     while True:
         font = ImageFont.truetype(FONT_CHP, font_size)
-        lines = balanced_wrap(draw, text, font, safe_w, max_lines=5)
+        lines = wrap_with_ellipsis(draw, text, font, safe_w, max_lines=5)
         spacing = int(font_size * spacing_ratio)
 
         heights = []
@@ -671,24 +696,25 @@ def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
             max_w = max(max_w, lw)
         total_h += spacing * (len(lines) - 1)
 
+        # Fits inside zone
         if max_w <= safe_w and total_h <= zone_h:
             best = (font, lines, heights, spacing, total_h)
             break
 
         font_size -= 3
         if font_size <= min_font:
+            # even at min: still draw inside zone (ellipsis already applied)
             best = (font, lines, heights, spacing, total_h)
             break
 
     font, lines, heights, spacing, total_h = best
 
-    # Draw centered block inside bottom zone:
-    # - horizontally centered per line
-    # - vertically aligned to bottom with equal bottom padding
+    # Place block at bottom (inside reserved zone), with bottom padding
     y = (img.height - pad_bottom) - total_h
     if y < zone_top:
         y = zone_top
 
+    # Center each line horizontally (as in your reference)
     for i, ln in enumerate(lines):
         lw = text_width(draw, ln, font)
         x = (img.width - lw) // 2
@@ -699,7 +725,6 @@ def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
     out.seek(0)
     return out
-
 
 def make_card(photo_bytes: bytes, title_text: str, template: str) -> BytesIO:
     if template == "CHP":
@@ -789,7 +814,6 @@ def on_tpl(c):
     tpl = c.data.split(":", 1)[1]
     st = user_state.get(uid) or {}
     st["template"] = tpl
-    # proceed to photo step if we are starting post
     if st.get("step") in {"waiting_template", None}:
         st["step"] = "waiting_photo"
     user_state[uid] = st
@@ -806,7 +830,6 @@ def cmd_start(message):
         bot.reply_to(message, "⛔️ Нет доступа.")
         return
     uid = message.from_user.id
-    # default template MN if not set
     st = user_state.get(uid) or {}
     st.setdefault("template", "MN")
     st["step"] = "waiting_photo"
@@ -873,6 +896,8 @@ def send_news_batch(chat_id: int, uid: int, batch: int):
         return
 
     end = min(pos + batch, len(items))
+    cache.setdefault("by_key", {})
+
     for it in items[pos:end]:
         title = (it.get("title") or "").strip()
         link = (it.get("url") or "").strip()
@@ -881,19 +906,13 @@ def send_news_batch(chat_id: int, uid: int, batch: int):
             continue
 
         key = item_key(title, link)
-        # store a lookup by key in user cache map
-        # (so we can format by pressing "✅ Оформить")
         it["_k"] = key
+        cache["by_key"][key] = it
 
         msg = f"<b>{html.escape(title)}</b>\n\n{html.escape(src)}"
         bot.send_message(chat_id, msg, parse_mode="HTML", reply_markup=news_item_kb(key, link))
 
     cache["pos"] = end
-    # also keep keyed map
-    cache.setdefault("by_key", {})
-    for it in items:
-        if it.get("_k"):
-            cache["by_key"][it["_k"]] = it
     user_state[uid]["news_cache"] = cache
 
     if end < len(items):
@@ -951,7 +970,6 @@ def on_news_item_action(c):
     link = (it.get("url") or "").strip()
     image_url = (it.get("image") or "").strip()
 
-    # Download image if present; if not, ask user to send photo (keeps quality)
     photo_bytes = b""
     if image_url:
         try:
@@ -965,7 +983,6 @@ def on_news_item_action(c):
     st["source_url"] = link
 
     if not photo_bytes:
-        # need photo
         st["step"] = "waiting_photo"
         st["prefill_title"] = title
         st["prefill_source"] = link
@@ -980,7 +997,6 @@ def on_news_item_action(c):
     warn_if_too_small(c.message.chat.id, photo_bytes)
     st["photo_bytes"] = photo_bytes
 
-    # Make card immediately (since title is ready)
     try:
         card = make_card(photo_bytes, title, st["template"])
         st["card_bytes"] = card.getvalue()
@@ -1006,7 +1022,6 @@ def on_photo(message):
     st = user_state.get(uid) or {}
     st.setdefault("template", "MN")
 
-    # If template not selected yet: ask
     if st.get("step") == "waiting_template":
         bot.send_message(message.chat.id, "Сначала выбери шаблон:", reply_markup=template_kb())
         return
@@ -1016,7 +1031,8 @@ def on_photo(message):
     warn_if_too_small(message.chat.id, photo_bytes)
 
     st["photo_bytes"] = photo_bytes
-    # If we have prefilled title from /news fallback, go straight to generating card
+
+    # prefilled from /news fallback
     if st.get("prefill_title"):
         st["title"] = st["prefill_title"]
         st["source_url"] = st.get("prefill_source", "") or ""
@@ -1094,7 +1110,6 @@ def on_text(message):
     elif step == "waiting_body":
         st["body_raw"] = text
 
-        # if body contains URL, take it; else keep existing source_url (e.g. from news)
         body_src = extract_source_url(text)
         if body_src:
             st["source_url"] = body_src
@@ -1175,7 +1190,6 @@ def on_action(call):
             )
             bot.answer_callback_query(call.id, "Опубликовано ✅")
             bot.send_message(call.message.chat.id, "Готово ✅ Можешь присылать следующую новость (фото) или /news.")
-            # keep template, reset flow
             tpl = st.get("template", "MN")
             user_state[uid] = {"step": "waiting_photo", "template": tpl}
         except Exception as e:
@@ -1202,6 +1216,5 @@ def on_action(call):
 
 
 if __name__ == "__main__":
-    # quick sanity check fonts
     ensure_fonts()
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
