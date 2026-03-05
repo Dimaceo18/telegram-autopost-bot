@@ -1,11 +1,3 @@
-# bot.py
-# /post: Photo -> Template -> Title -> Body -> (optional Source) -> Preview -> Publish
-# /news: fetch news (last 24h) from sources -> send 20 + show more 10 -> "✅ Оформить" -> continues post flow
-#
-# Templates:
-# 1) MN: title top, darken all, footer "MINSK NEWS" (Caviar Dreams)
-# 2) CHP VM: bottom gradient, Inter ExtraBold, CAPS, centered block at bottom, never overflows (ellipsis)
-
 import os
 import re
 import html
@@ -20,7 +12,10 @@ from xml.etree import ElementTree as ET
 
 import requests
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton
+)
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 
 
@@ -32,7 +27,6 @@ CHANNEL = (os.getenv("CHANNEL_USERNAME") or "").strip()
 BOT_USERNAME = (os.getenv("BOT_USERNAME") or "").strip().lstrip("@")
 SUGGEST_URL = (os.getenv("SUGGEST_URL") or "").strip()
 
-# Optional admin lock
 ADMIN_ID_RAW = (os.getenv("ADMIN_ID") or "").strip()
 ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW.isdigit() else None
 
@@ -51,42 +45,49 @@ if not SUGGEST_URL and BOT_USERNAME:
 
 
 # =========================
+# UI BUTTONS
+# =========================
+BTN_POST = "📝 Оформить пост"
+BTN_NEWS = "📰 Получить новости"
+
+
+def main_menu_kb():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_NEWS))
+    return kb
+
+
+# =========================
 # FONTS / CARD
 # =========================
 FONT_MN = "CaviarDreams.ttf"
 FONT_CHP = "Inter-ExtraBold.ttf"
 
 FOOTER_TEXT = "MINSK NEWS"
-TARGET_W, TARGET_H = 720, 900  # 4:5
 
-# MN: title zone <= 23% height
+# Card size (both)
+TARGET_W, TARGET_H = 750, 938
+
+# MN: title zone height (top)
 MN_TITLE_ZONE_PCT = 0.23
 
-# CHP VM: tune to match your reference
-CHP_TITLE_ZONE_PCT = 0.36      # reserved bottom title area
-CHP_GRADIENT_PCT = 0.48        # how high the bottom gradient goes
-CHP_PAD_X_PCT = 0.06           # left/right padding
-CHP_PAD_BOTTOM_PCT = 0.085     # bottom padding (text sits above this)
+# CHP: gradient height
+CHP_GRADIENT_PCT = 0.48
 
 
 # =========================
-# NEWS (24h, mixed sources)
+# NEWS
 # =========================
 NEWS_FIRST_BATCH = 20
 NEWS_MORE_BATCH = 10
 NEWS_CACHE_TTL_SEC = 10 * 60
-NEWS_PER_SOURCE_CAP = 6  # to avoid Onliner domination
+NEWS_PER_SOURCE_CAP = 6
 
 NEWS_SOURCES = [
-    # RSS
-    {"id": "onliner", "name": "Onliner", "kind": "rss", "url": "https://www.onliner.by/feed", "limit": 60},
-    {"id": "sputnik", "name": "Sputnik", "kind": "rss", "url": "https://sputnik.by/export/rss2/smi/index.xml", "limit": 60},
-
-    # SB: show link/title from feed (some pages can be blocked)
-    {"id": "sb", "name": "SB.by", "kind": "sb_feed_html", "url": "https://www.sb.by/feed/", "limit": 80},
-
-    # Tochka: sitemap + og meta
-    {"id": "tochka", "name": "Tochka", "kind": "tochka_sitemap_og", "url": "https://tochka.by/sitemap.xml", "limit": 120},
+    {"id": "onliner", "name": "Onliner", "kind": "rss", "url": "https://www.onliner.by/feed", "limit": 80},
+    {"id": "sputnik", "name": "Sputnik", "kind": "rss", "url": "https://sputnik.by/export/rss2/smi/index.xml", "limit": 80},
+    {"id": "sb", "name": "SB.by", "kind": "sb_feed_html", "url": "https://www.sb.by/feed/", "limit": 120},
+    {"id": "tochka", "name": "Tochka", "kind": "tochka_sitemap_og", "url": "https://tochka.by/sitemap.xml", "limit": 160},
 ]
 
 
@@ -104,6 +105,7 @@ SESSION.headers.update({
 
 URL_RE = re.compile(r"(https?://[^\s]+)", re.IGNORECASE)
 
+# user_state[uid] = {...}
 user_state: Dict[int, Dict] = {}
 
 
@@ -116,15 +118,18 @@ def is_admin(msg_or_call) -> bool:
     uid = getattr(msg_or_call.from_user, "id", None)
     return uid == ADMIN_ID
 
+
 def http_get(url: str, timeout: int = 25) -> str:
     r = SESSION.get(url, timeout=timeout)
     r.raise_for_status()
     return r.text
 
+
 def http_get_bytes(url: str, timeout: int = 25) -> bytes:
     r = SESSION.get(url, timeout=timeout)
     r.raise_for_status()
     return r.content
+
 
 def normalize_url(base: str, href: str) -> str:
     if not href:
@@ -136,9 +141,11 @@ def normalize_url(base: str, href: str) -> str:
         return href
     return urljoin(base, href)
 
+
 def extract_source_url(text: str) -> str:
     m = URL_RE.search(text or "")
     return m.group(1) if m else ""
+
 
 def ensure_fonts():
     if not os.path.exists(FONT_MN):
@@ -146,13 +153,16 @@ def ensure_fonts():
     if not os.path.exists(FONT_CHP):
         raise RuntimeError(f"Не найден шрифт {FONT_CHP}. Положи его рядом с bot.py")
 
+
 def warn_if_too_small(chat_id, photo_bytes: bytes):
     try:
         im = Image.open(BytesIO(photo_bytes))
+        # предупреждение "на глаз" под 4:5
         if im.width < 900 or im.height < 1100:
             bot.send_message(
                 chat_id,
-                "⚠️ Фото маленького разрешения. Я улучшу качество, но лучше присылать фото побольше (от 1080×1350 и выше)."
+                "⚠️ Фото маленького разрешения. Лучше присылать больше (от 1080×1350 и выше), "
+                "чтобы текст был максимально чёткий."
             )
     except Exception:
         pass
@@ -166,7 +176,6 @@ def parse_dt(s: str) -> Optional[datetime]:
         return None
     s = s.strip()
 
-    # RFC822/RSS
     try:
         dt = parsedate_to_datetime(s)
         if dt.tzinfo is None:
@@ -175,7 +184,6 @@ def parse_dt(s: str) -> Optional[datetime]:
     except Exception:
         pass
 
-    # ISO8601
     try:
         s2 = s.replace("Z", "+00:00")
         dt = datetime.fromisoformat(s2)
@@ -184,6 +192,7 @@ def parse_dt(s: str) -> Optional[datetime]:
         return dt.astimezone(timezone.utc)
     except Exception:
         return None
+
 
 def is_last_24h(dt_utc: Optional[datetime]) -> bool:
     if not dt_utc:
@@ -208,7 +217,8 @@ def extract_og_meta(page_html: str) -> Dict[str, str]:
         "image": find_meta("og:image"),
     }
 
-def parse_rss(url: str, source_name: str, limit: int = 60) -> List[Dict]:
+
+def parse_rss(url: str, source_name: str, limit: int = 80) -> List[Dict]:
     xml_text = http_get(url, timeout=25)
     root = ET.fromstring(xml_text)
 
@@ -246,7 +256,8 @@ def parse_rss(url: str, source_name: str, limit: int = 60) -> List[Dict]:
             break
     return out
 
-def parse_sb_feed_html(url: str, limit: int = 80) -> List[Dict]:
+
+def parse_sb_feed_html(url: str, limit: int = 120) -> List[Dict]:
     page = http_get(url, timeout=25)
 
     pat = re.compile(
@@ -256,7 +267,9 @@ def parse_sb_feed_html(url: str, limit: int = 80) -> List[Dict]:
 
     seen = set()
     out = []
-    now_dt = datetime.now(timezone.utc) - timedelta(hours=1)  # MVP fallback freshness
+    # MVP: считаем свежими
+    now_dt = datetime.now(timezone.utc) - timedelta(hours=1)
+
     for m in pat.finditer(page):
         href = m.group("href")
         title = html.unescape(m.group("title")).strip()
@@ -280,7 +293,8 @@ def parse_sb_feed_html(url: str, limit: int = 80) -> List[Dict]:
             break
     return out
 
-def parse_tochka_sitemap_og(url: str, limit: int = 120) -> List[Dict]:
+
+def parse_tochka_sitemap_og(url: str, limit: int = 160) -> List[Dict]:
     xml_text = http_get(url, timeout=35)
 
     locs: List[Tuple[str, str]] = []
@@ -302,6 +316,7 @@ def parse_tochka_sitemap_og(url: str, limit: int = 120) -> List[Dict]:
         dt = parse_dt(lastmod)
         if dt and not is_last_24h(dt):
             continue
+
         try:
             page = http_get(loc, timeout=25)
             og = extract_og_meta(page)
@@ -323,7 +338,9 @@ def parse_tochka_sitemap_og(url: str, limit: int = 120) -> List[Dict]:
                 })
         except Exception:
             continue
+
     return out
+
 
 def fetch_all_news_last24h() -> List[Dict]:
     merged: List[Dict] = []
@@ -333,11 +350,11 @@ def fetch_all_news_last24h() -> List[Dict]:
         kind = src["kind"]
         try:
             if kind == "rss":
-                items = parse_rss(src["url"], src["name"], limit=src.get("limit", 60))
+                items = parse_rss(src["url"], src["name"], limit=src.get("limit", 80))
             elif kind == "sb_feed_html":
-                items = parse_sb_feed_html(src["url"], limit=src.get("limit", 80))
+                items = parse_sb_feed_html(src["url"], limit=src.get("limit", 120))
             elif kind == "tochka_sitemap_og":
-                items = parse_tochka_sitemap_og(src["url"], limit=src.get("limit", 120))
+                items = parse_tochka_sitemap_og(src["url"], limit=src.get("limit", 160))
             else:
                 items = []
         except Exception:
@@ -371,7 +388,7 @@ def fetch_all_news_last24h() -> List[Dict]:
         counts[src] += 1
         diversified.append(it)
 
-    if len(diversified) < 60:
+    if len(diversified) < 80:
         for it in base:
             if it in diversified:
                 continue
@@ -381,7 +398,7 @@ def fetch_all_news_last24h() -> List[Dict]:
 
 
 # =========================
-# Text helpers (keywords/emoji)
+# Caption formatting (keywords/emoji)
 # =========================
 RU_STOP = {
     "и","в","во","на","но","а","что","это","как","к","по","из","за","для","с","со","у","от","до",
@@ -466,81 +483,51 @@ def tg_file_bytes(file_id: str) -> bytes:
 
 
 # =========================
-# Wrapping + drawing helpers
+# Wrapping + drawing
 # =========================
-def text_bbox(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont):
-    return draw.textbbox((0, 0), s, font=font)
-
 def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) -> int:
-    bb = text_bbox(draw, s, font)
+    bb = draw.textbbox((0, 0), s, font=font)
     return bb[2] - bb[0]
 
-def balanced_wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
-                  max_width: int, max_lines: int = 5) -> List[str]:
-    words = [w for w in (text or "").split() if w.strip()]
-    if not words:
-        return [""]
 
-    lines = []
-    cur = ""
-    for w in words:
-        test = (cur + " " + w).strip()
-        if text_width(draw, test, font) <= max_width:
-            cur = test
-        else:
-            if cur:
-                lines.append(cur)
-            cur = w
-        if len(lines) >= max_lines:
-            break
-    if cur and len(lines) < max_lines:
-        lines.append(cur)
-    return lines
-
-def wrap_with_ellipsis(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
-                       max_width: int, max_lines: int = 5) -> List[str]:
+def wrap_no_truncate(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
+                     max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
     """
-    Greedy wrap. If text doesn't fit into max_lines, truncate last line with ellipsis.
-    Guaranteed: no line exceeds max_width.
+    (lines, ok)
+    ok=True если ВСЕ слова уместились в max_lines и каждая строка <= max_width.
+    Никаких многоточий.
     """
     words = [w for w in (text or "").split() if w.strip()]
     if not words:
-        return [""]
+        return [""], True
 
-    lines = []
+    lines: List[str] = []
     cur = ""
     i = 0
 
-    while i < len(words) and len(lines) < max_lines:
+    while i < len(words):
         w = words[i]
         test = (cur + " " + w).strip()
         if text_width(draw, test, font) <= max_width:
             cur = test
             i += 1
         else:
-            if cur:
-                lines.append(cur)
-                cur = ""
-            else:
-                # single very long word: cut it
-                cut = w
-                while cut and text_width(draw, cut + "…", font) > max_width:
-                    cut = cut[:-1]
-                lines.append((cut + "…") if cut else "…")
-                i += 1
+            if not cur:
+                # одно слово слишком длинное для max_width при данном font
+                return [words[i]], False
+            lines.append(cur)
+            cur = ""
+            if len(lines) >= max_lines:
+                return lines, False
 
-    if cur and len(lines) < max_lines:
+    if cur:
         lines.append(cur)
 
-    # If we didn't consume all words, add ellipsis to last line
-    if i < len(words) and lines:
-        last = lines[-1]
-        if not last.endswith("…"):
-            while last and text_width(draw, last + "…", font) > max_width:
-                last = last[:-1].rstrip()
-            lines[-1] = (last + "…") if last else "…"
+    if len(lines) > max_lines:
+        return lines[:max_lines], False
 
-    return lines
+    return lines, True
+
 
 def crop_to_4x5(img: Image.Image) -> Image.Image:
     w, h = img.size
@@ -555,10 +542,8 @@ def crop_to_4x5(img: Image.Image) -> Image.Image:
         top = (h - new_h) // 2
         return img.crop((0, top, w, top + new_h))
 
+
 def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
-    """
-    Adds black gradient from transparent (top) to black (bottom) over bottom part of image.
-    """
     w, h = img.size
     gh = int(h * height_pct)
     if gh <= 0:
@@ -579,110 +564,30 @@ def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 
     return out.convert("RGB")
 
 
-# =========================
-# Card generators
-# =========================
-def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
-    ensure_fonts()
-    img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-    img = crop_to_4x5(img)
-    img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=170, threshold=3))
-    img = ImageEnhance.Brightness(img).enhance(0.55)
+def fit_text_block(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font_path: str,
+    safe_w: int,
+    max_block_h: int,
+    max_lines: int = 6,
+    start_size: int = 90,
+    min_size: int = 16,
+    line_spacing_ratio: float = 0.22,
+) -> Tuple[ImageFont.FreeTypeFont, List[str], List[int], int, int]:
+    """
+    Подбирает font size так, чтобы ВСЕ слова влезли (ok=True) и блок по высоте не превышал max_block_h.
+    Возвращает: font, lines, heights, spacing, total_h
+    """
+    text = (text or "").strip()
+    if not text:
+        text = " "
 
-    draw = ImageDraw.Draw(img)
-
-    margin_x = int(img.width * 0.06)
-    margin_top = int(img.height * 0.06)
-    margin_bottom = int(img.height * 0.10)
-    safe_w = img.width - 2 * margin_x
-
-    footer_size = max(24, int(img.height * 0.034))
-    footer_font = ImageFont.truetype(FONT_MN, footer_size)
-    fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
-    footer_w = fb[2] - fb[0]
-    footer_h = fb[3] - fb[1]
-    footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
-    footer_x = (img.width - footer_w) // 2
-
-    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
-    text = (title_text or "").strip().upper() or " "
-
-    font_size = int(img.height * 0.11)
-    min_font = int(img.height * 0.045)
-    line_spacing_ratio = 0.22
-
-    while True:
-        font = ImageFont.truetype(FONT_MN, font_size)
-        lines = balanced_wrap(draw, text, font, safe_w, max_lines=5)
-        spacing = int(font_size * line_spacing_ratio)
-
-        total_h = 0
-        max_line_w = 0
-        heights = []
-        for ln in lines:
-            bb = draw.textbbox((0, 0), ln, font=font)
-            lw = bb[2] - bb[0]
-            lh = bb[3] - bb[1]
-            heights.append(lh)
-            total_h += lh
-            max_line_w = max(max_line_w, lw)
-        total_h += spacing * (len(lines) - 1)
-
-        if max_line_w <= safe_w and total_h <= title_max_h:
-            break
-
-        font_size -= 3
-        if font_size <= min_font:
-            break
-
-    y = margin_top
-    for i, ln in enumerate(lines):
-        draw.text((margin_x, y), ln, font=font, fill="white")
-        y += heights[i] + spacing
-
-    draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
-
-    out = BytesIO()
-    img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
-    out.seek(0)
-    return out
-
-def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
-    ensure_fonts()
-    img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-    img = crop_to_4x5(img)
-    img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=170, threshold=3))
-
-    # slight global dim
-    img = ImageEnhance.Brightness(img).enhance(0.85)
-    # bottom gradient
-    img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
-
-    draw = ImageDraw.Draw(img)
-
-    pad_x = int(img.width * CHP_PAD_X_PCT)
-    pad_bottom = int(img.height * CHP_PAD_BOTTOM_PCT)
-    safe_w = img.width - 2 * pad_x
-
-    zone_h = int(img.height * CHP_TITLE_ZONE_PCT)
-    zone_top = img.height - pad_bottom - zone_h
-    if zone_top < 0:
-        zone_top = 0
-
-    text = (title_text or "").strip().upper() or " "
-
-    # Auto font sizing (Inter ExtraBold) + ellipsis for overflow
-    font_size = int(img.height * 0.10)
-    min_font = int(img.height * 0.045)
-    spacing_ratio = 0.18
-
-    best = None
-    while True:
-        font = ImageFont.truetype(FONT_CHP, font_size)
-        lines = wrap_with_ellipsis(draw, text, font, safe_w, max_lines=5)
-        spacing = int(font_size * spacing_ratio)
+    size = start_size
+    while size >= min_size:
+        font = ImageFont.truetype(font_path, size)
+        lines, ok = wrap_no_truncate(draw, text, font, safe_w, max_lines=max_lines)
+        spacing = int(size * line_spacing_ratio)
 
         heights = []
         total_h = 0
@@ -696,35 +601,125 @@ def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
             max_w = max(max_w, lw)
         total_h += spacing * (len(lines) - 1)
 
-        # Fits inside zone
-        if max_w <= safe_w and total_h <= zone_h:
-            best = (font, lines, heights, spacing, total_h)
-            break
+        if ok and max_w <= safe_w and total_h <= max_block_h:
+            return font, lines, heights, spacing, total_h
 
-        font_size -= 3
-        if font_size <= min_font:
-            # even at min: still draw inside zone (ellipsis already applied)
-            best = (font, lines, heights, spacing, total_h)
-            break
+        size -= 2
 
-    font, lines, heights, spacing, total_h = best
+    # fallback on min_size even if not ok; (практически не должно случаться)
+    font = ImageFont.truetype(font_path, min_size)
+    lines, _ = wrap_no_truncate(draw, text, font, safe_w, max_lines=max_lines)
+    spacing = int(min_size * line_spacing_ratio)
+    heights = []
+    total_h = 0
+    for ln in lines:
+        bb = draw.textbbox((0, 0), ln, font=font)
+        lh = bb[3] - bb[1]
+        heights.append(lh)
+        total_h += lh
+    total_h += spacing * (len(lines) - 1)
+    return font, lines, heights, spacing, total_h
 
-    # Place block at bottom (inside reserved zone), with bottom padding
-    y = (img.height - pad_bottom) - total_h
-    if y < zone_top:
-        y = zone_top
 
-    # Center each line horizontally (as in your reference)
+# =========================
+# Cards
+# =========================
+def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
+    ensure_fonts()
+
+    img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=170, threshold=3))
+
+    img = ImageEnhance.Brightness(img).enhance(0.55)
+    draw = ImageDraw.Draw(img)
+
+    margin_x = int(img.width * 0.06)
+    margin_top = int(img.height * 0.06)
+    margin_bottom = int(img.height * 0.10)
+    safe_w = img.width - 2 * margin_x
+
+    # footer
+    footer_size = max(24, int(img.height * 0.034))
+    footer_font = ImageFont.truetype(FONT_MN, footer_size)
+    fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
+    footer_w = fb[2] - fb[0]
+    footer_h = fb[3] - fb[1]
+    footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
+    footer_x = (img.width - footer_w) // 2
+
+    # title zone
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+    text = (title_text or "").strip().upper()
+
+    font, lines, heights, spacing, _total_h = fit_text_block(
+        draw=draw,
+        text=text,
+        font_path=FONT_MN,
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(img.height * 0.11),
+        min_size=16,
+        line_spacing_ratio=0.22
+    )
+
+    y = margin_top
     for i, ln in enumerate(lines):
-        lw = text_width(draw, ln, font)
-        x = (img.width - lw) // 2
-        draw.text((x, y), ln, font=font, fill="white")
+        draw.text((margin_x, y), ln, font=font, fill="white")
+        y += heights[i] + spacing
+
+    draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
+
+    out = BytesIO()
+    img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
+    out.seek(0)
+    return out
+
+
+def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
+    ensure_fonts()
+
+    img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=170, threshold=3))
+
+    img = ImageEnhance.Brightness(img).enhance(0.85)
+    img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+    draw = ImageDraw.Draw(img)
+
+    # positioning rules "like MN", but anchored to bottom
+    margin_x = int(img.width * 0.06)
+    margin_bottom = int(img.height * 0.08)
+    safe_w = img.width - 2 * margin_x
+
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+    text = (title_text or "").strip().upper()
+
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw,
+        text=text,
+        font_path=FONT_CHP,
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(img.height * 0.11),
+        min_size=16,
+        line_spacing_ratio=0.22
+    )
+
+    y = img.height - margin_bottom - total_h
+    for i, ln in enumerate(lines):
+        draw.text((margin_x, y), ln, font=font, fill="white")
         y += heights[i] + spacing
 
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
     out.seek(0)
     return out
+
 
 def make_card(photo_bytes: bytes, title_text: str, template: str) -> BytesIO:
     if template == "CHP":
@@ -743,6 +738,7 @@ def template_kb():
     )
     return kb
 
+
 def preview_kb(source_url: str):
     kb = InlineKeyboardMarkup()
     kb.row(
@@ -759,11 +755,13 @@ def preview_kb(source_url: str):
         kb.row(InlineKeyboardButton("Предложить новость", url=SUGGEST_URL))
     return kb
 
+
 def channel_kb():
     kb = InlineKeyboardMarkup()
     if SUGGEST_URL:
         kb.row(InlineKeyboardButton("Предложить новость", url=SUGGEST_URL))
     return kb
+
 
 def news_item_kb(key: str, link: str):
     kb = InlineKeyboardMarkup()
@@ -773,6 +771,7 @@ def news_item_kb(key: str, link: str):
     )
     kb.row(InlineKeyboardButton("🔗 Источник", url=link))
     return kb
+
 
 def news_more_kb():
     kb = InlineKeyboardMarkup()
@@ -793,17 +792,19 @@ def get_news_cache(uid: int) -> Optional[Dict]:
         return None
     return cache
 
+
 def set_news_cache(uid: int, items: List[Dict]):
     st = user_state.get(uid) or {}
-    st["news_cache"] = {"ts": time.time(), "items": items, "pos": 0}
+    st["news_cache"] = {"ts": time.time(), "items": items, "pos": 0, "by_key": {}}
     user_state[uid] = st
+
 
 def item_key(title: str, url: str) -> str:
     return hashlib.sha256(f"{title}|{url}".encode("utf-8")).hexdigest()[:16]
 
 
 # =========================
-# Handlers: template select
+# Template selection handler
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:"))
 def on_tpl(c):
@@ -832,22 +833,23 @@ def cmd_start(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     st.setdefault("template", "MN")
-    st["step"] = "waiting_photo"
+    st["step"] = "idle"
     user_state[uid] = st
 
-    bot.reply_to(
-        message,
-        "Ок ✅\n\n"
+    bot.send_message(
+        message.chat.id,
+        "Выбери действие 👇",
+        reply_markup=main_menu_kb()
+    )
+    bot.send_message(
+        message.chat.id,
         "Команды:\n"
         "• /post — оформить пост\n"
-        "• /news — получить новости за 24 часа (20 + ещё 10)\n"
-        "• /template — выбрать шаблон (МН / ЧП ВМ)\n\n"
-        "Режим /post:\n"
-        "1) Пришли фото\n"
-        "2) Пришли заголовок\n"
-        "3) Пришли основной текст\n"
-        "4) (опционально) Пришли ссылку на источник или '-' чтобы пропустить\n"
+        "• /news — получить новости за 24 часа\n"
+        "• /template — выбрать шаблон (МН / ЧП ВМ)\n",
+        reply_markup=main_menu_kb()
     )
+
 
 @bot.message_handler(commands=["template"])
 def cmd_template(message):
@@ -859,6 +861,7 @@ def cmd_template(message):
     st["step"] = "waiting_template"
     user_state[uid] = st
     bot.send_message(message.chat.id, "Выбери шаблон оформления:", reply_markup=template_kb())
+
 
 @bot.message_handler(commands=["post"])
 def cmd_post(message):
@@ -872,31 +875,33 @@ def cmd_post(message):
     user_state[uid] = st
     bot.send_message(message.chat.id, "Выбери шаблон оформления:", reply_markup=template_kb())
 
+
 @bot.message_handler(commands=["news"])
 def cmd_news(message):
     if not is_admin(message):
         bot.reply_to(message, "⛔️ Нет доступа.")
         return
     uid = message.from_user.id
-    bot.send_message(message.chat.id, "Собираю новости за 24 часа… 🧲")
+    bot.send_message(message.chat.id, "Собираю новости за 24 часа… 🧲", reply_markup=main_menu_kb())
     items = fetch_all_news_last24h()
     set_news_cache(uid, items)
     send_news_batch(message.chat.id, uid, NEWS_FIRST_BATCH)
 
+
 def send_news_batch(chat_id: int, uid: int, batch: int):
     cache = get_news_cache(uid)
     if not cache:
-        bot.send_message(chat_id, "Кэш пуст. Напиши /news.")
+        bot.send_message(chat_id, "Кэш пуст. Нажми «Получить новости» или /news.", reply_markup=main_menu_kb())
         return
 
     items = cache["items"]
     pos = int(cache.get("pos", 0))
     if pos >= len(items):
-        bot.send_message(chat_id, "Больше новостей нет ✅")
+        bot.send_message(chat_id, "Больше новостей нет ✅", reply_markup=main_menu_kb())
         return
 
     end = min(pos + batch, len(items))
-    cache.setdefault("by_key", {})
+    by_key = cache.get("by_key") or {}
 
     for it in items[pos:end]:
         title = (it.get("title") or "").strip()
@@ -906,19 +911,20 @@ def send_news_batch(chat_id: int, uid: int, batch: int):
             continue
 
         key = item_key(title, link)
-        it["_k"] = key
-        cache["by_key"][key] = it
+        by_key[key] = it
 
         msg = f"<b>{html.escape(title)}</b>\n\n{html.escape(src)}"
         bot.send_message(chat_id, msg, parse_mode="HTML", reply_markup=news_item_kb(key, link))
 
     cache["pos"] = end
+    cache["by_key"] = by_key
     user_state[uid]["news_cache"] = cache
 
     if end < len(items):
         bot.send_message(chat_id, "Хочешь ещё?", reply_markup=news_more_kb())
     else:
-        bot.send_message(chat_id, "Это всё на сейчас ✅")
+        bot.send_message(chat_id, "Это всё на сейчас ✅", reply_markup=main_menu_kb())
+
 
 @bot.callback_query_handler(func=lambda c: c.data in {"nmore", "nrefresh"})
 def on_news_nav(c):
@@ -926,6 +932,7 @@ def on_news_nav(c):
         bot.answer_callback_query(c.id, "Нет доступа", show_alert=True)
         return
     uid = c.from_user.id
+
     if c.data == "nrefresh":
         bot.answer_callback_query(c.id, "Обновляю…")
         items = fetch_all_news_last24h()
@@ -953,6 +960,7 @@ def on_news_item_action(c):
         return
 
     action, key = c.data.split(":", 1)
+
     if action == "nskip":
         try:
             bot.edit_message_text("🗑 Пропущено.", c.message.chat.id, c.message.message_id)
@@ -963,7 +971,7 @@ def on_news_item_action(c):
 
     it = (cache.get("by_key") or {}).get(key)
     if not it:
-        bot.answer_callback_query(c.id, "Не нашёл эту новость (обнови /news).", show_alert=True)
+        bot.answer_callback_query(c.id, "Не нашёл новость. Нажми /news ещё раз.", show_alert=True)
         return
 
     title = (it.get("title") or "").strip()
@@ -990,7 +998,8 @@ def on_news_item_action(c):
         bot.answer_callback_query(c.id, "Нужно фото")
         bot.send_message(
             c.message.chat.id,
-            "Для этой новости не смог взять картинку.\nПришли фото 📷, а заголовок я уже подставлю."
+            "Для этой новости не смог взять картинку.\nПришли фото 📷, а заголовок я уже подставлю.",
+            reply_markup=main_menu_kb()
         )
         return
 
@@ -1003,14 +1012,14 @@ def on_news_item_action(c):
         st["step"] = "waiting_body"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Ок ✅")
-        bot.send_message(c.message.chat.id, "Карточка готова ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ поста.")
+        bot.send_message(c.message.chat.id, "Карточка готова ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ поста.", reply_markup=main_menu_kb())
     except Exception as e:
         bot.answer_callback_query(c.id, "Ошибка карточки", show_alert=True)
-        bot.send_message(c.message.chat.id, f"Ошибка при создании карточки: {e}")
+        bot.send_message(c.message.chat.id, f"Ошибка при создании карточки: {e}", reply_markup=main_menu_kb())
 
 
 # =========================
-# Post flow: photo/document/text
+# Post flow
 # =========================
 @bot.message_handler(content_types=["photo"])
 def on_photo(message):
@@ -1054,6 +1063,7 @@ def on_photo(message):
     user_state[uid] = st
     bot.reply_to(message, "Фото получено ✅ Теперь отправь ЗАГОЛОВОК.")
 
+
 @bot.message_handler(content_types=["document"])
 def on_document(message):
     if not is_admin(message):
@@ -1077,6 +1087,7 @@ def on_document(message):
     user_state[uid] = st
     bot.reply_to(message, "Картинка получена ✅ Теперь отправь ЗАГОЛОВОК.")
 
+
 @bot.message_handler(content_types=["text"])
 def on_text(message):
     if not is_admin(message):
@@ -1085,12 +1096,17 @@ def on_text(message):
 
     uid = message.from_user.id
     text = (message.text or "").strip()
-    st = user_state.get(uid)
+    st = user_state.get(uid) or {"template": "MN", "step": "idle"}
 
-    if not st:
-        user_state[uid] = {"step": "waiting_photo", "template": "MN"}
-        bot.reply_to(message, "Сначала /post и выбери шаблон, потом пришли фото 📷")
+    # ---- GLOBAL MENU HANDLING (works in any step) ----
+    if text == BTN_POST or text.lower() in {"оформить пост", "оформление поста"}:
+        cmd_post(message)
         return
+
+    if text == BTN_NEWS or text.lower() in {"получить новости", "новости", "дай новости"}:
+        cmd_news(message)
+        return
+    # ---- end ----
 
     step = st.get("step")
 
@@ -1109,7 +1125,6 @@ def on_text(message):
 
     elif step == "waiting_body":
         st["body_raw"] = text
-
         body_src = extract_source_url(text)
         if body_src:
             st["source_url"] = body_src
@@ -1151,15 +1166,15 @@ def on_text(message):
         bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
 
     elif step == "waiting_action":
-        bot.reply_to(message, "Сейчас ждём кнопку под превью: ✅✏️❌")
+        # Не ругаемся, а подсказываем куда нажимать
+        bot.reply_to(message, "Нажми кнопку под превью ✅✏️❌ (или выбери действие в меню снизу).", reply_markup=main_menu_kb())
 
     elif step == "waiting_template":
         bot.send_message(message.chat.id, "Выбери шаблон кнопками:", reply_markup=template_kb())
 
     else:
-        st["step"] = "waiting_photo"
         user_state[uid] = st
-        bot.reply_to(message, "Пришли фото 📷")
+        bot.send_message(message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
 
 
 # =========================
@@ -1175,7 +1190,7 @@ def on_action(call):
     st = user_state.get(uid)
 
     if not st or st.get("step") != "waiting_action":
-        bot.answer_callback_query(call.id, "Нет активного превью. Начни с /post.")
+        bot.answer_callback_query(call.id, "Нет активного превью. Начни с «Оформить пост».")
         return
 
     if call.data == "publish":
@@ -1189,30 +1204,30 @@ def on_action(call):
                 reply_markup=channel_kb()
             )
             bot.answer_callback_query(call.id, "Опубликовано ✅")
-            bot.send_message(call.message.chat.id, "Готово ✅ Можешь присылать следующую новость (фото) или /news.")
+            bot.send_message(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
             tpl = st.get("template", "MN")
-            user_state[uid] = {"step": "waiting_photo", "template": tpl}
+            user_state[uid] = {"step": "idle", "template": tpl}
         except Exception as e:
             bot.answer_callback_query(call.id, "Ошибка публикации")
-            bot.send_message(call.message.chat.id, f"Не смог опубликовать: {e}")
+            bot.send_message(call.message.chat.id, f"Не смог опубликовать: {e}", reply_markup=main_menu_kb())
 
     elif call.data == "edit_body":
         st["step"] = "waiting_body"
         user_state[uid] = st
         bot.answer_callback_query(call.id, "Ок")
-        bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ (заголовок на картинке не меняем).")
+        bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ (заголовок на картинке не меняем).", reply_markup=main_menu_kb())
 
     elif call.data == "edit_title":
         st["step"] = "waiting_title"
         user_state[uid] = st
         bot.answer_callback_query(call.id, "Ок")
-        bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК (перерисую карточку).")
+        bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК (перерисую карточку).", reply_markup=main_menu_kb())
 
     elif call.data == "cancel":
         bot.answer_callback_query(call.id, "Отменено")
         tpl = st.get("template", "MN")
-        user_state[uid] = {"step": "waiting_photo", "template": tpl}
-        bot.send_message(call.message.chat.id, "Отменил ❌ Пришли новое фото для следующей новости.")
+        user_state[uid] = {"step": "idle", "template": tpl}
+        bot.send_message(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
 
 
 if __name__ == "__main__":
