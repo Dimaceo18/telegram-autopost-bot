@@ -84,12 +84,80 @@ NEWS_CACHE_TTL_SEC = 10 * 60
 NEWS_PER_SOURCE_CAP = 6
 
 NEWS_SOURCES = [
-    {"id": "onliner", "name": "Onliner", "kind": "rss", "url": "https://www.onliner.by/feed", "limit": 80},
-    {"id": "sputnik", "name": "Sputnik", "kind": "rss", "url": "https://sputnik.by/export/rss2/smi/index.xml", "limit": 80},
-    {"id": "sb", "name": "SB.by", "kind": "sb_feed_html", "url": "https://www.sb.by/feed/", "limit": 120},
-    {"id": "tochka", "name": "Tochka", "kind": "tochka_sitemap_og", "url": "https://tochka.by/sitemap.xml", "limit": 160},
-]
 
+    {
+        "id": "onliner",
+        "name": "Onliner",
+        "kind": "rss",
+        "url": "https://www.onliner.by/feed",
+        "limit": 80
+    },
+
+    {
+        "id": "sputnik",
+        "name": "Sputnik",
+        "kind": "rss",
+        "url": "https://sputnik.by/export/rss2/index.xml",
+        "limit": 80
+    },
+
+    {
+        "id": "sb",
+        "name": "SB.by",
+        "kind": "rss",
+        "url": "https://www.sb.by/news-rss/google-xml/",
+        "limit": 80
+    },
+
+    {
+        "id": "tochka",
+        "name": "Tochka",
+        "kind": "tochka_sitemap",
+        "url": "https://tochka.by/sitemap.xml",
+        "limit": 160
+    },
+
+    {
+        "id": "smartpress",
+        "name": "Smartpress",
+        "kind": "rss",
+        "url": "https://smartpress.by/rss/",
+        "limit": 80
+    },
+
+    {
+        "id": "minsknews",
+        "name": "Minsknews",
+        "kind": "rss",
+        "url": "https://minsknews.by/feed/",
+        "limit": 80
+    },
+
+    {
+        "id": "telegraf",
+        "name": "Telegraf",
+        "kind": "rss",
+        "url": "https://telegraf.news/feed/",
+        "limit": 80
+    },
+
+    {
+        "id": "mlyn",
+        "name": "Mlyn",
+        "kind": "rss",
+        "url": "https://mlyn.by/feed/",
+        "limit": 80
+    },
+
+    {
+        "id": "ont",
+        "name": "ONT",
+        "kind": "rss",
+        "url": "https://ont.by/news/rss",
+        "limit": 80
+    }
+
+]
 
 # =========================
 # BOT + SESSION
