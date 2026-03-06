@@ -111,12 +111,12 @@ NEWS_SOURCES = [
 
     # NEW: Tochka via /articles/ (как ты просил)
     {
-    "id": "tochka",
-    "name": "Tochka",
-    "kind": "tochka_articles",
-    "url": "https://tochka.by/articles/",
-    "limit": 60
-},
+        "id": "tochka",
+        "name": "Tochka",
+        "kind": "tochka_articles",
+        "url": "https://tochka.by/articles/",
+        "limit": 60
+    },
 
     {
         "id": "smartpress",
@@ -1299,24 +1299,23 @@ def on_text(message):
             user_state[uid] = st
             bot.reply_to(message, f"Ошибка при создании карточки: {e}")
 
-elif step == "waiting_body":
-    st["body_raw"] = text
-    body_src = extract_source_url(text)
-    if body_src:
-        st["source_url"] = body_src
+    elif step == "waiting_body":
+        st["body_raw"] = text
+        body_src = extract_source_url(text)
+        if body_src:
+            st["source_url"] = body_src
 
-    st["step"] = "waiting_action"
-    user_state[uid] = st
-    caption = build_caption_html(st["title"], st["body_raw"])
-    bot.send_photo(
-        chat_id=message.chat.id,
-        photo=BytesIO(st["card_bytes"]),
-        caption=caption,
-        parse_mode="HTML",
-        reply_markup=preview_kb(st.get("source_url", "")),
-    )
-    bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-
+        st["step"] = "waiting_action"
+        user_state[uid] = st
+        caption = build_caption_html(st["title"], st["body_raw"])
+        bot.send_photo(
+            chat_id=message.chat.id,
+            photo=BytesIO(st["card_bytes"]),
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=preview_kb(st.get("source_url", "")),
+        )
+        bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
 
     elif step == "waiting_action":
         bot.reply_to(message, "Нажми кнопку под превью ✅✏️❌ (или выбери действие в меню снизу).", reply_markup=main_menu_kb())
