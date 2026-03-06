@@ -17,7 +17,7 @@ from telebot.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton
 )
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 
 from bs4 import BeautifulSoup  # NEW
 
@@ -65,6 +65,7 @@ def main_menu_kb():
 # =========================
 FONT_MN = "CaviarDreams.ttf"
 FONT_CHP = "Inter-ExtraBold.ttf"
+FONT_AM = "IntroInline.ttf"
 
 FOOTER_TEXT = "MINSK NEWS"
 
@@ -76,6 +77,11 @@ MN_TITLE_ZONE_PCT = 0.23
 
 # CHP: gradient height
 CHP_GRADIENT_PCT = 0.48
+
+# AM: blurred top band
+AM_TOP_BLUR_PCT = 0.15
+AM_BLUR_RADIUS = 18
+AM_BLUR_BLEND = 0.50
 
 
 # =========================
@@ -224,6 +230,8 @@ def ensure_fonts():
         raise RuntimeError(f"Не найден шрифт {FONT_MN}. Положи его рядом с bot.py")
     if not os.path.exists(FONT_CHP):
         raise RuntimeError(f"Не найден шрифт {FONT_CHP}. Положи его рядом с bot.py")
+    if not os.path.exists(FONT_AM):
+        raise RuntimeError(f"Не найден шрифт {FONT_AM}. Положи рядом с bot.py шрифт Intro Inline и назови файл {FONT_AM}")
 
 
 def warn_if_too_small(chat_id, photo_bytes: bytes):
@@ -932,9 +940,63 @@ def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
     return out
 
 
+def apply_top_blur_band(img: Image.Image, band_pct: float = AM_TOP_BLUR_PCT, radius: int = AM_BLUR_RADIUS, blend: float = AM_BLUR_BLEND) -> Image.Image:
+    w, h = img.size
+    band_h = max(1, int(h * band_pct))
+    base = img.convert("RGB")
+    top = base.crop((0, 0, w, band_h))
+    blurred = top.filter(ImageFilter.GaussianBlur(radius=radius))
+    mixed = Image.blend(top, blurred, blend)
+    out = base.copy()
+    out.paste(mixed, (0, 0))
+    return out
+
+
+def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
+    ensure_fonts()
+
+    img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
+    img = apply_top_blur_band(img)
+
+    draw = ImageDraw.Draw(img)
+
+    margin_x = int(img.width * 0.06)
+    band_h = int(img.height * AM_TOP_BLUR_PCT)
+    safe_w = img.width - 2 * margin_x
+    text = (title_text or "").strip().upper()
+
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw,
+        text=text,
+        font_path=FONT_AM,
+        safe_w=safe_w,
+        max_block_h=max(1, int(band_h * 0.74)),
+        max_lines=3,
+        start_size=int(img.height * 0.072),
+        min_size=18,
+        line_spacing_ratio=0.16
+    )
+
+    y = max(0, (band_h - total_h) // 2)
+    for i, ln in enumerate(lines):
+        lw = text_width(draw, ln, font)
+        x = (img.width - lw) // 2
+        draw.text((x, y), ln, font=font, fill="white")
+        y += heights[i] + spacing
+
+    out = BytesIO()
+    img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
+    out.seek(0)
+    return out
+
+
 def make_card(photo_bytes: bytes, title_text: str, template: str) -> BytesIO:
     if template == "CHP":
         return make_card_chp(photo_bytes, title_text)
+    if template == "AM":
+        return make_card_am(photo_bytes, title_text)
     return make_card_mn(photo_bytes, title_text)
 
 
@@ -947,6 +1009,7 @@ def template_kb():
         InlineKeyboardButton("📰 МН", callback_data="tpl:MN"),
         InlineKeyboardButton("🚨 ЧП ВМ", callback_data="tpl:CHP"),
     )
+    kb.row(InlineKeyboardButton("✨ АМ", callback_data="tpl:AM"))
     return kb
 
 
@@ -1030,7 +1093,8 @@ def on_tpl(c):
         st["step"] = "waiting_photo"
     user_state[uid] = st
     bot.answer_callback_query(c.id, "Ок ✅")
-    bot.send_message(c.message.chat.id, f"Шаблон выбран: {'МН' if tpl=='MN' else 'ЧП ВМ'}. Пришли фото 📷")
+    tpl_name = 'МН' if tpl == 'MN' else ('ЧП ВМ' if tpl == 'CHP' else 'АМ')
+    bot.send_message(c.message.chat.id, f"Шаблон выбран: {tpl_name}. Пришли фото 📷")
 
 
 # =========================
@@ -1463,4 +1527,3 @@ def on_action(call):
 if __name__ == "__main__":
     ensure_fonts()
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
-
