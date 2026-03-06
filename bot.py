@@ -1299,28 +1299,23 @@ def on_text(message):
             user_state[uid] = st
             bot.reply_to(message, f"Ошибка при создании карточки: {e}")
 
-    elif step == "waiting_body":
-        st["body_raw"] = text
-        body_src = extract_source_url(text)
-        if body_src:
-            st["source_url"] = body_src
+elif step == "waiting_body":
+    st["body_raw"] = text
+    body_src = extract_source_url(text)
+    if body_src:
+        st["source_url"] = body_src
 
-        if st.get("source_url"):
-            st["step"] = "waiting_action"
-            user_state[uid] = st
-            caption = build_caption_html(st["title"], st["body_raw"])
-            bot.send_photo(
-                chat_id=message.chat.id,
-                photo=BytesIO(st["card_bytes"]),
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=preview_kb(st.get("source_url", "")),
-            )
-            bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-        else:
-            st["step"] = "waiting_source"
-            user_state[uid] = st
-            bot.reply_to(message, "Если есть источник, пришли ссылку (или напиши: - чтобы пропустить).")
+    st["step"] = "waiting_action"
+    user_state[uid] = st
+    caption = build_caption_html(st["title"], st["body_raw"])
+    bot.send_photo(
+        chat_id=message.chat.id,
+        photo=BytesIO(st["card_bytes"]),
+        caption=caption,
+        parse_mode="HTML",
+        reply_markup=preview_kb(st.get("source_url", "")),
+    )
+    bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
 
     elif step == "waiting_source":
         if text == "-" or text.lower() in {"нет", "не", "пропустить"}:
