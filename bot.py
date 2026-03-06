@@ -111,12 +111,12 @@ NEWS_SOURCES = [
 
     # NEW: Tochka via /articles/ (как ты просил)
     {
-        "id": "tochka",
-        "name": "Tochka",
-        "kind": "tochka_sitemap_og"
-        "url": "https://tochka.by/articles/",
-        "limit": 60
-    },
+    "id": "tochka",
+    "name": "Tochka",
+    "kind": "tochka_articles",
+    "url": "https://tochka.by/articles/",
+    "limit": 60
+},
 
     {
         "id": "smartpress",
