@@ -1317,24 +1317,6 @@ elif step == "waiting_body":
     )
     bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
 
-    elif step == "waiting_source":
-        if text == "-" or text.lower() in {"нет", "не", "пропустить"}:
-            st["source_url"] = ""
-        else:
-            st["source_url"] = extract_source_url(text)
-
-        st["step"] = "waiting_action"
-        user_state[uid] = st
-
-        caption = build_caption_html(st["title"], st["body_raw"])
-        bot.send_photo(
-            chat_id=message.chat.id,
-            photo=BytesIO(st["card_bytes"]),
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=preview_kb(st.get("source_url", "")),
-        )
-        bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
 
     elif step == "waiting_action":
         bot.reply_to(message, "Нажми кнопку под превью ✅✏️❌ (или выбери действие в меню снизу).", reply_markup=main_menu_kb())
