@@ -102,37 +102,6 @@ NEWS_SOURCES = [
         "limit": 80
     },
     {
-        "id": "sb",
-        "name": "SB.by",
-        "kind": "rss",
-        "url": "https://www.sb.by/news-rss/google-xml/",
-        "limit": 80
-    },
-
-    # NEW: Tochka via /articles/ (как ты просил)
-    {
-        "id": "tochka",
-        "name": "Tochka",
-        "kind": "tochka_articles",
-        "url": "https://tochka.by/articles/",
-        "limit": 60
-    },
-
-    {
-        "id": "smartpress",
-        "name": "Smartpress",
-        "kind": "rss",
-        "url": "https://smartpress.by/rss/",
-        "limit": 80
-    },
-    {
-        "id": "minsknews",
-        "name": "Minsknews",
-        "kind": "rss",
-        "url": "https://minsknews.by/feed/",
-        "limit": 80
-    },
-    {
         "id": "telegraf",
         "name": "Telegraf",
         "kind": "rss",
@@ -140,19 +109,59 @@ NEWS_SOURCES = [
         "limit": 80
     },
     {
+        "id": "tochka",
+        "name": "Tochka",
+        "kind": "html_og",
+        "start_urls": ["https://tochka.by/articles/"],
+        "domain": "tochka.by",
+        "include_patterns": [r"^/articles/[^/]+/[^/]+/?$"],
+        "limit": 40,
+    },
+    {
+        "id": "smartpress",
+        "name": "Smartpress",
+        "kind": "html_og",
+        "start_urls": ["https://smartpress.by/", "https://smartpress.by/news/"],
+        "domain": "smartpress.by",
+        "exclude_patterns": [r"/about/", r"/projects/", r"/authors?/", r"/news/page/", r"/search/"],
+        "limit": 40,
+    },
+    {
+        "id": "sb",
+        "name": "SB.by",
+        "kind": "html_og",
+        "start_urls": ["https://www.sb.by/news/", "https://www.sb.by/articles/"],
+        "domain": "www.sb.by",
+        "exclude_patterns": [r"/video/", r"/photo/", r"/news/page/", r"/authors?/"],
+        "limit": 40,
+    },
+    {
+        "id": "minsknews",
+        "name": "Minsknews",
+        "kind": "html_og",
+        "start_urls": ["https://minsknews.by/"],
+        "domain": "minsknews.by",
+        "exclude_patterns": [r"/page/", r"/category/", r"/tag/", r"/author/"],
+        "limit": 40,
+    },
+    {
         "id": "mlyn",
         "name": "Mlyn",
-        "kind": "rss",
-        "url": "https://mlyn.by/feed/",
-        "limit": 80
+        "kind": "html_og",
+        "start_urls": ["https://mlyn.by/"],
+        "domain": "mlyn.by",
+        "exclude_patterns": [r"/page/", r"/category/", r"/tag/", r"/author/"],
+        "limit": 40,
     },
     {
         "id": "ont",
         "name": "ONT",
-        "kind": "rss",
-        "url": "https://ont.by/news/rss",
-        "limit": 80
-    }
+        "kind": "html_og",
+        "start_urls": ["https://ont.by/news", "https://ont.by/"],
+        "domain": "ont.by",
+        "exclude_patterns": [r"/tv-program/", r"/projects/", r"/video/", r"/news/page/"],
+        "limit": 40,
+    },
 ]
 
 # =========================
@@ -267,16 +276,26 @@ def is_last_24h(dt_utc: Optional[datetime]) -> bool:
 # News parsers
 # =========================
 def extract_og_meta(page_html: str) -> Dict[str, str]:
-    def find_meta(prop: str) -> str:
-        m = re.search(
-            rf'<meta[^>]+property=["\']{re.escape(prop)}["\'][^>]+content=["\']([^"\']+)["\']',
-            page_html, re.IGNORECASE
-        )
-        return html.unescape(m.group(1)).strip() if m else ""
+    try:
+        soup = BeautifulSoup(page_html, "lxml")
+    except Exception:
+        soup = BeautifulSoup(page_html, "html.parser")
+
+    def meta_value(*keys: str) -> str:
+        for key in keys:
+            tag = soup.find("meta", attrs={"property": key}) or soup.find("meta", attrs={"name": key})
+            if tag and tag.get("content"):
+                return html.unescape(tag.get("content").strip())
+        return ""
+
+    title = meta_value("og:title", "twitter:title")
+    if not title and soup.title:
+        title = soup.title.get_text(" ", strip=True)
+
     return {
-        "title": find_meta("og:title"),
-        "desc": find_meta("og:description"),
-        "image": find_meta("og:image"),
+        "title": title,
+        "desc": meta_value("og:description", "description", "twitter:description"),
+        "image": meta_value("og:image", "twitter:image"),
     }
 
 
@@ -319,161 +338,223 @@ def parse_rss(url: str, source_name: str, limit: int = 80) -> List[Dict]:
     return out
 
 
-# --- NEW: Tochka list parser via /articles/ ---
-TOCHKA_BASE = "https://tochka.by"
-
-def _tochka_extract_datetime_from_page(page_html: str) -> Optional[datetime]:
-    try:
-        soup = BeautifulSoup(page_html, "lxml")
-    except Exception:
-        soup = BeautifulSoup(page_html, "html.parser")
-
-    # 1) LD+JSON
-    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        try:
-            raw = (tag.get_text() or "").strip()
-            if not raw:
-                continue
-            obj = json.loads(raw)
-            candidates = obj if isinstance(obj, list) else [obj]
-            for o in candidates:
-                if not isinstance(o, dict):
-                    continue
-                t = o.get("@type")
-                if isinstance(t, list):
-                    ok = any(x in ("NewsArticle", "Article") for x in t)
-                else:
-                    ok = t in ("NewsArticle", "Article")
-                if not ok:
-                    continue
-                d = o.get("datePublished") or o.get("dateModified")
-                dt = parse_dt(d or "")
-                if dt:
-                    return dt
-        except Exception:
-            continue
-
-    # 2) <time datetime="...">
-    try:
-        time_tag = soup.find("time", attrs={"datetime": True})
-        if time_tag:
-            dt = parse_dt(time_tag.get("datetime") or "")
+def _extract_dt_from_soup(soup: BeautifulSoup) -> Optional[datetime]:
+    meta_keys = [
+        "article:published_time", "article:modified_time", "og:updated_time",
+        "pubdate", "publish-date", "date", "parsely-pub-date"
+    ]
+    for key in meta_keys:
+        tag = soup.find("meta", attrs={"property": key}) or soup.find("meta", attrs={"name": key})
+        if tag and tag.get("content"):
+            dt = parse_dt(tag.get("content") or "")
             if dt:
                 return dt
-    except Exception:
-        pass
 
+    for tag in soup.find_all("time"):
+        raw = tag.get("datetime") or tag.get_text(" ", strip=True)
+        dt = parse_dt(raw or "")
+        if dt:
+            return dt
+
+    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (tag.get_text() or "").strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            continue
+        items = obj if isinstance(obj, list) else [obj]
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            raw_dt = it.get("datePublished") or it.get("dateModified") or it.get("uploadDate")
+            dt = parse_dt(raw_dt or "")
+            if dt:
+                return dt
     return None
 
 
-def parse_tochka_articles_list(url: str, limit: int = 60) -> List[Dict]:
-    """
-    Берем страницу https://tochka.by/articles/ и вытаскиваем статьи вида:
-    /articles/<section>/<slug>/
-    Потом по каждой статье берем og-meta и дату (если есть).
-    """
-    page = http_get(url, timeout=25)
-
-    # собираем ссылки на статьи
-    links = []
-    seen = set()
-
-    # Быстрое извлечение ссылок (без привязки к классам)
-    for href in re.findall(r'href=["\']([^"\']+)["\']', page, flags=re.IGNORECASE):
-        full = normalize_url(url, href)
-        p = urlparse(full)
-        if p.netloc and p.netloc != urlparse(TOCHKA_BASE).netloc:
+def _extract_text_from_soup(soup: BeautifulSoup) -> str:
+    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (tag.get_text() or "").strip()
+        if not raw:
             continue
-        if re.search(r"^/articles/[^/]+/[^/]+/?$", p.path):
-            final = urljoin(TOCHKA_BASE, p.path)
-            if final in seen:
-                continue
-            seen.add(final)
-            links.append(final)
-        if len(links) >= limit:
-            break
-
-    out = []
-    for link in links[:limit]:
         try:
-            art_html = http_get(link, timeout=25)
-            og = extract_og_meta(art_html)
-            title = (og.get("title") or "").strip()
-            desc = (og.get("desc") or "").strip()
-            img = (og.get("image") or "").strip()
-            if img:
-                img = normalize_url(link, img)
-
-            dt = _tochka_extract_datetime_from_page(art_html)
-
-            # фильтр 24ч: если дата есть и она старая, пропускаем
-            if dt and not is_last_24h(dt):
-                continue
-
-            if title and link:
-                out.append({
-                    "source": "Tochka",
-                    "title": title,
-                    "url": link,
-                    "summary": desc,
-                    "image": img,
-                    "published_raw": dt.isoformat() if dt else "",
-                    "dt_utc": dt.isoformat() if dt else "",
-                })
+            obj = json.loads(raw)
         except Exception:
             continue
-
-    return out
-
-
-def fetch_tochka_full_text(url: str) -> str:
-    """
-    Достает полный текст статьи Tochka.by.
-    Сначала пробуем LD+JSON articleBody, потом собираем из <article> параграфы.
-    """
-    page_html = http_get(url, timeout=25)
-    try:
-        soup = BeautifulSoup(page_html, "lxml")
-    except Exception:
-        soup = BeautifulSoup(page_html, "html.parser")
-
-    # 1) LD+JSON articleBody
-    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        try:
-            raw = (tag.get_text() or "").strip()
-            if not raw:
-                continue
-            obj = json.loads(raw)
-            candidates = obj if isinstance(obj, list) else [obj]
-            for o in candidates:
-                if not isinstance(o, dict):
-                    continue
-                t = o.get("@type")
-                if isinstance(t, list):
-                    ok = any(x in ("NewsArticle", "Article") for x in t)
-                else:
-                    ok = t in ("NewsArticle", "Article")
-                if not ok:
-                    continue
-                body = o.get("articleBody")
+        items = obj if isinstance(obj, list) else [obj]
+        for it in items:
+            if isinstance(it, dict):
+                body = it.get("articleBody")
                 if isinstance(body, str) and body.strip():
                     return _clean_text(body)
-        except Exception:
-            continue
 
-    # 2) fallback: <article> + p/li/blockquote
-    root = soup.find("article") or soup
+    root = soup.find("article") or soup.find("main") or soup.body or soup
     parts = []
     for el in root.find_all(["p", "li", "blockquote"], recursive=True):
         t = el.get_text(" ", strip=True)
         if not t:
             continue
-        # немного отсекаем мусор
-        if len(t) < 25 and re.search(r"(подпис|реклама|читайте|смотрите)", t.lower()):
+        low = t.lower()
+        if len(t) < 35 and re.search(r"(подпис|реклама|читайте|смотрите|источник)", low):
             continue
         parts.append(t)
-
     return _clean_text("\n\n".join(parts))
+
+
+def _valid_same_domain(url: str, domain: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    domain = domain.lower()
+    return host == domain or host.endswith("." + domain)
+
+
+def _path_allowed(path: str, include_patterns: Optional[List[str]], exclude_patterns: Optional[List[str]]) -> bool:
+    path = path or "/"
+    if exclude_patterns:
+        for pat in exclude_patterns:
+            if re.search(pat, path, re.IGNORECASE):
+                return False
+    if include_patterns:
+        return any(re.search(pat, path, re.IGNORECASE) for pat in include_patterns)
+
+    if path in {"", "/"}:
+        return False
+    if re.search(r"\.(jpg|jpeg|png|gif|webp|svg|pdf|mp4)$", path, re.IGNORECASE):
+        return False
+    if any(x in path.lower() for x in ["/tag/", "/tags/", "/author/", "/authors/", "/category/", "/page/", "/search/"]):
+        return False
+
+    parts = [p for p in path.split("/") if p]
+    if len(parts) >= 2:
+        return True
+    slug = parts[-1] if parts else ""
+    return bool(re.search(r"[a-zа-яё0-9-]{12,}", slug, re.IGNORECASE))
+
+
+def _candidate_links_from_page(start_url: str, page_html: str, domain: str,
+                               include_patterns: Optional[List[str]] = None,
+                               exclude_patterns: Optional[List[str]] = None,
+                               max_candidates: int = 80) -> List[Tuple[str, str]]:
+    try:
+        soup = BeautifulSoup(page_html, "lxml")
+    except Exception:
+        soup = BeautifulSoup(page_html, "html.parser")
+
+    out: List[Tuple[str, str]] = []
+    seen = set()
+    for a in soup.find_all("a", href=True):
+        href = normalize_url(start_url, a.get("href") or "")
+        if not href:
+            continue
+        href = href.split("#", 1)[0]
+        parsed = urlparse(href)
+        if not parsed.scheme.startswith("http"):
+            continue
+        if not _valid_same_domain(href, domain):
+            continue
+        if not _path_allowed(parsed.path, include_patterns, exclude_patterns):
+            continue
+
+        anchor = a.get_text(" ", strip=True) or a.get("title") or a.get("aria-label") or ""
+        anchor = re.sub(r"\s+", " ", anchor).strip()
+        if len(anchor) < 10 and not include_patterns:
+            continue
+        key = parsed.scheme + "://" + parsed.netloc + parsed.path.rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((href, anchor))
+        if len(out) >= max_candidates:
+            break
+    return out
+
+
+def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
+    start_urls = source.get("start_urls") or [source.get("url")]
+    domain = source.get("domain") or urlparse(start_urls[0]).netloc
+    include_patterns = source.get("include_patterns")
+    exclude_patterns = source.get("exclude_patterns")
+    max_candidates = min(max(limit * 6, 40), 140)
+
+    candidates: List[Tuple[str, str]] = []
+    seen = set()
+    for start_url in start_urls:
+        try:
+            page_html = http_get(start_url, timeout=25)
+        except Exception as e:
+            print(f"[NEWS-ERROR] {source['name']} start={start_url} error={e}")
+            continue
+
+        for href, anchor in _candidate_links_from_page(
+            start_url, page_html, domain,
+            include_patterns=include_patterns,
+            exclude_patterns=exclude_patterns,
+            max_candidates=max_candidates,
+        ):
+            if href in seen:
+                continue
+            seen.add(href)
+            candidates.append((href, anchor))
+            if len(candidates) >= max_candidates:
+                break
+        if len(candidates) >= max_candidates:
+            break
+
+    out = []
+    used = set()
+    for href, anchor in candidates:
+        try:
+            art_html = http_get(href, timeout=25)
+            try:
+                soup = BeautifulSoup(art_html, "lxml")
+            except Exception:
+                soup = BeautifulSoup(art_html, "html.parser")
+
+            og = extract_og_meta(art_html)
+            title = (og.get("title") or anchor or "").strip()
+            title = re.sub(r"\s+", " ", title)
+            if not title or len(title) < 12:
+                continue
+
+            text = _extract_text_from_soup(soup)
+            dt = _extract_dt_from_soup(soup)
+            img = normalize_url(href, og.get("image") or "") if og.get("image") else ""
+            summary = (og.get("desc") or text[:400] or "").strip()
+
+            if len(text) < 120 and not og.get("desc"):
+                continue
+
+            canon = href.rstrip("/")
+            if canon in used:
+                continue
+            used.add(canon)
+            out.append({
+                "source": source["name"],
+                "title": title,
+                "url": href,
+                "summary": summary,
+                "image": img,
+                "published_raw": dt.isoformat() if dt else "",
+                "dt_utc": dt.isoformat() if dt else "",
+                "full_text": text,
+            })
+            if len(out) >= limit:
+                break
+        except Exception as e:
+            print(f"[NEWS-ERROR] {source['name']} article={href} error={e}")
+            continue
+    return out
+
+
+def fetch_article_full_text_generic(url: str) -> str:
+    page_html = http_get(url, timeout=25)
+    try:
+        soup = BeautifulSoup(page_html, "lxml")
+    except Exception:
+        soup = BeautifulSoup(page_html, "html.parser")
+    return _extract_text_from_soup(soup)
 
 
 def _clean_text(text: str) -> str:
@@ -491,11 +572,13 @@ def fetch_all_news_last24h() -> List[Dict]:
         try:
             if kind == "rss":
                 items = parse_rss(src["url"], src["name"], limit=src.get("limit", 80))
-            elif kind == "tochka_articles":
-                items = parse_tochka_articles_list(src["url"], limit=src.get("limit", 60))
+            elif kind == "html_og":
+                items = parse_html_og_source(src, limit=src.get("limit", 40))
             else:
                 items = []
-        except Exception:
+            print(f"[NEWS] {src['name']} | kind={kind} | items={len(items)}")
+        except Exception as e:
+            print(f"[NEWS-ERROR] {src['name']} | kind={kind} | error={e}")
             items = []
 
         for it in items:
@@ -519,11 +602,11 @@ def fetch_all_news_last24h() -> List[Dict]:
     counts = {}
     diversified = []
     for it in base:
-        src = it.get("source", "")
-        counts[src] = counts.get(src, 0)
-        if counts[src] >= NEWS_PER_SOURCE_CAP:
+        src_name = it.get("source", "")
+        counts[src_name] = counts.get(src_name, 0)
+        if counts[src_name] >= NEWS_PER_SOURCE_CAP:
             continue
-        counts[src] += 1
+        counts[src_name] += 1
         diversified.append(it)
 
     if len(diversified) < 80:
@@ -533,7 +616,6 @@ def fetch_all_news_last24h() -> List[Dict]:
             diversified.append(it)
 
     return diversified
-
 
 # =========================
 # Caption formatting
@@ -1114,11 +1196,11 @@ def on_news_item_action(c):
     st["title"] = title
     st["source_url"] = link
 
-    # 2) NEW: если Tochka, подтягиваем полный текст автоматически
-    auto_body = ""
-    if source_name.lower() == "tochka":
+    # 2) Для HTML-источников пытаемся подтянуть полный текст автоматически
+    auto_body = (it.get("full_text") or "").strip()
+    if not auto_body and source_name.lower() in {"tochka", "smartpress", "sb.by", "mlyn", "ont", "minsknews"}:
         try:
-            auto_body = fetch_tochka_full_text(link)
+            auto_body = fetch_article_full_text_generic(link)
         except Exception:
             auto_body = ""
 
@@ -1381,3 +1463,4 @@ def on_action(call):
 if __name__ == "__main__":
     ensure_fonts()
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
+
