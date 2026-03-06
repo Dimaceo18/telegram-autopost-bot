@@ -79,7 +79,7 @@ MN_TITLE_ZONE_PCT = 0.23
 CHP_GRADIENT_PCT = 0.48
 
 # AM: blurred top band
-AM_TOP_BLUR_PCT = 0.15
+AM_TOP_BLUR_PCT = 0.20
 AM_BLUR_RADIUS = 18
 AM_BLUR_BLEND = 0.50
 
@@ -944,11 +944,18 @@ def apply_top_blur_band(img: Image.Image, band_pct: float = AM_TOP_BLUR_PCT, rad
     w, h = img.size
     band_h = max(1, int(h * band_pct))
     base = img.convert("RGB")
+
     top = base.crop((0, 0, w, band_h))
     blurred = top.filter(ImageFilter.GaussianBlur(radius=radius))
     mixed = Image.blend(top, blurred, blend)
+
+    # Лёгкое затемнение поверх размытой зоны, чтобы белый текст читался как на референсе
+    overlay = Image.new("RGBA", (w, band_h), (0, 0, 0, 95))
+    mixed_rgba = mixed.convert("RGBA")
+    final_band = Image.alpha_composite(mixed_rgba, overlay).convert("RGB")
+
     out = base.copy()
-    out.paste(mixed, (0, 0))
+    out.paste(final_band, (0, 0))
     return out
 
 
@@ -962,24 +969,28 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
 
     draw = ImageDraw.Draw(img)
 
-    margin_x = int(img.width * 0.06)
+    margin_x = int(img.width * 0.055)
     band_h = int(img.height * AM_TOP_BLUR_PCT)
     safe_w = img.width - 2 * margin_x
     text = (title_text or "").strip().upper()
+
+    text_zone_top = int(band_h * 0.12)
+    text_zone_bottom = int(band_h * 0.12)
+    text_zone_h = max(1, band_h - text_zone_top - text_zone_bottom)
 
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw,
         text=text,
         font_path=FONT_AM,
         safe_w=safe_w,
-        max_block_h=max(1, int(band_h * 0.74)),
+        max_block_h=text_zone_h,
         max_lines=3,
-        start_size=int(img.height * 0.072),
-        min_size=18,
+        start_size=int(img.height * 0.060),
+        min_size=20,
         line_spacing_ratio=0.16
     )
 
-    y = max(0, (band_h - total_h) // 2)
+    y = text_zone_top + max(0, (text_zone_h - total_h) // 2)
     for i, ln in enumerate(lines):
         lw = text_width(draw, ln, font)
         x = (img.width - lw) // 2
