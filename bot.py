@@ -64,7 +64,7 @@ def main_menu_kb():
 # FONTS / CARD
 # =========================
 FONT_MN = "CaviarDreams.ttf"
-FONT_CHP = "Inter-ExtraBold.ttf"
+FONT_CHP = "Montserrat-Bold.ttf"
 FONT_AM = "IntroInline.ttf"
 
 FOOTER_TEXT = "MINSK NEWS"
