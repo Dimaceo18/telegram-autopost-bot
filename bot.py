@@ -1173,35 +1173,51 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
     canvas = Image.new("RGB", (STORY_W, STORY_H), (0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
-    photo_h = 455
-    header_h = 245
+    # Уменьшаем высоту фото и фиолетовой зоны на 10%
+    # Было: photo_h = 455, header_h = 245
+    # Суммарно было 700px, теперь 630px (на 10% меньше)
+    photo_h = 410  # 455 - 10%
+    header_h = 220  # 245 - 10%
+    
+    # Оставшаяся высота для черной зоны: 1280 - 630 = 650px
 
     photo = Image.open(BytesIO(photo_bytes)).convert("RGB")
     story_photo = fit_cover(photo, STORY_W, photo_h)
     canvas.paste(story_photo, (0, 0))
 
+    # Фиолетовая зона
     purple_color = (122, 58, 240)
     canvas.paste(Image.new("RGB", (STORY_W, header_h), purple_color), (0, photo_h))
 
+    # Черная зона
     draw.rectangle([0, photo_h + header_h, STORY_W, STORY_H], fill=(0, 0, 0))
 
-    header_side_pad = 34
-    body_side_pad = 36
+    # Отступы со всех сторон одинаковые - 34px
+    padding = 34
 
+    # Заголовок - строго по центру фиолетовой зоны
+    # Вычисляем центр фиолетовой зоны
+    purple_zone_top = photo_h
+    purple_zone_bottom = photo_h + header_h
+    purple_zone_center_y = purple_zone_top + (header_h // 2)
+    
+    # Область для заголовка с одинаковыми отступами
     header_box = (
-        header_side_pad,
-        photo_h + 24,
-        STORY_W - header_side_pad,
-        photo_h + header_h - 22
+        padding,
+        purple_zone_top + padding,
+        STORY_W - padding,
+        purple_zone_bottom - padding
     )
 
+    # Область для основного текста с одинаковыми отступами
     body_box = (
-        body_side_pad,
-        photo_h + header_h + 24,
-        STORY_W - body_side_pad,
-        STORY_H - 24
+        padding,
+        photo_h + header_h + padding,
+        STORY_W - padding,
+        STORY_H - padding
     )
 
+    # Подбираем шрифт для заголовка
     title_font, title_gap, title_paragraph_gap = _fit_story_text(
         draw,
         title,
@@ -1211,6 +1227,43 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
         line_gap_ratio=0.08,
         paragraph_gap_ratio=0.18
     )
+
+    # Рисуем заголовок (белый цвет)
+    _draw_story_text(
+        draw,
+        title,
+        header_box,
+        title_font,
+        fill=(255, 255, 255),  # Белый цвет
+        align="center",
+        line_gap=title_gap,
+        paragraph_gap_extra=title_paragraph_gap
+    )
+
+    # Подбираем шрифт для основного текста
+    body_font, body_gap, body_paragraph_gap = _fit_story_text(
+        draw,
+        body_text,
+        body_box,
+        min_size=14,
+        max_size=30,
+        line_gap_ratio=0.10,
+        paragraph_gap_ratio=0.32
+    )
+
+    # Рисуем основной текст (белый цвет)
+    _draw_story_text(
+        draw,
+        body_text,
+        body_box,
+        body_font,
+        fill=(255, 255, 255),  # Белый цвет
+        align="left",
+        line_gap=body_gap,
+        paragraph_gap_extra=body_paragraph_gap
+    )
+
+    return save_jpeg_to_bytes(canvas)
 
     _draw_story_text(
         draw,
