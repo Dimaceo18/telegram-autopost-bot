@@ -238,7 +238,7 @@ def save_jpeg_bytes(img: Image.Image, quality: int = 95) -> BytesIO:
     return out
 
 # =========================
-# ШАБЛОНЫ
+# ШАБЛОНЫ (ИСПРАВЛЕНЫ)
 # =========================
 def make_card_mn(photo_bytes: bytes, title: str, layout: str = "top") -> BytesIO:
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -256,6 +256,9 @@ def make_card_mn(photo_bytes: bytes, title: str, layout: str = "top") -> BytesIO
     spacing = 12
     block_h = len(lines) * line_h + max(0, len(lines) - 1) * spacing
 
+    # ЛЕВЫЙ ОТСТУП
+    margin_left = 45
+
     if layout == "bottom":
         y = img.height - block_h - 130
         footer_y = 45
@@ -263,12 +266,12 @@ def make_card_mn(photo_bytes: bytes, title: str, layout: str = "top") -> BytesIO
         y = 50
         footer_y = img.height - 55
 
+    # ТЕКСТ ВЫРОВНЕН ПО ЛЕВОМУ КРАЮ
     for line in lines:
-        w = draw.textlength(line, font=font)
-        x = (img.width - w) / 2
-        draw.text((x, y), line, font=font, fill="white")
+        draw.text((margin_left, y), line, font=font, fill="white")
         y += line_h + spacing
 
+    # FOOTER ОСТАЁТСЯ ПО ЦЕНТРУ
     fw = draw.textlength(FOOTER_TEXT, font=footer_font)
     draw.text(((img.width - fw) / 2, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
 
@@ -303,11 +306,13 @@ def make_card_chp(photo_bytes: bytes, title: str) -> BytesIO:
     spacing = 8
     block_h = len(lines) * line_h + max(0, len(lines) - 1) * spacing
 
+    # ЛЕВЫЙ ОТСТУП
+    margin_left = 45
+
     y = img.height - block_h - 70
+    # ТЕКСТ ВЫРОВНЕН ПО ЛЕВОМУ КРАЮ
     for line in lines:
-        w = draw.textlength(line, font=font)
-        x = (img.width - w) / 2
-        draw.text((x, y), line, font=font, fill="white")
+        draw.text((margin_left, y), line, font=font, fill="white")
         y += line_h + spacing
 
     return save_jpeg_bytes(img)
