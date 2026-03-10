@@ -638,13 +638,14 @@ def fetch_all_news_last24h() -> List[Dict]:
 
     return diversified
 
+
 # =========================
 # Caption formatting
 # =========================
 RU_STOP = {
-    "и","в","во","на","но","а","что","это","как","к","по","из","за","для","с","со","у","от","до",
-    "при","без","над","под","же","ли","то","не","ни","да","нет","уже","еще","ещё","там","тут",
-    "снова","будет","начнут","начал","началась","начался","начали","может","могут","нужно","надо"
+    "и", "в", "во", "на", "но", "а", "что", "это", "как", "к", "по", "из", "за", "для", "с", "со", "у", "от", "до",
+    "при", "без", "над", "под", "же", "ли", "то", "не", "ни", "да", "нет", "уже", "еще", "ещё", "там", "тут",
+    "снова", "будет", "начнут", "начал", "началась", "начался", "начали", "может", "могут", "нужно", "надо"
 }
 
 CATEGORY_RULES = [
@@ -659,6 +660,7 @@ CATEGORY_RULES = [
     ("🏛️", ["власт", "закон", "указ", "постанов", "министер", "исполком"]),
 ]
 
+
 def pick_category_emoji(title: str, body: str) -> str:
     text = (title + " " + body).lower()
     for emoji_, keys in CATEGORY_RULES:
@@ -666,6 +668,7 @@ def pick_category_emoji(title: str, body: str) -> str:
             if k in text:
                 return emoji_
     return "📰"
+
 
 def pick_keywords(title: str, body: str, max_words: int = 6):
     txt = (title + " " + body).lower()
@@ -691,6 +694,7 @@ def pick_keywords(title: str, body: str, max_words: int = 6):
             break
     return out
 
+
 def highlight_keywords_html(text: str, keywords):
     safe = html.escape(text or "")
     for kw in keywords:
@@ -703,6 +707,7 @@ def highlight_keywords_html(text: str, keywords):
             pattern = re.compile(rf"({re.escape(kw_safe)})", re.IGNORECASE)
         safe = pattern.sub(r"<b>\1</b>", safe)
     return safe
+
 
 def build_caption_html(title: str, body: str) -> str:
     emoji_ = pick_category_emoji(title, body)
@@ -1073,6 +1078,7 @@ def _draw_story_text(
     font,
     fill=(255, 255, 255),
     align="center",
+    valign="center",
     line_gap=10,
     paragraph_gap_extra=10
 ):
@@ -1096,7 +1102,10 @@ def _draw_story_text(
             if idx < len(lines) - 1:
                 total_h += line_gap
 
-    y = y1 + max(0, (max_h - total_h) // 2)
+    if valign == "top":
+        y = y1
+    else:
+        y = y1 + max(0, (max_h - total_h) // 2)
 
     for idx, line in enumerate(lines):
         if line == "":
@@ -1115,6 +1124,7 @@ def _draw_story_text(
 
         draw.text((x, y), line, font=font, fill=fill)
         y += line_h
+
         if idx < len(lines) - 1:
             y += line_gap
 
@@ -1174,7 +1184,7 @@ def _fit_story_text(
 
 def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> BytesIO:
     ensure_fonts()
-    
+
     canvas = Image.new("RGB", (STORY_W, STORY_H), (0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
@@ -1223,6 +1233,7 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
         title_font,
         fill=(255, 255, 255),
         align="center",
+        valign="center",
         line_gap=title_gap,
         paragraph_gap_extra=title_paragraph_gap
     )
@@ -1244,6 +1255,7 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
         body_font,
         fill=(255, 255, 255),
         align="left",
+        valign="top",
         line_gap=body_gap,
         paragraph_gap_extra=body_paragraph_gap
     )
@@ -1357,10 +1369,10 @@ def on_tpl(c):
         st["step"] = "waiting_photo"
     user_state[uid] = st
     bot.answer_callback_query(c.id, "Ок ✅")
-    
+
     tpl_names = {
-        'MN': 'МН', 
-        'CHP': 'ЧП ВМ', 
+        'MN': 'МН',
+        'CHP': 'ЧП ВМ',
         'AM': 'АМ',
         'FDR_STORY': 'Сторис ФДР'
     }
@@ -1675,7 +1687,7 @@ def on_photo(message):
                     user_state[uid] = st
                     bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
                     return
-            
+
             card = make_card(st["photo_bytes"], st["title"], st["template"])
             st["card_bytes"] = card.getvalue()
 
@@ -1713,7 +1725,7 @@ def on_photo(message):
         st["step"] = "waiting_title_fdr"
     else:
         st["step"] = "waiting_title"
-    
+
     user_state[uid] = st
     bot.reply_to(message, "Фото получено ✅ Теперь отправь ЗАГОЛОВОК.")
 
@@ -1777,7 +1789,7 @@ def on_text(message):
             bot.reply_to(message, "❌ Фото потерялось. Начни заново с /post")
             clear_state(uid)
             return
-        
+
         st["body_raw"] = text
         body_src = extract_source_url(text)
         if body_src:
@@ -1785,9 +1797,9 @@ def on_text(message):
 
         try:
             card = make_card(
-                st["photo_bytes"], 
-                st["title"], 
-                st.get("template", "FDR_STORY"), 
+                st["photo_bytes"],
+                st["title"],
+                st.get("template", "FDR_STORY"),
                 st["body_raw"]
             )
             st["card_bytes"] = card.getvalue()
@@ -1883,16 +1895,28 @@ def on_action(call):
             bot.send_message(call.message.chat.id, f"Не смог опубликовать: {e}", reply_markup=main_menu_kb())
 
     elif call.data == "edit_body":
-        st["step"] = "waiting_body"
-        user_state[uid] = st
-        bot.answer_callback_query(call.id, "Ок")
-        bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ (заголовок на картинке не меняем).", reply_markup=main_menu_kb())
+        if st.get("template") == "FDR_STORY":
+            st["step"] = "waiting_body_fdr"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ для сторис.", reply_markup=main_menu_kb())
+        else:
+            st["step"] = "waiting_body"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ (заголовок на картинке не меняем).", reply_markup=main_menu_kb())
 
     elif call.data == "edit_title":
-        st["step"] = "waiting_title"
-        user_state[uid] = st
-        bot.answer_callback_query(call.id, "Ок")
-        bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК (перерисую карточку).", reply_markup=main_menu_kb())
+        if st.get("template") == "FDR_STORY":
+            st["step"] = "waiting_title_fdr"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК для сторис.", reply_markup=main_menu_kb())
+        else:
+            st["step"] = "waiting_title"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК (перерисую карточку).", reply_markup=main_menu_kb())
 
     elif call.data == "cancel":
         bot.answer_callback_query(call.id, "Отменено")
