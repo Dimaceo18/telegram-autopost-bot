@@ -87,7 +87,6 @@ NEWS_SOURCES = [
 user_state = {}
 SESSION = requests.Session()
 
-# Настройка повторных попыток
 retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
 adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=20, pool_maxsize=20)
 SESSION.mount("http://", adapter)
@@ -449,7 +448,7 @@ def preview_kb():
     return kb
 
 # =========================
-# ОТПРАВКА НОВОСТИ (ВАША ФУНКЦИЯ)
+# ОТПРАВКА НОВОСТИ
 # =========================
 def send_full_news(chat_id, title, text, photo_url, link):
     try:
@@ -517,6 +516,8 @@ def news_cmd(msg):
             parse_mode="HTML",
             reply_markup=news_item_kb(key, link)
         )
+    if msg.from_user.id not in user_state:
+        user_state[msg.from_user.id] = {}
     user_state[msg.from_user.id]["news_cache"] = {"by_key": by_key, "ts": time.time()}
 
 # =========================
@@ -652,6 +653,7 @@ def on_text(msg):
         return news_cmd(msg)
     st = user_state.get(uid, {"step": "idle", "template": "MN", "mn_layout": "top"})
     step = st.get("step")
+    
     if step == "waiting_template":
         bot.send_message(msg.chat.id, "Выбери шаблон кнопками:", reply_markup=template_kb())
     elif step == "waiting_mn_layout":
