@@ -19,7 +19,7 @@ from telebot.types import (
 )
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 
-from bs4 import BeautifulSoup  # NEW
+from bs4 import BeautifulSoup
 
 
 # =========================
@@ -252,6 +252,12 @@ def warn_if_too_small(chat_id, photo_bytes: bytes):
             )
     except Exception:
         pass
+
+
+def clear_state(user_id: int):
+    if user_id in user_state:
+        template = user_state[user_id].get("template", "MN")
+        user_state[user_id] = {"template": template, "step": "idle"}
 
 
 # =========================
@@ -956,7 +962,6 @@ def apply_top_blur_band(img: Image.Image, band_pct: float = AM_TOP_BLUR_PCT, rad
     blurred = top.filter(ImageFilter.GaussianBlur(radius=radius))
     mixed = Image.blend(top, blurred, blend)
 
-    # Лёгкое затемнение поверх размытой зоны, чтобы белый текст читался как на референсе
     overlay = Image.new("RGBA", (w, band_h), (0, 0, 0, 95))
     mixed_rgba = mixed.convert("RGBA")
     final_band = Image.alpha_composite(mixed_rgba, overlay).convert("RGB")
@@ -1173,29 +1178,20 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
     canvas = Image.new("RGB", (STORY_W, STORY_H), (0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
-    # Уменьшаем высоту фото и фиолетовой зоны на 10%
-    # Было: photo_h = 455, header_h = 245
-    # Суммарно было 700px, теперь 630px (на 10% меньше)
-    photo_h = 410  # 455 - 10%
-    header_h = 220  # 245 - 10%
-    
-    # Оставшаяся высота для черной зоны: 1280 - 630 = 650px
+    photo_h = 410
+    header_h = 220
 
     photo = Image.open(BytesIO(photo_bytes)).convert("RGB")
     story_photo = fit_cover(photo, STORY_W, photo_h)
     canvas.paste(story_photo, (0, 0))
 
-    # Фиолетовая зона
     purple_color = (122, 58, 240)
     canvas.paste(Image.new("RGB", (STORY_W, header_h), purple_color), (0, photo_h))
 
-    # Черная зона
     draw.rectangle([0, photo_h + header_h, STORY_W, STORY_H], fill=(0, 0, 0))
 
-    # Отступы со всех сторон одинаковые - 34px
     padding = 34
 
-    # Область для заголовка с одинаковыми отступами
     header_box = (
         padding,
         photo_h + padding,
@@ -1203,7 +1199,6 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
         photo_h + header_h - padding
     )
 
-    # Область для основного текста с одинаковыми отступами
     body_box = (
         padding,
         photo_h + header_h + padding,
@@ -1211,7 +1206,6 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
         STORY_H - padding
     )
 
-    # Подбираем шрифт для заголовка
     title_font, title_gap, title_paragraph_gap = _fit_story_text(
         draw,
         title,
@@ -1222,19 +1216,17 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
         paragraph_gap_ratio=0.18
     )
 
-    # Рисуем заголовок (белый цвет)
     _draw_story_text(
         draw,
         title,
         header_box,
         title_font,
-        fill=(255, 255, 255),  # Белый цвет
+        fill=(255, 255, 255),
         align="center",
         line_gap=title_gap,
         paragraph_gap_extra=title_paragraph_gap
     )
 
-    # Подбираем шрифт для основного текста
     body_font, body_gap, body_paragraph_gap = _fit_story_text(
         draw,
         body_text,
@@ -1245,13 +1237,12 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
         paragraph_gap_ratio=0.32
     )
 
-    # Рисуем основной текст (белый цвет)
     _draw_story_text(
         draw,
         body_text,
         body_box,
         body_font,
-        fill=(255, 255, 255),  # Белый цвет
+        fill=(255, 255, 255),
         align="left",
         line_gap=body_gap,
         paragraph_gap_extra=body_paragraph_gap
@@ -1527,7 +1518,6 @@ def on_news_item_action(c):
     image_url = (it.get("image") or "").strip()
     source_name = (it.get("source") or "").strip()
 
-    # 1) пробуем взять картинку
     photo_bytes = b""
     if image_url:
         try:
@@ -1540,7 +1530,6 @@ def on_news_item_action(c):
     st["title"] = title
     st["source_url"] = link
 
-    # 2) Для HTML-источников пытаемся подтянуть полный текст автоматически
     auto_body = (it.get("full_text") or "").strip()
     if not auto_body and source_name.lower() in {"tochka", "smartpress", "sb.by", "mlyn", "ont", "minsknews"}:
         try:
@@ -1548,12 +1537,10 @@ def on_news_item_action(c):
         except Exception:
             auto_body = ""
 
-    # если нет картинки, просим фото как раньше
     if not photo_bytes:
         st["step"] = "waiting_photo"
         st["prefill_title"] = title
         st["prefill_source"] = link
-        # сохраним авто-текст, если успели достать
         if auto_body:
             st["prefill_body"] = auto_body
         user_state[uid] = st
@@ -1568,34 +1555,44 @@ def on_news_item_action(c):
     warn_if_too_small(c.message.chat.id, photo_bytes)
     st["photo_bytes"] = photo_bytes
 
-    # Для шаблона FDR_STORY нужен body_text
-    if st["template"] == "FDR_STORY" and auto_body:
-        try:
-            card = make_card(photo_bytes, title, st["template"], auto_body)
-            st["card_bytes"] = card.getvalue()
-            st["step"] = "waiting_action"
-            user_state[uid] = st
+    if st["template"] == "FDR_STORY":
+        if auto_body:
+            try:
+                card = make_card(photo_bytes, title, st["template"], auto_body)
+                st["card_bytes"] = card.getvalue()
+                st["body_raw"] = auto_body
+                st["step"] = "waiting_action"
+                user_state[uid] = st
 
-            caption = build_caption_html(st["title"], auto_body)
-            bot.send_photo(
-                chat_id=c.message.chat.id,
-                photo=BytesIO(st["card_bytes"]),
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=preview_kb(st.get("source_url", "")),
+                caption = build_caption_html(st["title"], st["body_raw"])
+                bot.send_photo(
+                    chat_id=c.message.chat.id,
+                    photo=BytesIO(st["card_bytes"]),
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=preview_kb(st.get("source_url", "")),
+                )
+                bot.answer_callback_query(c.id, "Оформил ✅")
+                return
+            except Exception as e:
+                bot.answer_callback_query(c.id, "Ошибка карточки", show_alert=True)
+                bot.send_message(c.message.chat.id, f"Ошибка при создании карточки: {e}", reply_markup=main_menu_kb())
+                return
+        else:
+            st["step"] = "waiting_body_fdr"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, "Нужен текст")
+            bot.send_message(
+                c.message.chat.id,
+                "✅ Карточка с фото готова!\n\nТеперь отправь ОСНОВНОЙ ТЕКСТ для сторис:",
+                reply_markup=main_menu_kb()
             )
-            bot.answer_callback_query(c.id, "Оформил ✅")
-            return
-        except Exception as e:
-            bot.answer_callback_query(c.id, "Ошибка карточки", show_alert=True)
-            bot.send_message(c.message.chat.id, f"Ошибка при создании карточки: {e}", reply_markup=main_menu_kb())
             return
 
     try:
         card = make_card(photo_bytes, title, st["template"])
         st["card_bytes"] = card.getvalue()
 
-        # если есть авто-текст (Tochka) сразу делаем превью и кнопки
         if auto_body:
             st["body_raw"] = auto_body
             st["step"] = "waiting_action"
@@ -1612,7 +1609,6 @@ def on_news_item_action(c):
             bot.answer_callback_query(c.id, "Оформил ✅")
             return
 
-        # иначе как было: попросить основной текст
         st["step"] = "waiting_body"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Ок ✅")
@@ -1651,32 +1647,38 @@ def on_photo(message):
         st["source_url"] = st.get("prefill_source", "") or ""
 
         try:
-            # Для шаблона FDR_STORY нужен body_text
-            if st["template"] == "FDR_STORY" and st.get("prefill_body"):
-                card = make_card(st["photo_bytes"], st["title"], st["template"], st["prefill_body"])
-                st["card_bytes"] = card.getvalue()
-                st["body_raw"] = st["prefill_body"]
-                st.pop("prefill_body", None)
-                st.pop("prefill_title", None)
-                st.pop("prefill_source", None)
-                st["step"] = "waiting_action"
-                user_state[uid] = st
+            if st["template"] == "FDR_STORY":
+                if st.get("prefill_body"):
+                    card = make_card(st["photo_bytes"], st["title"], st["template"], st["prefill_body"])
+                    st["card_bytes"] = card.getvalue()
+                    st["body_raw"] = st["prefill_body"]
+                    st.pop("prefill_body", None)
+                    st.pop("prefill_title", None)
+                    st.pop("prefill_source", None)
+                    st["step"] = "waiting_action"
+                    user_state[uid] = st
 
-                caption = build_caption_html(st["title"], st["body_raw"])
-                bot.send_photo(
-                    chat_id=message.chat.id,
-                    photo=BytesIO(st["card_bytes"]),
-                    caption=caption,
-                    parse_mode="HTML",
-                    reply_markup=preview_kb(st.get("source_url", "")),
-                )
-                bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-                return
-            else:
-                card = make_card(st["photo_bytes"], st["title"], st["template"])
-                st["card_bytes"] = card.getvalue()
+                    caption = build_caption_html(st["title"], st["body_raw"])
+                    bot.send_photo(
+                        chat_id=message.chat.id,
+                        photo=BytesIO(st["card_bytes"]),
+                        caption=caption,
+                        parse_mode="HTML",
+                        reply_markup=preview_kb(st.get("source_url", "")),
+                    )
+                    bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
+                    return
+                else:
+                    st["step"] = "waiting_body_fdr"
+                    st.pop("prefill_title", None)
+                    st.pop("prefill_source", None)
+                    user_state[uid] = st
+                    bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
+                    return
+            
+            card = make_card(st["photo_bytes"], st["title"], st["template"])
+            st["card_bytes"] = card.getvalue()
 
-            # NEW: если у нас был авто-текст (Tochka), сразу делаем превью
             if st.get("prefill_body"):
                 st["body_raw"] = st["prefill_body"]
                 st.pop("prefill_body", None)
@@ -1707,7 +1709,11 @@ def on_photo(message):
             bot.reply_to(message, f"Ошибка при создании карточки: {e}")
         return
 
-    st["step"] = "waiting_title"
+    if st["template"] == "FDR_STORY":
+        st["step"] = "waiting_title_fdr"
+    else:
+        st["step"] = "waiting_title"
+    
     user_state[uid] = st
     bot.reply_to(message, "Фото получено ✅ Теперь отправь ЗАГОЛОВОК.")
 
@@ -1731,7 +1737,10 @@ def on_document(message):
     warn_if_too_small(message.chat.id, photo_bytes)
 
     st["photo_bytes"] = photo_bytes
-    st["step"] = "waiting_title"
+    if st["template"] == "FDR_STORY":
+        st["step"] = "waiting_title_fdr"
+    else:
+        st["step"] = "waiting_title"
     user_state[uid] = st
     bot.reply_to(message, "Картинка получена ✅ Теперь отправь ЗАГОЛОВОК.")
 
@@ -1746,7 +1755,6 @@ def on_text(message):
     text = (message.text or "").strip()
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
 
-    # GLOBAL MENU HANDLING
     if text == BTN_POST or text.lower() in {"оформить пост", "оформление поста"}:
         cmd_post(message)
         return
@@ -1756,6 +1764,50 @@ def on_text(message):
         return
 
     step = st.get("step")
+
+    if step == "waiting_title_fdr":
+        st["title"] = text
+        st["step"] = "waiting_body_fdr"
+        user_state[uid] = st
+        bot.reply_to(message, "Заголовок сохранен ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
+        return
+
+    if step == "waiting_body_fdr":
+        if not st.get("photo_bytes"):
+            bot.reply_to(message, "❌ Фото потерялось. Начни заново с /post")
+            clear_state(uid)
+            return
+        
+        st["body_raw"] = text
+        body_src = extract_source_url(text)
+        if body_src:
+            st["source_url"] = body_src
+
+        try:
+            card = make_card(
+                st["photo_bytes"], 
+                st["title"], 
+                st.get("template", "FDR_STORY"), 
+                st["body_raw"]
+            )
+            st["card_bytes"] = card.getvalue()
+            st["step"] = "waiting_action"
+            user_state[uid] = st
+
+            caption = build_caption_html(st["title"], st["body_raw"])
+            bot.send_photo(
+                chat_id=message.chat.id,
+                photo=BytesIO(st["card_bytes"]),
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=preview_kb(st.get("source_url", "")),
+            )
+            bot.reply_to(message, "Сторис готова ✅ Нажми кнопку.")
+        except Exception as e:
+            bot.reply_to(message, f"❌ Ошибка при создании сторис: {e}")
+            st["step"] = "waiting_photo"
+            user_state[uid] = st
+        return
 
     if step == "waiting_title":
         st["title"] = text
