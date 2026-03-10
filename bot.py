@@ -1195,18 +1195,12 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
     # Отступы со всех сторон одинаковые - 34px
     padding = 34
 
-    # Заголовок - строго по центру фиолетовой зоны
-    # Вычисляем центр фиолетовой зоны
-    purple_zone_top = photo_h
-    purple_zone_bottom = photo_h + header_h
-    purple_zone_center_y = purple_zone_top + (header_h // 2)
-    
     # Область для заголовка с одинаковыми отступами
     header_box = (
         padding,
-        purple_zone_top + padding,
+        photo_h + padding,
         STORY_W - padding,
-        purple_zone_bottom - padding
+        photo_h + header_h - padding
     )
 
     # Область для основного текста с одинаковыми отступами
@@ -1258,40 +1252,6 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
         body_box,
         body_font,
         fill=(255, 255, 255),  # Белый цвет
-        align="left",
-        line_gap=body_gap,
-        paragraph_gap_extra=body_paragraph_gap
-    )
-
-    return save_jpeg_to_bytes(canvas)
-
-    _draw_story_text(
-        draw,
-        title,
-        header_box,
-        title_font,
-        fill=(255, 255, 255),
-        align="center",
-        line_gap=title_gap,
-        paragraph_gap_extra=title_paragraph_gap
-    )
-
-    body_font, body_gap, body_paragraph_gap = _fit_story_text(
-        draw,
-        body_text,
-        body_box,
-        min_size=14,
-        max_size=30,
-        line_gap_ratio=0.10,
-        paragraph_gap_ratio=0.32
-    )
-
-    _draw_story_text(
-        draw,
-        body_text,
-        body_box,
-        body_font,
-        fill=(255, 255, 255),
         align="left",
         line_gap=body_gap,
         paragraph_gap_extra=body_paragraph_gap
