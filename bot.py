@@ -19,7 +19,7 @@ from telebot.types import (
 )
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 
-from bs4 import BeautifulSoup  # NEW
+from bs4 import BeautifulSoup
 
 
 # =========================
@@ -56,8 +56,10 @@ requests_session.headers.update(
 # =========================
 CARD_W = 1080
 CARD_H = 1350
+
 TARGET_W = 720
 TARGET_H = 1280
+
 PHOTO_AREA_Y1 = 0
 PHOTO_AREA_Y2 = CARD_H
 
@@ -74,10 +76,6 @@ CHP_TITLE_BOTTOM_PAD = 92
 
 SOURCE_FOOTER_H = 70
 SOURCE_FOOTER_TEXT = "MINSK NEWS"
-
-STORY_HEADER_RATIO = 0.295
-STORY_PHOTO_RATIO = 0.425
-STORY_TEXT_RATIO = 1.0 - STORY_HEADER_RATIO - STORY_PHOTO_RATIO
 
 MAX_PREVIEW_TEXT = 750
 SUMMARY_SENTENCES = 3
@@ -120,20 +118,35 @@ FONT_BOLD_PATHS = [
 ]
 
 USER_FONT_DIR = os.path.join(os.getcwd(), "fonts")
+
 MONTSERRAT_BOLD_CANDIDATES = [
     os.path.join(USER_FONT_DIR, "Montserrat-Bold.ttf"),
     os.path.join(os.getcwd(), "Montserrat-Bold.ttf"),
     "/mnt/data/Montserrat-Bold.ttf",
 ]
 
+MONTSERRAT_BLACK_CANDIDATES = [
+    os.path.join(USER_FONT_DIR, "Montserrat-Black.ttf"),
+    os.path.join(os.getcwd(), "Montserrat-Black.ttf"),
+    "/mnt/data/Montserrat-Black.ttf",
+]
+
 FONT_REG_PATH = next((p for p in FONT_REG_PATHS if os.path.exists(p)), None)
 FONT_BOLD_PATH = next((p for p in FONT_BOLD_PATHS if os.path.exists(p)), None)
 MONTSERRAT_BOLD_PATH = next((p for p in MONTSERRAT_BOLD_CANDIDATES if os.path.exists(p)), None)
+MONTSERRAT_BLACK_PATH = next((p for p in MONTSERRAT_BLACK_CANDIDATES if os.path.exists(p)), None)
 
 if FONT_REG_PATH is None or FONT_BOLD_PATH is None:
     raise RuntimeError("System fonts not found. Need DejaVuSans or LiberationSans installed.")
 
-def load_font(size: int, bold: bool = False, montserrat_bold: bool = False) -> ImageFont.FreeTypeFont:
+def load_font(
+    size: int,
+    bold: bool = False,
+    montserrat_bold: bool = False,
+    montserrat_black: bool = False
+) -> ImageFont.FreeTypeFont:
+    if montserrat_black and MONTSERRAT_BLACK_PATH:
+        return ImageFont.truetype(MONTSERRAT_BLACK_PATH, size=size)
     if montserrat_bold and MONTSERRAT_BOLD_PATH:
         return ImageFont.truetype(MONTSERRAT_BOLD_PATH, size=size)
     path = FONT_BOLD_PATH if bold else FONT_REG_PATH
@@ -415,7 +428,12 @@ def draw_footer(draw: ImageDraw.ImageDraw, width: int, height: int, text: str):
 def apply_source_button(caption: str, source_url: str) -> Tuple[str, InlineKeyboardMarkup]:
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("Источник", url=source_url))
-    kb.add(InlineKeyboardButton("Предложить новость", url=SUGGEST_URL if SUGGEST_URL else f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else "https://t.me"))
+    kb.add(
+        InlineKeyboardButton(
+            "Предложить новость",
+            url=SUGGEST_URL if SUGGEST_URL else f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else "https://t.me"
+        )
+    )
     return caption, kb
 
 def save_jpeg_to_bytes(im: Image.Image, quality: int = JPEG_QUALITY) -> BytesIO:
@@ -487,106 +505,234 @@ def make_card_chp_vm(photo_bytes: bytes, title: str) -> BytesIO:
     )
     return save_jpeg_to_bytes(base.convert("RGB"))
 
+# =========================
+# STORY TEXT HELPERS
+# =========================
 def _wrap_text_for_width(draw, text, font, max_w):
-    words = (text or "").split()
+    words = (text or "").replace("\r", "\n").split()
     if not words:
         return []
+
     lines = []
     current = words[0]
+
     for word in words[1:]:
         test = current + " " + word
-        if draw.textbbox((0, 0), test, font=font)[2] <= max_w:
+        bbox = draw.textbbox((0, 0), test, font=font)
+        if (bbox[2] - bbox[0]) <= max_w:
             current = test
         else:
             lines.append(current)
             current = word
+
     lines.append(current)
     return lines
 
-def _draw_story_text(draw, text, box, font, fill=(255, 255, 255), align="center", line_gap=10):
+def _wrap_text_preserve_paragraphs(draw, text, font, max_w):
+    paragraphs = [p.strip() for p in (text or "").replace("\r", "\n").split("\n")]
+
+    all_lines = []
+    for i, p in enumerate(paragraphs):
+        if not p:
+            if all_lines and all_lines[-1] != "":
+                all_lines.append("")
+            continue
+
+        words = p.split()
+        if not words:
+            continue
+
+        current = words[0]
+        for word in words[1:]:
+            test = current + " " + word
+            bbox = draw.textbbox((0, 0), test, font=font)
+            if (bbox[2] - bbox[0]) <= max_w:
+                current = test
+            else:
+                all_lines.append(current)
+                current = word
+        all_lines.append(current)
+
+        if i < len(paragraphs) - 1:
+            all_lines.append("")
+
+    while all_lines and all_lines[-1] == "":
+        all_lines.pop()
+
+    return all_lines
+
+def _draw_story_text(
+    draw,
+    text,
+    box,
+    font,
+    fill=(255, 255, 255),
+    align="center",
+    line_gap=10,
+    paragraph_gap_extra=10
+):
     x1, y1, x2, y2 = box
     max_w = x2 - x1
     max_h = y2 - y1
-    lines = _wrap_text_for_width(draw, text, font, max_w)
+
+    lines = _wrap_text_preserve_paragraphs(draw, text, font, max_w)
     if not lines:
         return
-    line_h = draw.textbbox((0, 0), "Ag", font=font)[3] - draw.textbbox((0, 0), "Ag", font=font)[1]
-    total_h = len(lines) * line_h + max(0, len(lines) - 1) * line_gap
+
+    bbox = draw.textbbox((0, 0), "Ag", font=font)
+    line_h = bbox[3] - bbox[1]
+
+    total_h = 0
+    for idx, line in enumerate(lines):
+        if line == "":
+            total_h += line_gap + paragraph_gap_extra
+        else:
+            total_h += line_h
+            if idx < len(lines) - 1:
+                total_h += line_gap
+
     y = y1 + max(0, (max_h - total_h) // 2)
-    for line in lines:
-        line_w = draw.textbbox((0, 0), line, font=font)[2]
+
+    for idx, line in enumerate(lines):
+        if line == "":
+            y += paragraph_gap_extra
+            continue
+
+        line_bbox = draw.textbbox((0, 0), line, font=font)
+        line_w = line_bbox[2] - line_bbox[0]
+
         if align == "center":
             x = x1 + (max_w - line_w) // 2
         elif align == "left":
             x = x1
         else:
             x = x2 - line_w
-        draw.text((x, y), line, font=font, fill=fill)
-        y += line_h + line_gap
 
-def _fit_story_text(draw, text, box, min_size, max_size, bold=False, montserrat=False, line_gap_ratio=0.18):
+        draw.text((x, y), line, font=font, fill=fill)
+        y += line_h
+        if idx < len(lines) - 1:
+            y += line_gap
+
+def _fit_story_text(
+    draw,
+    text,
+    box,
+    min_size,
+    max_size,
+    bold=False,
+    montserrat=False,
+    montserrat_black=False,
+    line_gap_ratio=0.18,
+    paragraph_gap_ratio=0.35
+):
     x1, y1, x2, y2 = box
     max_w = x2 - x1
     max_h = y2 - y1
-    selected_font = load_font(min_size, bold=bold, montserrat_bold=montserrat)
+
+    selected_font = load_font(
+        min_size,
+        bold=bold,
+        montserrat_bold=montserrat,
+        montserrat_black=montserrat_black
+    )
     selected_gap = 8
-    for size in range(max_size, min_size - 1, -2):
-        font = load_font(size, bold=bold, montserrat_bold=montserrat)
-        lines = _wrap_text_for_width(draw, text, font, max_w)
+    selected_paragraph_gap = 12
+
+    for size in range(max_size, min_size - 1, -1):
+        font = load_font(
+            size,
+            bold=bold,
+            montserrat_bold=montserrat,
+            montserrat_black=montserrat_black
+        )
+        lines = _wrap_text_preserve_paragraphs(draw, text, font, max_w)
         if not lines:
             continue
-        line_h = draw.textbbox((0, 0), "Ag", font=font)[3] - draw.textbbox((0, 0), "Ag", font=font)[1]
-        gap = max(6, int(line_h * line_gap_ratio))
-        total_h = len(lines) * line_h + max(0, len(lines) - 1) * gap
-        if total_h <= max_h:
+
+        bbox = draw.textbbox((0, 0), "Ag", font=font)
+        line_h = bbox[3] - bbox[1]
+        gap = max(4, int(line_h * line_gap_ratio))
+        paragraph_gap = max(gap + 2, int(line_h * paragraph_gap_ratio))
+
+        total_h = 0
+        max_line_w = 0
+
+        for idx, line in enumerate(lines):
+            if line == "":
+                total_h += paragraph_gap
+                continue
+
+            lb = draw.textbbox((0, 0), line, font=font)
+            lw = lb[2] - lb[0]
+            max_line_w = max(max_line_w, lw)
+
+            total_h += line_h
+            if idx < len(lines) - 1:
+                total_h += gap
+
+        if total_h <= max_h and max_line_w <= max_w:
             selected_font = font
             selected_gap = gap
+            selected_paragraph_gap = paragraph_gap
             break
-    return selected_font, selected_gap
+
+    return selected_font, selected_gap, selected_paragraph_gap
 
 def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> BytesIO:
     canvas = Image.new("RGB", (TARGET_W, TARGET_H), (0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
-    header_h = int(TARGET_H * STORY_HEADER_RATIO)
-    photo_h = int(TARGET_H * STORY_PHOTO_RATIO)
-    text_h = TARGET_H - header_h - photo_h
+    # Структура:
+    # 1) фото сверху
+    # 2) фиолетовый блок
+    # 3) черный блок текста
 
-    purple_top = (118, 54, 255, 255)
-    purple_bottom = (74, 24, 163, 255)
-    header_gradient = create_vertical_gradient((TARGET_W, header_h), purple_top, purple_bottom).convert("RGB")
-    canvas.paste(header_gradient, (0, 0))
+    photo_h = 455
+    header_h = 245
+    text_h = TARGET_H - photo_h - header_h
 
+    # Фото
     photo = open_image_from_bytes(photo_bytes).convert("RGB")
     story_photo = fit_cover(photo, TARGET_W, photo_h)
-    canvas.paste(story_photo, (0, header_h))
+    canvas.paste(story_photo, (0, 0))
 
-    draw.rectangle([0, header_h + photo_h, TARGET_W, TARGET_H], fill=(0, 0, 0))
+    # Фиолетовый блок без градиента
+    purple_color = (122, 58, 240)
+    canvas.paste(Image.new("RGB", (TARGET_W, header_h), purple_color), (0, photo_h))
 
-    side_pad = 58
+    # Черный блок
+    draw.rectangle([0, photo_h + header_h, TARGET_W, TARGET_H], fill=(0, 0, 0))
+
+    # Области текста
+    header_side_pad = 34
+    body_side_pad = 36
+
     header_box = (
-        side_pad,
-        34,
-        TARGET_W - side_pad,
-        header_h - 34
-    )
-    text_box = (
-        side_pad,
-        header_h + photo_h + 26,
-        TARGET_W - side_pad,
-        TARGET_H - 26
+        header_side_pad,
+        photo_h + 24,
+        TARGET_W - header_side_pad,
+        photo_h + header_h - 22
     )
 
-    title_font, title_gap = _fit_story_text(
+    body_box = (
+        body_side_pad,
+        photo_h + header_h + 24,
+        TARGET_W - body_side_pad,
+        TARGET_H - 24
+    )
+
+    # Заголовок
+    title_font, title_gap, title_paragraph_gap = _fit_story_text(
         draw,
         title,
         header_box,
-        min_size=32,
-        max_size=58,
-        bold=True,
-        montserrat=True,
-        line_gap_ratio=0.14
+        min_size=28,
+        max_size=54,
+        montserrat_black=True,
+        line_gap_ratio=0.08,
+        paragraph_gap_ratio=0.18
     )
+
     _draw_story_text(
         draw,
         title,
@@ -594,27 +740,31 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
         title_font,
         fill=(255, 255, 255),
         align="center",
-        line_gap=title_gap
+        line_gap=title_gap,
+        paragraph_gap_extra=title_paragraph_gap
     )
 
-    body_font, body_gap = _fit_story_text(
+    # Основной текст
+    body_font, body_gap, body_paragraph_gap = _fit_story_text(
         draw,
         body_text,
-        text_box,
-        min_size=24,
-        max_size=38,
-        bold=False,
-        montserrat=False,
-        line_gap_ratio=0.22
+        body_box,
+        min_size=14,
+        max_size=30,
+        montserrat_black=True,
+        line_gap_ratio=0.10,
+        paragraph_gap_ratio=0.32
     )
+
     _draw_story_text(
         draw,
         body_text,
-        text_box,
+        body_box,
         body_font,
         fill=(255, 255, 255),
         align="left",
-        line_gap=body_gap
+        line_gap=body_gap,
+        paragraph_gap_extra=body_paragraph_gap
     )
 
     return save_jpeg_to_bytes(canvas)
@@ -1213,7 +1363,11 @@ def on_text(message):
         if text == "МН":
             if not photo_bytes:
                 set_state(message.from_user.id, template="mn", flow="await_manual_photo")
-                bot.send_message(message.chat.id, "Фото не найдено. Пришли фото вручную:", reply_markup=telebot.types.ReplyKeyboardRemove())
+                bot.send_message(
+                    message.chat.id,
+                    "Фото не найдено. Пришли фото вручную:",
+                    reply_markup=telebot.types.ReplyKeyboardRemove()
+                )
                 return
             title = item["title"]
             card = make_card_mn(photo_bytes, title)
@@ -1236,7 +1390,11 @@ def on_text(message):
         elif text == "ЧП ВМ":
             if not photo_bytes:
                 set_state(message.from_user.id, template="chp_vm", flow="await_manual_photo")
-                bot.send_message(message.chat.id, "Фото не найдено. Пришли фото вручную:", reply_markup=telebot.types.ReplyKeyboardRemove())
+                bot.send_message(
+                    message.chat.id,
+                    "Фото не найдено. Пришли фото вручную:",
+                    reply_markup=telebot.types.ReplyKeyboardRemove()
+                )
                 return
             title = item["title"]
             card = make_card_chp_vm(photo_bytes, title)
@@ -1259,7 +1417,11 @@ def on_text(message):
         elif text == "Сторис ФДР":
             if not photo_bytes:
                 set_state(message.from_user.id, template="fdr_story", flow="await_manual_photo")
-                bot.send_message(message.chat.id, "Фото не найдено. Пришли фото вручную:", reply_markup=telebot.types.ReplyKeyboardRemove())
+                bot.send_message(
+                    message.chat.id,
+                    "Фото не найдено. Пришли фото вручную:",
+                    reply_markup=telebot.types.ReplyKeyboardRemove()
+                )
                 return
             set_state(
                 message.from_user.id,
