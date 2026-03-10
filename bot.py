@@ -1,9 +1,14 @@
+# -*- coding: utf-8 -*-
 import os
 import re
 import html
 import time
 import hashlib
 import json
+import logging
+import signal
+import sys
+import functools
 from io import BytesIO
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta, timezone
@@ -18,8 +23,24 @@ from telebot.types import (
     ReplyKeyboardMarkup, KeyboardButton
 )
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from bs4 import BeautifulSoup
+
+
+# =========================
+# Logging setup
+# =========================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 # =========================
@@ -45,6 +66,12 @@ if not CHANNEL or CHANNEL == "@":
 
 if not SUGGEST_URL and BOT_USERNAME:
     SUGGEST_URL = f"https://t.me/{BOT_USERNAME}?start=suggest"
+
+# Constants
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
+CACHE_TTL = 3600  # 1 hour
+REQUEST_TIMEOUT = 30
+MAX_RETRIES = 3
 
 
 # =========================
@@ -176,11 +203,24 @@ NEWS_SOURCES = [
 ]
 
 # =========================
-# BOT + SESSION
+# BOT + SESSION with retries
 # =========================
 bot = telebot.TeleBot(TOKEN)
 
 SESSION = requests.Session()
+retry_strategy = Retry(
+    total=MAX_RETRIES,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+)
+adapter = HTTPAdapter(
+    max_retries=retry_strategy,
+    pool_connections=20,
+    pool_maxsize=20
+)
+SESSION.mount("http://", adapter)
+SESSION.mount("https://", adapter)
+
 SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
@@ -193,6 +233,61 @@ user_state: Dict[int, Dict] = {}
 
 
 # =========================
+# Graceful shutdown
+# =========================
+def signal_handler(sig, frame):
+    logger.info("Shutting down gracefully...")
+    bot.stop_polling()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+
+# =========================
+# Helper decorators
+# =========================
+def retry_on_error(max_retries=MAX_RETRIES):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            for i in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if i == max_retries - 1:
+                        logger.error(f"Failed after {max_retries} retries: {e}")
+                        raise
+                    logger.warning(f"Retry {i + 1}/{max_retries} for {func.__name__}: {e}")
+                    time.sleep(1 * (i + 1))
+            return None
+        return wrapper
+    return decorator
+
+
+def validate_url(url: str) -> bool:
+    try:
+        result = urlparse(url)
+        return all([result.scheme, result.netloc]) and result.scheme in ['http', 'https']
+    except Exception:
+        return False
+
+
+def check_file_size(file_bytes: bytes) -> bool:
+    return len(file_bytes) <= MAX_FILE_SIZE
+
+
+# =========================
+# Caching
+# =========================
+@functools.lru_cache(maxsize=100)
+def get_cached_image(url: str) -> bytes:
+    if not validate_url(url):
+        raise ValueError(f"Invalid URL: {url}")
+    return http_get_bytes(url)
+
+
+# =========================
 # Helpers
 # =========================
 def is_admin(msg_or_call) -> bool:
@@ -202,13 +297,19 @@ def is_admin(msg_or_call) -> bool:
     return uid == ADMIN_ID
 
 
-def http_get(url: str, timeout: int = 25) -> str:
+@retry_on_error()
+def http_get(url: str, timeout: int = REQUEST_TIMEOUT) -> str:
+    if not validate_url(url):
+        raise ValueError(f"Invalid URL: {url}")
     r = SESSION.get(url, timeout=timeout)
     r.raise_for_status()
     return r.text
 
 
-def http_get_bytes(url: str, timeout: int = 25) -> bytes:
+@retry_on_error()
+def http_get_bytes(url: str, timeout: int = REQUEST_TIMEOUT) -> bytes:
+    if not validate_url(url):
+        raise ValueError(f"Invalid URL: {url}")
     r = SESSION.get(url, timeout=timeout)
     r.raise_for_status()
     return r.content
@@ -231,14 +332,10 @@ def extract_source_url(text: str) -> str:
 
 
 def ensure_fonts():
-    if not os.path.exists(FONT_MN):
-        raise RuntimeError(f"Не найден шрифт {FONT_MN}. Положи его рядом с bot.py")
-    if not os.path.exists(FONT_CHP):
-        raise RuntimeError(f"Не найден шрифт {FONT_CHP}. Положи его рядом с bot.py")
-    if not os.path.exists(FONT_AM):
-        raise RuntimeError(f"Не найден шрифт {FONT_AM}. Положи рядом с bot.py шрифт Intro Inline и назови файл {FONT_AM}")
-    if not os.path.exists(FONT_MONTSERRAT_BLACK):
-        raise RuntimeError(f"Не найден шрифт {FONT_MONTSERRAT_BLACK}. Положи его рядом с bot.py")
+    fonts = [FONT_MN, FONT_CHP, FONT_AM, FONT_MONTSERRAT_BLACK]
+    for font in fonts:
+        if not os.path.exists(font):
+            raise RuntimeError(f"Font not found: {font}. Please place it next to bot.py")
 
 
 def warn_if_too_small(chat_id, photo_bytes: bytes):
@@ -250,14 +347,25 @@ def warn_if_too_small(chat_id, photo_bytes: bytes):
                 "⚠️ Фото маленького разрешения. Лучше присылать больше (от 1080×1350 и выше), "
                 "чтобы текст был максимально чёткий."
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Error checking image size: {e}")
 
 
 def clear_state(user_id: int):
     if user_id in user_state:
         template = user_state[user_id].get("template", "MN")
         user_state[user_id] = {"template": template, "step": "idle"}
+        logger.info(f"Cleared state for user {user_id}")
+
+
+def edit_or_send(chat_id, text, message_id=None, **kwargs):
+    if message_id:
+        try:
+            return bot.edit_message_text(text, chat_id, message_id, **kwargs)
+        except Exception as e:
+            logger.warning(f"Could not edit message: {e}")
+            return bot.send_message(chat_id, text, **kwargs)
+    return bot.send_message(chat_id, text, **kwargs)
 
 
 # =========================
@@ -282,7 +390,8 @@ def parse_dt(s: str) -> Optional[datetime]:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to parse date: {s}, error: {e}")
         return None
 
 
@@ -321,39 +430,48 @@ def extract_og_meta(page_html: str) -> Dict[str, str]:
 
 
 def parse_rss(url: str, source_name: str, limit: int = 80) -> List[Dict]:
-    xml_text = http_get(url, timeout=25)
-    root = ET.fromstring(xml_text)
+    try:
+        xml_text = http_get(url, timeout=REQUEST_TIMEOUT)
+        root = ET.fromstring(xml_text)
+    except Exception as e:
+        logger.error(f"Failed to parse RSS {url}: {e}")
+        return []
 
     out = []
     for item in root.findall(".//item"):
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        desc = (item.findtext("description") or "").strip()
-        pub = (item.findtext("pubDate") or "").strip() or (item.findtext("{http://purl.org/dc/elements/1.1/}date") or "").strip()
+        try:
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            desc = (item.findtext("description") or "").strip()
+            pub = (item.findtext("pubDate") or "").strip() or (item.findtext("{http://purl.org/dc/elements/1.1/}date") or "").strip()
 
-        image = ""
-        enc = item.find("enclosure")
-        if enc is not None and enc.get("url"):
-            image = enc.get("url") or ""
-        if not image:
-            for child in item:
-                tag = (child.tag or "").lower()
-                if "content" in tag and child.get("url"):
-                    image = child.get("url")
-                    break
+            image = ""
+            enc = item.find("enclosure")
+            if enc is not None and enc.get("url"):
+                image = enc.get("url") or ""
+            if not image:
+                for child in item:
+                    tag = (child.tag or "").lower()
+                    if "content" in tag and child.get("url"):
+                        image = child.get("url")
+                        break
 
-        dt = parse_dt(pub)
+            dt = parse_dt(pub)
 
-        if title and link:
-            out.append({
-                "source": source_name,
-                "title": title,
-                "url": link,
-                "summary": html.unescape(re.sub(r"<[^>]+>", " ", desc)).strip(),
-                "image": image,
-                "published_raw": pub,
-                "dt_utc": dt.isoformat() if dt else "",
-            })
+            if title and link:
+                out.append({
+                    "source": source_name,
+                    "title": title,
+                    "url": link,
+                    "summary": html.unescape(re.sub(r"<[^>]+>", " ", desc)).strip(),
+                    "image": image,
+                    "published_raw": pub,
+                    "dt_utc": dt.isoformat() if dt else "",
+                })
+        except Exception as e:
+            logger.error(f"Error parsing RSS item: {e}")
+            continue
+
         if len(out) >= limit:
             break
     return out
@@ -466,29 +584,33 @@ def _candidate_links_from_page(start_url: str, page_html: str, domain: str,
     out: List[Tuple[str, str]] = []
     seen = set()
     for a in soup.find_all("a", href=True):
-        href = normalize_url(start_url, a.get("href") or "")
-        if not href:
-            continue
-        href = href.split("#", 1)[0]
-        parsed = urlparse(href)
-        if not parsed.scheme.startswith("http"):
-            continue
-        if not _valid_same_domain(href, domain):
-            continue
-        if not _path_allowed(parsed.path, include_patterns, exclude_patterns):
-            continue
+        try:
+            href = normalize_url(start_url, a.get("href") or "")
+            if not href:
+                continue
+            href = href.split("#", 1)[0]
+            parsed = urlparse(href)
+            if not parsed.scheme.startswith("http"):
+                continue
+            if not _valid_same_domain(href, domain):
+                continue
+            if not _path_allowed(parsed.path, include_patterns, exclude_patterns):
+                continue
 
-        anchor = a.get_text(" ", strip=True) or a.get("title") or a.get("aria-label") or ""
-        anchor = re.sub(r"\s+", " ", anchor).strip()
-        if len(anchor) < 10 and not include_patterns:
+            anchor = a.get_text(" ", strip=True) or a.get("title") or a.get("aria-label") or ""
+            anchor = re.sub(r"\s+", " ", anchor).strip()
+            if len(anchor) < 10 and not include_patterns:
+                continue
+            key = parsed.scheme + "://" + parsed.netloc + parsed.path.rstrip("/")
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((href, anchor))
+            if len(out) >= max_candidates:
+                break
+        except Exception as e:
+            logger.error(f"Error processing link: {e}")
             continue
-        key = parsed.scheme + "://" + parsed.netloc + parsed.path.rstrip("/")
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append((href, anchor))
-        if len(out) >= max_candidates:
-            break
     return out
 
 
@@ -503,9 +625,9 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
     seen = set()
     for start_url in start_urls:
         try:
-            page_html = http_get(start_url, timeout=25)
+            page_html = http_get(start_url, timeout=REQUEST_TIMEOUT)
         except Exception as e:
-            print(f"[NEWS-ERROR] {source['name']} start={start_url} error={e}")
+            logger.error(f"[NEWS-ERROR] {source['name']} start={start_url} error={e}")
             continue
 
         for href, anchor in _candidate_links_from_page(
@@ -527,7 +649,7 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
     used = set()
     for href, anchor in candidates:
         try:
-            art_html = http_get(href, timeout=25)
+            art_html = http_get(href, timeout=REQUEST_TIMEOUT)
             try:
                 soup = BeautifulSoup(art_html, "lxml")
             except Exception:
@@ -564,18 +686,22 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
             if len(out) >= limit:
                 break
         except Exception as e:
-            print(f"[NEWS-ERROR] {source['name']} article={href} error={e}")
+            logger.error(f"[NEWS-ERROR] {source['name']} article={href} error={e}")
             continue
     return out
 
 
 def fetch_article_full_text_generic(url: str) -> str:
-    page_html = http_get(url, timeout=25)
     try:
-        soup = BeautifulSoup(page_html, "lxml")
-    except Exception:
-        soup = BeautifulSoup(page_html, "html.parser")
-    return _extract_text_from_soup(soup)
+        page_html = http_get(url, timeout=REQUEST_TIMEOUT)
+        try:
+            soup = BeautifulSoup(page_html, "lxml")
+        except Exception:
+            soup = BeautifulSoup(page_html, "html.parser")
+        return _extract_text_from_soup(soup)
+    except Exception as e:
+        logger.error(f"Failed to fetch article text from {url}: {e}")
+        return ""
 
 
 def _clean_text(text: str) -> str:
@@ -597,9 +723,9 @@ def fetch_all_news_last24h() -> List[Dict]:
                 items = parse_html_og_source(src, limit=src.get("limit", 40))
             else:
                 items = []
-            print(f"[NEWS] {src['name']} | kind={kind} | items={len(items)}")
+            logger.info(f"[NEWS] {src['name']} | kind={kind} | items={len(items)}")
         except Exception as e:
-            print(f"[NEWS-ERROR] {src['name']} | kind={kind} | error={e}")
+            logger.error(f"[NEWS-ERROR] {src['name']} | kind={kind} | error={e}")
             items = []
 
         for it in items:
@@ -721,11 +847,15 @@ def build_caption_html(title: str, body: str) -> str:
 # Telegram download
 # =========================
 def tg_file_bytes(file_id: str) -> bytes:
-    file_info = bot.get_file(file_id)
-    file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-    r = SESSION.get(file_url, timeout=30)
-    r.raise_for_status()
-    return r.content
+    try:
+        file_info = bot.get_file(file_id)
+        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+        r = SESSION.get(file_url, timeout=30)
+        r.raise_for_status()
+        return r.content
+    except Exception as e:
+        logger.error(f"Failed to download file {file_id}: {e}")
+        raise
 
 
 # =========================
@@ -1124,7 +1254,6 @@ def _draw_story_text(
 
         draw.text((x, y), line, font=font, fill=fill)
         y += line_h
-
         if idx < len(lines) - 1:
             y += line_gap
 
@@ -1533,8 +1662,9 @@ def on_news_item_action(c):
     photo_bytes = b""
     if image_url:
         try:
-            photo_bytes = http_get_bytes(image_url, timeout=25)
-        except Exception:
+            photo_bytes = get_cached_image(image_url)
+        except Exception as e:
+            logger.error(f"Failed to fetch image {image_url}: {e}")
             photo_bytes = b""
 
     st = user_state.get(uid) or {}
@@ -1546,7 +1676,8 @@ def on_news_item_action(c):
     if not auto_body and source_name.lower() in {"tochka", "smartpress", "sb.by", "mlyn", "ont", "minsknews"}:
         try:
             auto_body = fetch_article_full_text_generic(link)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to fetch article text: {e}")
             auto_body = ""
 
     if not photo_bytes:
@@ -1587,6 +1718,7 @@ def on_news_item_action(c):
                 bot.answer_callback_query(c.id, "Оформил ✅")
                 return
             except Exception as e:
+                logger.error(f"Error creating card: {e}")
                 bot.answer_callback_query(c.id, "Ошибка карточки", show_alert=True)
                 bot.send_message(c.message.chat.id, f"Ошибка при создании карточки: {e}", reply_markup=main_menu_kb())
                 return
@@ -1627,6 +1759,7 @@ def on_news_item_action(c):
         bot.send_message(c.message.chat.id, "Карточка готова ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ поста.", reply_markup=main_menu_kb())
 
     except Exception as e:
+        logger.error(f"Error creating card: {e}")
         bot.answer_callback_query(c.id, "Ошибка карточки", show_alert=True)
         bot.send_message(c.message.chat.id, f"Ошибка при создании карточки: {e}", reply_markup=main_menu_kb())
 
@@ -1648,21 +1781,56 @@ def on_photo(message):
         bot.send_message(message.chat.id, "Сначала выбери шаблон:", reply_markup=template_kb())
         return
 
-    file_id = message.photo[-1].file_id
-    photo_bytes = tg_file_bytes(file_id)
-    warn_if_too_small(message.chat.id, photo_bytes)
+    try:
+        file_id = message.photo[-1].file_id
+        photo_bytes = tg_file_bytes(file_id)
 
-    st["photo_bytes"] = photo_bytes
+        if not check_file_size(photo_bytes):
+            bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+            return
 
-    if st.get("prefill_title"):
-        st["title"] = st["prefill_title"]
-        st["source_url"] = st.get("prefill_source", "") or ""
+        warn_if_too_small(message.chat.id, photo_bytes)
 
-        try:
-            if st["template"] == "FDR_STORY":
+        st["photo_bytes"] = photo_bytes
+
+        if st.get("prefill_title"):
+            st["title"] = st["prefill_title"]
+            st["source_url"] = st.get("prefill_source", "") or ""
+
+            try:
+                if st["template"] == "FDR_STORY":
+                    if st.get("prefill_body"):
+                        card = make_card(st["photo_bytes"], st["title"], st["template"], st["prefill_body"])
+                        st["card_bytes"] = card.getvalue()
+                        st["body_raw"] = st["prefill_body"]
+                        st.pop("prefill_body", None)
+                        st.pop("prefill_title", None)
+                        st.pop("prefill_source", None)
+                        st["step"] = "waiting_action"
+                        user_state[uid] = st
+
+                        caption = build_caption_html(st["title"], st["body_raw"])
+                        bot.send_photo(
+                            chat_id=message.chat.id,
+                            photo=BytesIO(st["card_bytes"]),
+                            caption=caption,
+                            parse_mode="HTML",
+                            reply_markup=preview_kb(st.get("source_url", "")),
+                        )
+                        bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
+                        return
+                    else:
+                        st["step"] = "waiting_body_fdr"
+                        st.pop("prefill_title", None)
+                        st.pop("prefill_source", None)
+                        user_state[uid] = st
+                        bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
+                        return
+
+                card = make_card(st["photo_bytes"], st["title"], st["template"])
+                st["card_bytes"] = card.getvalue()
+
                 if st.get("prefill_body"):
-                    card = make_card(st["photo_bytes"], st["title"], st["template"], st["prefill_body"])
-                    st["card_bytes"] = card.getvalue()
                     st["body_raw"] = st["prefill_body"]
                     st.pop("prefill_body", None)
                     st.pop("prefill_title", None)
@@ -1680,54 +1848,30 @@ def on_photo(message):
                     )
                     bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
                     return
-                else:
-                    st["step"] = "waiting_body_fdr"
-                    st.pop("prefill_title", None)
-                    st.pop("prefill_source", None)
-                    user_state[uid] = st
-                    bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
-                    return
 
-            card = make_card(st["photo_bytes"], st["title"], st["template"])
-            st["card_bytes"] = card.getvalue()
-
-            if st.get("prefill_body"):
-                st["body_raw"] = st["prefill_body"]
-                st.pop("prefill_body", None)
+                st["step"] = "waiting_body"
                 st.pop("prefill_title", None)
                 st.pop("prefill_source", None)
-                st["step"] = "waiting_action"
                 user_state[uid] = st
+                bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ поста.")
+            except Exception as e:
+                logger.error(f"Error creating card: {e}")
+                st["step"] = "waiting_photo"
+                user_state[uid] = st
+                bot.reply_to(message, f"Ошибка при создании карточки: {e}")
+            return
 
-                caption = build_caption_html(st["title"], st["body_raw"])
-                bot.send_photo(
-                    chat_id=message.chat.id,
-                    photo=BytesIO(st["card_bytes"]),
-                    caption=caption,
-                    parse_mode="HTML",
-                    reply_markup=preview_kb(st.get("source_url", "")),
-                )
-                bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-                return
+        if st["template"] == "FDR_STORY":
+            st["step"] = "waiting_title_fdr"
+        else:
+            st["step"] = "waiting_title"
 
-            st["step"] = "waiting_body"
-            st.pop("prefill_title", None)
-            st.pop("prefill_source", None)
-            user_state[uid] = st
-            bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ поста.")
-        except Exception as e:
-            st["step"] = "waiting_photo"
-            user_state[uid] = st
-            bot.reply_to(message, f"Ошибка при создании карточки: {e}")
-        return
+        user_state[uid] = st
+        bot.reply_to(message, "Фото получено ✅ Теперь отправь ЗАГОЛОВОК.")
 
-    if st["template"] == "FDR_STORY":
-        st["step"] = "waiting_title_fdr"
-    else:
-        st["step"] = "waiting_title"
-
-    user_state[uid] = st
-    bot.reply_to(message, "Фото получено ✅ Теперь отправь ЗАГОЛОВОК.")
+    except Exception as e:
+        logger.error(f"Error processing photo: {e}")
+        bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
 
 
 @bot.message_handler(content_types=["document"])
@@ -1745,16 +1889,26 @@ def on_document(message):
         bot.reply_to(message, "Пришли картинку (JPG/PNG).")
         return
 
-    photo_bytes = tg_file_bytes(doc.file_id)
-    warn_if_too_small(message.chat.id, photo_bytes)
+    try:
+        photo_bytes = tg_file_bytes(doc.file_id)
 
-    st["photo_bytes"] = photo_bytes
-    if st["template"] == "FDR_STORY":
-        st["step"] = "waiting_title_fdr"
-    else:
-        st["step"] = "waiting_title"
-    user_state[uid] = st
-    bot.reply_to(message, "Картинка получена ✅ Теперь отправь ЗАГОЛОВОК.")
+        if not check_file_size(photo_bytes):
+            bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+            return
+
+        warn_if_too_small(message.chat.id, photo_bytes)
+
+        st["photo_bytes"] = photo_bytes
+        if st["template"] == "FDR_STORY":
+            st["step"] = "waiting_title_fdr"
+        else:
+            st["step"] = "waiting_title"
+        user_state[uid] = st
+        bot.reply_to(message, "Картинка получена ✅ Теперь отправь ЗАГОЛОВОК.")
+
+    except Exception as e:
+        logger.error(f"Error processing document: {e}")
+        bot.reply_to(message, f"❌ Ошибка при обработке документа: {e}")
 
 
 @bot.message_handler(content_types=["text"])
@@ -1816,6 +1970,7 @@ def on_text(message):
             )
             bot.reply_to(message, "Сторис готова ✅ Нажми кнопку.")
         except Exception as e:
+            logger.error(f"Error creating story: {e}")
             bot.reply_to(message, f"❌ Ошибка при создании сторис: {e}")
             st["step"] = "waiting_photo"
             user_state[uid] = st
@@ -1830,6 +1985,7 @@ def on_text(message):
             user_state[uid] = st
             bot.reply_to(message, "Карточка готова ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ поста.")
         except Exception as e:
+            logger.error(f"Error creating card: {e}")
             st["step"] = "waiting_photo"
             user_state[uid] = st
             bot.reply_to(message, f"Ошибка при создании карточки: {e}")
@@ -1891,6 +2047,7 @@ def on_action(call):
             tpl = st.get("template", "MN")
             user_state[uid] = {"step": "idle", "template": tpl}
         except Exception as e:
+            logger.error(f"Error publishing: {e}")
             bot.answer_callback_query(call.id, "Ошибка публикации")
             bot.send_message(call.message.chat.id, f"Не смог опубликовать: {e}", reply_markup=main_menu_kb())
 
@@ -1925,6 +2082,48 @@ def on_action(call):
         bot.send_message(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
 
 
+# =========================
+# Additional commands
+# =========================
+@bot.message_handler(commands=["stats"])
+def cmd_stats(message):
+    if not is_admin(message):
+        return
+
+    stats = {
+        "active_users": len(user_state),
+        "cache_size": get_cached_image.cache_info().currsize if hasattr(get_cached_image, 'cache_info') else 0,
+        "pool_connections": len(SESSION.adapters),
+    }
+
+    stats_text = "📊 Статистика:\n"
+    for key, value in stats.items():
+        stats_text += f"• {key}: {value}\n"
+
+    bot.reply_to(message, stats_text)
+
+
+@bot.message_handler(commands=["health"])
+def cmd_health(message):
+    if not is_admin(message):
+        return
+
+    health_data = {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "fonts_loaded": all(os.path.exists(f) for f in [FONT_MN, FONT_CHP, FONT_AM, FONT_MONTSERRAT_BLACK]),
+    }
+
+    bot.reply_to(message, f"✅ Health check:\n{json.dumps(health_data, indent=2, ensure_ascii=False)}")
+
+
 if __name__ == "__main__":
+    logger.info("Starting bot...")
     ensure_fonts()
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    logger.info("Fonts loaded successfully")
+
+    try:
+        bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
+        raise
