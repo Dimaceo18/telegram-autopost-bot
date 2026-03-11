@@ -25,8 +25,15 @@ from telebot.types import (
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
 from bs4 import BeautifulSoup
+
+# Новые импорты для автоматической выгрузки
+import threading
+import time
+from datetime import datetime, timedelta
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 
 
 # =========================
@@ -42,16 +49,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# =========================
-# Автоматическая выгрузка новостей - ИМПОРТЫ
-# =========================
-import threading
-import time
-from datetime import datetime, timedelta
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-import pytz
-
 
 # =========================
 # ENV
@@ -61,9 +58,11 @@ CHANNEL = (os.getenv("CHANNEL_USERNAME") or "").strip()
 BOT_USERNAME = (os.getenv("BOT_USERNAME") or "").strip().lstrip("@")
 SUGGEST_URL = (os.getenv("SUGGEST_URL") or "").strip()
 
-# ADMIN_ID больше не используется, но оставим для обратной совместимости
-ADMIN_ID_RAW = (os.getenv("ADMIN_ID") or "").strip()
-ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW.isdigit() else None
+# Настройки автоматической выгрузки
+AUTO_NEWS_CHAT_ID = os.getenv("AUTO_NEWS_CHAT_ID")  # ID чата для авто-выгрузки
+AUTO_NEWS_TIMEZONE = os.getenv("AUTO_NEWS_TIMEZONE", "Europe/Minsk")
+NEWS_BATCH_SIZE = 20  # Количество новостей в одной выгрузке
+NEWS_MORE_SIZE = 10   # Сколько еще подгружать
 
 if CHANNEL and not CHANNEL.startswith("@"):
     CHANNEL = "@" + CHANNEL
@@ -84,28 +83,18 @@ CACHE_TTL = 3600  # 1 hour
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
 
-# =========================
-# Настройки автоматической выгрузки
-# =========================
-AUTO_NEWS_CHAT_ID = os.getenv("AUTO_NEWS_CHAT_ID")  # ID чата для авто-выгрузки
-AUTO_NEWS_TIMEZONE = os.getenv("AUTO_NEWS_TIMEZONE", "Europe/Minsk")
-NEWS_BATCH_SIZE = 20  # Количество новостей в одной выгрузке
-NEWS_MORE_SIZE = 10   # Сколько еще подгружать
 
 # =========================
 # UI BUTTONS
 # =========================
 BTN_POST = "📝 Оформить пост"
 BTN_NEWS = "📰 Получить новости"
-
-
-# Кнопка для ручного запуска
 BTN_GET_NEWS_MANUAL = "📰 Выгрузить новости сейчас"
 
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_NEWS))
-    kb.row(KeyboardButton(BTN_GET_NEWS_MANUAL))  # Добавляем новую кнопку
+    kb.row(KeyboardButton(BTN_GET_NEWS_MANUAL))
     return kb
 
 
@@ -115,24 +104,16 @@ def main_menu_kb():
 FONT_MN = "CaviarDreams.ttf"
 FONT_CHP = "Montserrat-Black.ttf"
 FONT_AM = "IntroInline.ttf"
-FONT_MONTSERRAT_BLACK = "Montserrat-Black.ttf"  # Для сторис ФДР
+FONT_MONTSERRAT_BLACK = "Montserrat-Black.ttf"
 
 FOOTER_TEXT = "MINSK NEWS"
 
-# Card size (both)
 TARGET_W, TARGET_H = 750, 938
-
-# Story FDR size
 STORY_W = 720
 STORY_H = 1280
 
-# MN: title zone height (top)
 MN_TITLE_ZONE_PCT = 0.23
-
-# CHP: gradient height
 CHP_GRADIENT_PCT = 0.48
-
-# AM: blurred top band
 AM_TOP_BLUR_PCT = 0.20
 AM_BLUR_RADIUS = 18
 AM_BLUR_BLEND = 0.50
@@ -312,9 +293,8 @@ def get_cached_image(url: str) -> bytes:
 # =========================
 # Helpers
 # =========================
-# Функция проверки админа больше не используется, но оставим для совместимости
 def is_admin(msg_or_call) -> bool:
-    return True  # Всегда возвращаем True, чтобы все пользователи имели доступ
+    return True
 
 
 @retry_on_error()
@@ -1500,6 +1480,11 @@ def set_news_cache(uid: int, items: List[Dict]):
 
 def item_key(title: str, url: str) -> str:
     return hashlib.sha256(f"{title}|{url}".encode("utf-8")).hexdigest()[:16]
+
+
+# =========================
+# Класс для автоматической выгрузки новостей
+# =========================
 class NewsAutoPublisher:
     def __init__(self, bot_instance, chat_id):
         self.bot = bot_instance
@@ -1579,14 +1564,14 @@ class NewsAutoPublisher:
             )
             
             if manual:
-                sent_msg = self.bot.send_message(
+                self.bot.send_message(
                     self.chat_id, 
                     header, 
                     parse_mode="HTML",
                     reply_markup=main_menu_kb()
                 )
             else:
-                sent_msg = self.bot.send_message(self.chat_id, header, parse_mode="HTML")
+                self.bot.send_message(self.chat_id, header, parse_mode="HTML")
             
             # Сохраняем все новости в кэш для этого чата
             cache_key = f"news_cache_{self.chat_id}"
@@ -1675,21 +1660,15 @@ class NewsAutoPublisher:
             remaining = len(items) - end_idx
             msg = f"📊 Показано {end_idx} из {len(items)} новостей\nОсталось: {remaining}"
             
-            if manual:
-                self.bot.send_message(
-                    chat_id, 
-                    msg, 
-                    reply_markup=more_kb,
-                    reply_markup=main_menu_kb()
-                )
-            else:
-                self.bot.send_message(chat_id, msg, reply_markup=more_kb)
+            self.bot.send_message(chat_id, msg, reply_markup=more_kb)
         else:
             self.bot.send_message(
                 chat_id, 
                 "✅ Все новости загружены!",
                 reply_markup=main_menu_kb()
             )
+
+
 # =========================
 # Обработчики для новостей
 # =========================
@@ -1731,7 +1710,7 @@ def on_read_full_news(c):
             except Exception as e:
                 logger.error(f"Failed to fetch image: {e}")
         
-        # Формируем сообщение
+        # Очищаем текст
         clean_text = _clean_text(full_text) if full_text else "Полный текст не найден"
         
         # Отправляем уведомление о начале загрузки
@@ -1740,7 +1719,6 @@ def on_read_full_news(c):
         # Отправляем фото, если есть
         if photo_bytes and check_file_size(photo_bytes):
             try:
-                # Отправляем фото отдельно
                 bot.send_photo(
                     c.message.chat.id,
                     photo=photo_bytes,
@@ -1755,61 +1733,45 @@ def on_read_full_news(c):
                     parse_mode="HTML"
                 )
         else:
-            # Если фото нет, отправляем только заголовок
             bot.send_message(
                 c.message.chat.id,
                 f"<b>{html.escape(title)}</b>",
                 parse_mode="HTML"
             )
         
-        # Отправляем полный текст отдельным сообщением
-        # Разбиваем на части если текст очень длинный (лимит Telegram 4096 символов)
-        text_parts = []
-        remaining_text = clean_text
-        
-        while len(remaining_text) > 0:
-            if len(remaining_text) <= 4000:
-                text_parts.append(remaining_text)
-                break
-            else:
-                # Ищем место для разрыва (конец предложения или абзаца)
-                split_point = remaining_text[:4000].rfind('\n\n')
-                if split_point == -1:
-                    split_point = remaining_text[:4000].rfind('. ')
-                if split_point == -1:
-                    split_point = 4000
-                
-                text_parts.append(remaining_text[:split_point])
-                remaining_text = remaining_text[split_point:].lstrip()
-        
-        # Отправляем все части текста
-        for i, part in enumerate(text_parts):
-            if i == 0:
-                # Первая часть без дополнительного текста
-                bot.send_message(
-                    c.message.chat.id,
-                    part,
-                    parse_mode="HTML"
-                )
-            else:
-                # Последующие части с пометкой о продолжении
-                bot.send_message(
-                    c.message.chat.id,
-                    f"<i>Продолжение ({i+1}/{len(text_parts)}):</i>\n\n{part}",
-                    parse_mode="HTML"
-                )
-        
-        # Если текст был разбит, добавляем навигацию
-        if len(text_parts) > 1:
-            nav_kb = InlineKeyboardMarkup()
-            nav_kb.row(
-                InlineKeyboardButton("📖 Читать с начала", callback_data=f"read_full:{key}")
-            )
-            bot.send_message(
-                c.message.chat.id,
-                f"📚 Текст разбит на {len(text_parts)} части. Используйте кнопку выше для перезагрузки.",
-                reply_markup=nav_kb
-            )
+        # Отправляем полный текст
+        # Разбиваем на части если текст очень длинный
+        if len(clean_text) <= 4000:
+            bot.send_message(c.message.chat.id, clean_text, parse_mode="HTML")
+        else:
+            # Разбиваем на части по 4000 символов
+            text_parts = []
+            remaining = clean_text
+            while remaining:
+                if len(remaining) <= 4000:
+                    text_parts.append(remaining)
+                    break
+                else:
+                    # Ищем место для разрыва
+                    split_point = remaining[:4000].rfind('\n\n')
+                    if split_point == -1:
+                        split_point = remaining[:4000].rfind('. ')
+                    if split_point == -1:
+                        split_point = 4000
+                    
+                    text_parts.append(remaining[:split_point])
+                    remaining = remaining[split_point:].lstrip()
+            
+            # Отправляем все части
+            for i, part in enumerate(text_parts):
+                if i == 0:
+                    bot.send_message(c.message.chat.id, part, parse_mode="HTML")
+                else:
+                    bot.send_message(
+                        c.message.chat.id,
+                        f"<i>Продолжение ({i+1}/{len(text_parts)}):</i>\n\n{part}",
+                        parse_mode="HTML"
+                    )
         
         bot.answer_callback_query(c.id, "✅ Готово")
         
@@ -1837,6 +1799,7 @@ def on_load_more(c):
     
     bot.answer_callback_query(c.id, f"Загружаю еще {NEWS_MORE_SIZE} новостей...")
 
+
 # =========================
 # Обработчик ручной выгрузки
 # =========================
@@ -1860,12 +1823,12 @@ def cmd_manual_news(message):
     # Запускаем выгрузку
     news_publisher.publish_news_digest(manual=True)
 
+
 # =========================
 # Template selection handler
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:"))
 def on_tpl(c):
-    # Убрана проверка is_admin
     uid = c.from_user.id
     tpl = c.data.split(":", 1)[1]
     st = user_state.get(uid) or {}
@@ -1890,7 +1853,6 @@ def on_tpl(c):
 # =========================
 @bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
-    # Убрана проверка is_admin
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     st.setdefault("template", "MN")
@@ -1910,7 +1872,6 @@ def cmd_start(message):
 
 @bot.message_handler(commands=["template"])
 def cmd_template(message):
-    # Убрана проверка is_admin
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     st["step"] = "waiting_template"
@@ -1920,7 +1881,6 @@ def cmd_template(message):
 
 @bot.message_handler(commands=["post"])
 def cmd_post(message):
-    # Убрана проверка is_admin
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     st.setdefault("template", "MN")
@@ -1929,7 +1889,6 @@ def cmd_post(message):
     bot.send_message(message.chat.id, "Выбери шаблон оформления:", reply_markup=template_kb())
 
 
-@bot.message_handler(commands=["news"])
 @bot.message_handler(commands=["news"])
 def cmd_news(message):
     """Обычная команда получения новостей"""
@@ -1987,7 +1946,6 @@ def send_news_batch(chat_id: int, uid: int, batch: int):
 
 @bot.callback_query_handler(func=lambda c: c.data in {"nmore", "nrefresh"})
 def on_news_nav(c):
-    # Убрана проверка is_admin
     uid = c.from_user.id
 
     if c.data == "nrefresh":
@@ -2003,7 +1961,6 @@ def on_news_nav(c):
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("nfmt:") or c.data.startswith("nskip:"))
 def on_news_item_action(c):
-    # Убрана проверка is_admin
     uid = c.from_user.id
     cache = get_news_cache(uid)
     if not cache:
@@ -2140,7 +2097,6 @@ def on_news_item_action(c):
 # =========================
 @bot.message_handler(content_types=["photo"])
 def on_photo(message):
-    # Убрана проверка is_admin
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     st.setdefault("template", "MN")
@@ -2244,7 +2200,6 @@ def on_photo(message):
 
 @bot.message_handler(content_types=["document"])
 def on_document(message):
-    # Убрана проверка is_admin
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     st.setdefault("template", "MN")
@@ -2278,7 +2233,6 @@ def on_document(message):
 
 @bot.message_handler(content_types=["text"])
 def on_text(message):
-    # Убрана проверка is_admin
     uid = message.from_user.id
     text = (message.text or "").strip()
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
@@ -2289,6 +2243,10 @@ def on_text(message):
 
     if text == BTN_NEWS or text.lower() in {"получить новости", "новости", "дай новости"}:
         cmd_news(message)
+        return
+
+    if text == BTN_GET_NEWS_MANUAL:
+        cmd_manual_news(message)
         return
 
     step = st.get("step")
@@ -2383,7 +2341,6 @@ def on_text(message):
 
 @bot.callback_query_handler(func=lambda call: call.data in ["publish", "edit_body", "edit_title", "cancel"])
 def on_action(call):
-    # Убрана проверка is_admin
     uid = call.from_user.id
     st = user_state.get(uid)
 
@@ -2446,7 +2403,6 @@ def on_action(call):
 # =========================
 @bot.message_handler(commands=["stats"])
 def cmd_stats(message):
-    # Убрана проверка is_admin
     stats = {
         "active_users": len(user_state),
         "cache_size": get_cached_image.cache_info().currsize if hasattr(get_cached_image, 'cache_info') else 0,
@@ -2462,7 +2418,6 @@ def cmd_stats(message):
 
 @bot.message_handler(commands=["health"])
 def cmd_health(message):
-    # Убрана проверка is_admin
     health_data = {
         "status": "ok",
         "timestamp": datetime.now().isoformat(),
@@ -2471,12 +2426,17 @@ def cmd_health(message):
 
     bot.reply_to(message, f"✅ Health check:\n{json.dumps(health_data, indent=2, ensure_ascii=False)}")
 
+
 # =========================
 # Создание экземпляра планировщика
 # =========================
 news_publisher = NewsAutoPublisher(bot, AUTO_NEWS_CHAT_ID)
 
-iif __name__ == "__main__":
+
+# =========================
+# Запуск бота
+# =========================
+if __name__ == "__main__":
     logger.info("Starting bot...")
     ensure_fonts()
     logger.info("Fonts loaded successfully")
