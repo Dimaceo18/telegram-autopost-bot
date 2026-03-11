@@ -66,16 +66,11 @@ def main_menu_kb():
 FONT_MN = "CaviarDreams.ttf"
 FONT_CHP = "Montserrat-Black.ttf"
 FONT_AM = "IntroInline.ttf"
-FONT_MONTSERRAT_BLACK = "Montserrat-Black.ttf"  # Для сторис ФДР
 
 FOOTER_TEXT = "MINSK NEWS"
 
 # Card size (both)
 TARGET_W, TARGET_H = 750, 938
-
-# Story FDR size
-STORY_W = 720
-STORY_H = 1280
 
 # MN: title zone height (top)
 MN_TITLE_ZONE_PCT = 0.23
@@ -237,8 +232,6 @@ def ensure_fonts():
         raise RuntimeError(f"Не найден шрифт {FONT_CHP}. Положи его рядом с bot.py")
     if not os.path.exists(FONT_AM):
         raise RuntimeError(f"Не найден шрифт {FONT_AM}. Положи рядом с bot.py шрифт Intro Inline и назови файл {FONT_AM}")
-    if not os.path.exists(FONT_MONTSERRAT_BLACK):
-        raise RuntimeError(f"Не найден шрифт {FONT_MONTSERRAT_BLACK}. Положи его рядом с bot.py")
 
 
 def warn_if_too_small(chat_id, photo_bytes: bytes):
@@ -1010,263 +1003,11 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     return out
 
 
-def fit_cover(im: Image.Image, target_w: int, target_h: int) -> Image.Image:
-    src_w, src_h = im.size
-    scale = max(target_w / src_w, target_h / src_h)
-    nw, nh = int(src_w * scale), int(src_h * scale)
-    resized = im.resize((nw, nh), Image.LANCZOS)
-    left = max(0, (nw - target_w) // 2)
-    top = max(0, (nh - target_h) // 2)
-    return resized.crop((left, top, left + target_w, top + target_h))
-
-
-def save_jpeg_to_bytes(im: Image.Image, quality: int = 92) -> BytesIO:
-    bio = BytesIO()
-    im.convert("RGB").save(bio, format="JPEG", quality=quality, optimize=True)
-    bio.seek(0)
-    return bio
-
-
-def _wrap_text_preserve_paragraphs(draw, text, font, max_w):
-    paragraphs = [p.strip() for p in (text or "").replace("\r", "\n").split("\n")]
-
-    all_lines = []
-    for i, p in enumerate(paragraphs):
-        if not p:
-            if all_lines and all_lines[-1] != "":
-                all_lines.append("")
-            continue
-
-        words = p.split()
-        if not words:
-            continue
-
-        current = words[0]
-        for word in words[1:]:
-            test = current + " " + word
-            bbox = draw.textbbox((0, 0), test, font=font)
-            if (bbox[2] - bbox[0]) <= max_w:
-                current = test
-            else:
-                all_lines.append(current)
-                current = word
-        all_lines.append(current)
-
-        if i < len(paragraphs) - 1:
-            all_lines.append("")
-
-    while all_lines and all_lines[-1] == "":
-        all_lines.pop()
-
-    return all_lines
-
-
-def _draw_story_text(
-    draw,
-    text,
-    box,
-    font,
-    fill=(255, 255, 255),
-    align="center",
-    line_gap=10,
-    paragraph_gap_extra=10
-):
-    x1, y1, x2, y2 = box
-    max_w = x2 - x1
-    max_h = y2 - y1
-
-    lines = _wrap_text_preserve_paragraphs(draw, text, font, max_w)
-    if not lines:
-        return
-
-    bbox = draw.textbbox((0, 0), "Ag", font=font)
-    line_h = bbox[3] - bbox[1]
-
-    total_h = 0
-    for idx, line in enumerate(lines):
-        if line == "":
-            total_h += line_gap + paragraph_gap_extra
-        else:
-            total_h += line_h
-            if idx < len(lines) - 1:
-                total_h += line_gap
-
-    y = y1 + max(0, (max_h - total_h) // 2)
-
-    for idx, line in enumerate(lines):
-        if line == "":
-            y += paragraph_gap_extra
-            continue
-
-        line_bbox = draw.textbbox((0, 0), line, font=font)
-        line_w = line_bbox[2] - line_bbox[0]
-
-        if align == "center":
-            x = x1 + (max_w - line_w) // 2
-        elif align == "left":
-            x = x1
-        else:
-            x = x2 - line_w
-
-        draw.text((x, y), line, font=font, fill=fill)
-        y += line_h
-        if idx < len(lines) - 1:
-            y += line_gap
-
-
-def _fit_story_text(
-    draw,
-    text,
-    box,
-    min_size,
-    max_size,
-    line_gap_ratio=0.18,
-    paragraph_gap_ratio=0.35
-):
-    x1, y1, x2, y2 = box
-    max_w = x2 - x1
-    max_h = y2 - y1
-
-    selected_font = ImageFont.truetype(FONT_MONTSERRAT_BLACK, min_size)
-    selected_gap = 8
-    selected_paragraph_gap = 12
-
-    for size in range(max_size, min_size - 1, -1):
-        font = ImageFont.truetype(FONT_MONTSERRAT_BLACK, size)
-        lines = _wrap_text_preserve_paragraphs(draw, text, font, max_w)
-        if not lines:
-            continue
-
-        bbox = draw.textbbox((0, 0), "Ag", font=font)
-        line_h = bbox[3] - bbox[1]
-        gap = max(4, int(line_h * line_gap_ratio))
-        paragraph_gap = max(gap + 2, int(line_h * paragraph_gap_ratio))
-
-        total_h = 0
-        max_line_w = 0
-
-        for idx, line in enumerate(lines):
-            if line == "":
-                total_h += paragraph_gap
-                continue
-
-            lb = draw.textbbox((0, 0), line, font=font)
-            lw = lb[2] - lb[0]
-            max_line_w = max(max_line_w, lw)
-
-            total_h += line_h
-            if idx < len(lines) - 1:
-                total_h += gap
-
-        if total_h <= max_h and max_line_w <= max_w:
-            selected_font = font
-            selected_gap = gap
-            selected_paragraph_gap = paragraph_gap
-            break
-
-    return selected_font, selected_gap, selected_paragraph_gap
-
-
-def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> BytesIO:
-    ensure_fonts()
-    
-    canvas = Image.new("RGB", (STORY_W, STORY_H), (0, 0, 0))
-    draw = ImageDraw.Draw(canvas)
-
-    # Уменьшаем высоту фото и фиолетовой зоны на 10%
-    # Было: photo_h = 455, header_h = 245
-    # Суммарно было 700px, теперь 630px (на 10% меньше)
-    photo_h = 410  # 455 - 10%
-    header_h = 220  # 245 - 10%
-    
-    # Оставшаяся высота для черной зоны: 1280 - 630 = 650px
-
-    photo = Image.open(BytesIO(photo_bytes)).convert("RGB")
-    story_photo = fit_cover(photo, STORY_W, photo_h)
-    canvas.paste(story_photo, (0, 0))
-
-    # Фиолетовая зона
-    purple_color = (122, 58, 240)
-    canvas.paste(Image.new("RGB", (STORY_W, header_h), purple_color), (0, photo_h))
-
-    # Черная зона
-    draw.rectangle([0, photo_h + header_h, STORY_W, STORY_H], fill=(0, 0, 0))
-
-    # Отступы со всех сторон одинаковые - 34px
-    padding = 34
-
-    # Область для заголовка с одинаковыми отступами
-    header_box = (
-        padding,
-        photo_h + padding,
-        STORY_W - padding,
-        photo_h + header_h - padding
-    )
-
-    # Область для основного текста с одинаковыми отступами
-    body_box = (
-        padding,
-        photo_h + header_h + padding,
-        STORY_W - padding,
-        STORY_H - padding
-    )
-
-    # Подбираем шрифт для заголовка
-    title_font, title_gap, title_paragraph_gap = _fit_story_text(
-        draw,
-        title,
-        header_box,
-        min_size=28,
-        max_size=54,
-        line_gap_ratio=0.08,
-        paragraph_gap_ratio=0.18
-    )
-
-    # Рисуем заголовок (белый цвет)
-    _draw_story_text(
-        draw,
-        title,
-        header_box,
-        title_font,
-        fill=(255, 255, 255),  # Белый цвет
-        align="center",
-        line_gap=title_gap,
-        paragraph_gap_extra=title_paragraph_gap
-    )
-
-    # Подбираем шрифт для основного текста
-    body_font, body_gap, body_paragraph_gap = _fit_story_text(
-        draw,
-        body_text,
-        body_box,
-        min_size=14,
-        max_size=30,
-        line_gap_ratio=0.10,
-        paragraph_gap_ratio=0.32
-    )
-
-    # Рисуем основной текст (белый цвет)
-    _draw_story_text(
-        draw,
-        body_text,
-        body_box,
-        body_font,
-        fill=(255, 255, 255),  # Белый цвет
-        align="left",
-        line_gap=body_gap,
-        paragraph_gap_extra=body_paragraph_gap
-    )
-
-    return save_jpeg_to_bytes(canvas)
-
-
-def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "") -> BytesIO:
+def make_card(photo_bytes: bytes, title_text: str, template: str) -> BytesIO:
     if template == "CHP":
         return make_card_chp(photo_bytes, title_text)
     if template == "AM":
         return make_card_am(photo_bytes, title_text)
-    if template == "FDR_STORY":
-        return make_card_fdr_story(photo_bytes, title_text, body_text)
     return make_card_mn(photo_bytes, title_text)
 
 
@@ -1279,10 +1020,7 @@ def template_kb():
         InlineKeyboardButton("📰 МН", callback_data="tpl:MN"),
         InlineKeyboardButton("🚨 ЧП ВМ", callback_data="tpl:CHP"),
     )
-    kb.row(
-        InlineKeyboardButton("✨ АМ", callback_data="tpl:AM"),
-        InlineKeyboardButton("📱 Сторис ФДР", callback_data="tpl:FDR_STORY")
-    )
+    kb.row(InlineKeyboardButton("✨ АМ", callback_data="tpl:AM"))
     return kb
 
 
@@ -1366,14 +1104,7 @@ def on_tpl(c):
         st["step"] = "waiting_photo"
     user_state[uid] = st
     bot.answer_callback_query(c.id, "Ок ✅")
-    
-    tpl_names = {
-        'MN': 'МН', 
-        'CHP': 'ЧП ВМ', 
-        'AM': 'АМ',
-        'FDR_STORY': 'Сторис ФДР'
-    }
-    tpl_name = tpl_names.get(tpl, tpl)
+    tpl_name = 'МН' if tpl == 'MN' else ('ЧП ВМ' if tpl == 'CHP' else 'АМ')
     bot.send_message(c.message.chat.id, f"Шаблон выбран: {tpl_name}. Пришли фото 📷")
 
 
@@ -1397,7 +1128,7 @@ def cmd_start(message):
         "Команды:\n"
         "• /post — оформить пост\n"
         "• /news — получить новости за 24 часа\n"
-        "• /template — выбрать шаблон (МН / ЧП ВМ / АМ / Сторис ФДР)\n",
+        "• /template — выбрать шаблон (МН / ЧП ВМ)\n",
         reply_markup=main_menu_kb()
     )
 
@@ -1568,29 +1299,6 @@ def on_news_item_action(c):
     warn_if_too_small(c.message.chat.id, photo_bytes)
     st["photo_bytes"] = photo_bytes
 
-    # Для шаблона FDR_STORY нужен body_text
-    if st["template"] == "FDR_STORY" and auto_body:
-        try:
-            card = make_card(photo_bytes, title, st["template"], auto_body)
-            st["card_bytes"] = card.getvalue()
-            st["step"] = "waiting_action"
-            user_state[uid] = st
-
-            caption = build_caption_html(st["title"], auto_body)
-            bot.send_photo(
-                chat_id=c.message.chat.id,
-                photo=BytesIO(st["card_bytes"]),
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=preview_kb(st.get("source_url", "")),
-            )
-            bot.answer_callback_query(c.id, "Оформил ✅")
-            return
-        except Exception as e:
-            bot.answer_callback_query(c.id, "Ошибка карточки", show_alert=True)
-            bot.send_message(c.message.chat.id, f"Ошибка при создании карточки: {e}", reply_markup=main_menu_kb())
-            return
-
     try:
         card = make_card(photo_bytes, title, st["template"])
         st["card_bytes"] = card.getvalue()
@@ -1651,30 +1359,8 @@ def on_photo(message):
         st["source_url"] = st.get("prefill_source", "") or ""
 
         try:
-            # Для шаблона FDR_STORY нужен body_text
-            if st["template"] == "FDR_STORY" and st.get("prefill_body"):
-                card = make_card(st["photo_bytes"], st["title"], st["template"], st["prefill_body"])
-                st["card_bytes"] = card.getvalue()
-                st["body_raw"] = st["prefill_body"]
-                st.pop("prefill_body", None)
-                st.pop("prefill_title", None)
-                st.pop("prefill_source", None)
-                st["step"] = "waiting_action"
-                user_state[uid] = st
-
-                caption = build_caption_html(st["title"], st["body_raw"])
-                bot.send_photo(
-                    chat_id=message.chat.id,
-                    photo=BytesIO(st["card_bytes"]),
-                    caption=caption,
-                    parse_mode="HTML",
-                    reply_markup=preview_kb(st.get("source_url", "")),
-                )
-                bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-                return
-            else:
-                card = make_card(st["photo_bytes"], st["title"], st["template"])
-                st["card_bytes"] = card.getvalue()
+            card = make_card(st["photo_bytes"], st["title"], st["template"])
+            st["card_bytes"] = card.getvalue()
 
             # NEW: если у нас был авто-текст (Tochka), сразу делаем превью
             if st.get("prefill_body"):
@@ -1852,3 +1538,4 @@ def on_action(call):
 if __name__ == "__main__":
     ensure_fonts()
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
+
