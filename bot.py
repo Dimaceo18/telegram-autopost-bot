@@ -59,10 +59,10 @@ BOT_USERNAME = (os.getenv("BOT_USERNAME") or "").strip().lstrip("@")
 SUGGEST_URL = (os.getenv("SUGGEST_URL") or "").strip()
 
 # Настройки автоматической выгрузки
-AUTO_NEWS_CHAT_ID = os.getenv("AUTO_NEWS_CHAT_ID")  # ID чата для авто-выгрузки
+AUTO_NEWS_CHAT_ID = os.getenv("AUTO_NEWS_CHAT_ID")  # ID чата для уведомлений
 AUTO_NEWS_TIMEZONE = os.getenv("AUTO_NEWS_TIMEZONE", "Europe/Minsk")
-NEWS_BATCH_SIZE = 20  # Количество новостей в одной выгрузке
-NEWS_MORE_SIZE = 10   # Сколько еще подгружать
+AUTO_PUBLISH_COUNT = int(os.getenv("AUTO_PUBLISH_COUNT", "5"))  # Сколько новостей публиковать за раз
+AUTO_PUBLISH_TEMPLATE = os.getenv("AUTO_PUBLISH_TEMPLATE", "MN")  # Шаблон для авто-публикации
 
 if CHANNEL and not CHANNEL.startswith("@"):
     CHANNEL = "@" + CHANNEL
@@ -90,11 +90,12 @@ MAX_RETRIES = 3
 BTN_POST = "📝 Оформить пост"
 BTN_NEWS = "📰 Получить новости"
 BTN_GET_NEWS_MANUAL = "📰 Выгрузить новости сейчас"
+BTN_AUTO_PUBLISH = "⚡ Авто-публикация в канал"
 
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_NEWS))
-    kb.row(KeyboardButton(BTN_GET_NEWS_MANUAL))
+    kb.row(KeyboardButton(BTN_GET_NEWS_MANUAL), KeyboardButton(BTN_AUTO_PUBLISH))
     return kb
 
 
@@ -1483,329 +1484,209 @@ def item_key(title: str, url: str) -> str:
 
 
 # =========================
-# Класс для автоматической выгрузки новостей
+# Класс для автоматической выгрузки и публикации
 # =========================
 class NewsAutoPublisher:
-    def __init__(self, bot_instance, chat_id):
+    def __init__(self, bot_instance, admin_chat_id, channel_id):
         self.bot = bot_instance
-        self.chat_id = chat_id
+        self.admin_chat_id = admin_chat_id  # Чат для уведомлений админа
+        self.channel_id = channel_id  # Канал для публикации
         self.scheduler = BackgroundScheduler(timezone=pytz.timezone(AUTO_NEWS_TIMEZONE))
         self.setup_schedule()
         
     def setup_schedule(self):
-        """Настройка расписания выгрузок"""
-        # Выгрузка в 09:00, 13:00, 16:00, 20:00
-        schedule_times = [
+        """Настройка расписания"""
+        # Выгрузка новостей в 09:00, 13:00, 16:00, 20:00
+        news_times = [
             (9, 0),   # 09:00
             (13, 0),  # 13:00
             (16, 0),  # 16:00
             (20, 0),  # 20:00
         ]
         
-        for hour, minute in schedule_times:
+        for hour, minute in news_times:
             self.scheduler.add_job(
-                self.publish_news_digest,
+                self.publish_news_to_channel,
                 CronTrigger(hour=hour, minute=minute),
                 id=f"news_{hour}_{minute}",
                 replace_existing=True
             )
-            logger.info(f"Scheduled news digest at {hour:02d}:{minute:02d}")
+            logger.info(f"Scheduled news publication at {hour:02d}:{minute:02d}")
             
     def start(self):
         """Запуск планировщика"""
-        if self.chat_id:
+        if self.admin_chat_id and self.channel_id:
             self.scheduler.start()
-            logger.info(f"News auto-publisher started for chat {self.chat_id}")
-            # Отправляем сообщение о запуске
+            logger.info(f"News auto-publisher started for channel {self.channel_id}")
+            # Отправляем сообщение о запуске админу
             try:
                 self.bot.send_message(
-                    self.chat_id,
-                    "🤖 Автоматическая выгрузка новостей запущена!\n"
-                    "📅 Расписание: 09:00, 13:00, 16:00, 20:00\n"
-                    "📰 Количество: 20 новостей в выгрузке",
+                    self.admin_chat_id,
+                    "🤖 Автоматическая публикация новостей запущена!\n"
+                    f"📅 Расписание: 09:00, 13:00, 16:00, 20:00\n"
+                    f"📰 Количество: {AUTO_PUBLISH_COUNT} новостей за раз\n"
+                    f"🎨 Шаблон: {AUTO_PUBLISH_TEMPLATE}",
                     reply_markup=main_menu_kb()
                 )
             except Exception as e:
                 logger.error(f"Failed to send startup message: {e}")
         else:
-            logger.warning("AUTO_NEWS_CHAT_ID not set, auto-news disabled")
+            logger.warning("AUTO_NEWS_CHAT_ID or CHANNEL not set, auto-news disabled")
             
     def stop(self):
         """Остановка планировщика"""
         self.scheduler.shutdown()
         logger.info("News auto-publisher stopped")
-        
-    def publish_news_digest(self, manual=False):
-        """Публикация дайджеста новостей"""
+    
+    def publish_news_to_channel(self, manual=False):
+        """Публикация новостей прямо в канал"""
         try:
-            logger.info(f"Starting news digest publication (manual={manual})")
+            logger.info(f"Starting automatic news publication to channel (manual={manual})")
             
-            # Собираем новости
+            # Собираем свежие новости
             items = fetch_all_news_last24h()
             
             if not items:
                 msg = "😕 За последние 24 часа новостей не найдено"
                 if manual:
-                    self.bot.send_message(self.chat_id, msg, reply_markup=main_menu_kb())
+                    self.bot.send_message(self.admin_chat_id, msg, reply_markup=main_menu_kb())
                 else:
-                    self.bot.send_message(self.chat_id, msg)
+                    self.bot.send_message(self.admin_chat_id, msg)
                 return
             
-            # Отправляем заголовок дайджеста
+            # Отправляем уведомление админу о начале публикации
             current_time = datetime.now(pytz.timezone(AUTO_NEWS_TIMEZONE))
-            digest_type = "🔄 Ручная выгрузка" if manual else "⏰ Автоматическая выгрузка"
+            publish_type = "🔄 Ручная публикация" if manual else "⏰ Автоматическая публикация"
             
-            header = (
-                f"{digest_type}\n"
-                f"📰 <b>Новостной дайджест</b>\n"
-                f"🕐 {current_time.strftime('%d.%m.%Y %H:%M')}\n"
-                f"📊 Всего новостей за 24ч: {len(items)}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━"
-            )
-            
-            if manual:
-                self.bot.send_message(
-                    self.chat_id, 
-                    header, 
-                    parse_mode="HTML",
-                    reply_markup=main_menu_kb()
-                )
-            else:
-                self.bot.send_message(self.chat_id, header, parse_mode="HTML")
-            
-            # Сохраняем все новости в кэш для этого чата
-            cache_key = f"news_cache_{self.chat_id}"
-            user_state[cache_key] = {
-                "items": items,
-                "current_index": 0,
-                "by_key": {}
-            }
-            
-            # Отправляем первую порцию новостей
-            self._send_news_batch(self.chat_id, 0, NEWS_BATCH_SIZE, manual)
-            
-            logger.info(f"News digest published successfully, total items: {len(items)}")
-            
-        except Exception as e:
-            logger.error(f"Failed to publish news digest: {e}")
-            error_msg = f"❌ Ошибка при выгрузке новостей: {str(e)[:100]}"
-            try:
-                self.bot.send_message(self.chat_id, error_msg, reply_markup=main_menu_kb())
-            except:
-                pass
-    
-    def _send_news_batch(self, chat_id, start_idx, count, manual=False):
-        """Отправка порции новостей"""
-        cache_key = f"news_cache_{chat_id}"
-        cache = user_state.get(cache_key)
-        
-        if not cache:
-            return
-            
-        items = cache["items"]
-        end_idx = min(start_idx + count, len(items))
-        by_key = cache.get("by_key", {})
-        
-        for i in range(start_idx, end_idx):
-            item = items[i]
-            title = item.get("title", "Без названия")
-            url = item.get("url", "#")
-            source = item.get("source", "")
-            
-            # Создаем ключ для новости
-            key = item_key(title, url)
-            by_key[key] = item
-            
-            # Формируем сообщение с заголовком и ссылкой
-            msg = (
-                f"<b>{html.escape(title)}</b>\n"
-                f"📰 {html.escape(source)}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━"
-            )
-            
-            # Создаем клавиатуру с кнопками
-            kb = InlineKeyboardMarkup()
-            kb.row(
-                InlineKeyboardButton("📖 Читать полностью", callback_data=f"read_full:{key}"),
-                InlineKeyboardButton("🔗 Источник", url=url)
-            )
-            
-            # Отправляем сообщение
             self.bot.send_message(
-                chat_id,
-                msg,
-                parse_mode="HTML",
-                reply_markup=kb,
-                disable_web_page_preview=True
+                self.admin_chat_id,
+                f"{publish_type}\n"
+                f"📰 Начинаю публикацию {min(AUTO_PUBLISH_COUNT, len(items))} новостей в канал {self.channel_id}\n"
+                f"🕐 {current_time.strftime('%d.%m.%Y %H:%M')}"
             )
             
-            # Небольшая задержка между сообщениями
-            time.sleep(0.3)
-        
-        # Обновляем кэш
-        cache["current_index"] = end_idx
-        cache["by_key"] = by_key
-        user_state[cache_key] = cache
-        
-        # Если есть еще новости, показываем кнопку "Загрузить еще"
-        if end_idx < len(items):
-            more_kb = InlineKeyboardMarkup()
-            more_kb.row(
-                InlineKeyboardButton(
-                    f"📥 Загрузить еще {NEWS_MORE_SIZE}", 
-                    callback_data=f"load_more:{chat_id}"
-                )
-            )
+            # Публикуем указанное количество новостей
+            published_count = 0
+            for i, item in enumerate(items[:AUTO_PUBLISH_COUNT]):
+                try:
+                    # Получаем данные новости
+                    title = item.get("title", "")
+                    url = item.get("url", "")
+                    source = item.get("source", "")
+                    image_url = item.get("image", "")
+                    full_text = item.get("full_text", "")
+                    
+                    # Если нет полного текста, пробуем загрузить
+                    if not full_text:
+                        full_text = fetch_article_full_text_generic(url)
+                    
+                    # Получаем изображение
+                    photo_bytes = None
+                    if image_url:
+                        try:
+                            photo_bytes = get_cached_image(image_url)
+                            if not check_file_size(photo_bytes):
+                                photo_bytes = None
+                        except Exception as e:
+                            logger.error(f"Failed to fetch image: {e}")
+                    
+                    # Создаем карточку с заголовком
+                    if photo_bytes:
+                        card = make_card(photo_bytes, title, AUTO_PUBLISH_TEMPLATE)
+                        card_bytes = card.getvalue()
+                    else:
+                        card_bytes = None
+                    
+                    # Формируем подпись
+                    clean_text = _clean_text(full_text) if full_text else ""
+                    if len(clean_text) > 800:  # Ограничиваем текст для читаемости
+                        clean_text = clean_text[:800] + "..."
+                    
+                    caption = build_caption_html(title, clean_text)
+                    
+                    # Добавляем ссылку на источник
+                    caption += f"\n\n🔗 <a href='{url}'>Источник: {source}</a>"
+                    
+                    # Публикуем в канал
+                    if card_bytes:
+                        self.bot.send_photo(
+                            self.channel_id,
+                            photo=card_bytes,
+                            caption=caption,
+                            parse_mode="HTML"
+                        )
+                    else:
+                        # Если нет фото, публикуем только текст
+                        self.bot.send_message(
+                            self.channel_id,
+                            caption,
+                            parse_mode="HTML",
+                            disable_web_page_preview=False
+                        )
+                    
+                    published_count += 1
+                    logger.info(f"Published news {i+1}/{AUTO_PUBLISH_COUNT} to channel")
+                    
+                    # Задержка между постами
+                    time.sleep(2)
+                    
+                except Exception as e:
+                    logger.error(f"Error publishing news item: {e}")
+                    self.bot.send_message(
+                        self.admin_chat_id,
+                        f"❌ Ошибка при публикации новости {i+1}: {str(e)[:100]}"
+                    )
+                    continue
             
-            remaining = len(items) - end_idx
-            msg = f"📊 Показано {end_idx} из {len(items)} новостей\nОсталось: {remaining}"
-            
-            self.bot.send_message(chat_id, msg, reply_markup=more_kb)
-        else:
+            # Отправляем отчет админу
             self.bot.send_message(
-                chat_id, 
-                "✅ Все новости загружены!",
+                self.admin_chat_id,
+                f"✅ Публикация завершена!\n"
+                f"📊 Опубликовано: {published_count} из {min(AUTO_PUBLISH_COUNT, len(items))}\n"
+                f"📰 Всего новостей за 24ч: {len(items)}",
                 reply_markup=main_menu_kb()
             )
-
-
-# =========================
-# Обработчики для новостей
-# =========================
-@bot.callback_query_handler(func=lambda c: c.data.startswith("read_full:"))
-def on_read_full_news(c):
-    """Обработчик кнопки 'Читать полностью'"""
-    uid = c.from_user.id
-    key = c.data.split(":", 1)[1]
-    
-    # Ищем новость в кэше
-    cache_key = f"news_cache_{c.message.chat.id}"
-    cache = user_state.get(cache_key)
-    
-    if not cache:
-        bot.answer_callback_query(c.id, "Новость не найдена. Запустите выгрузку заново.", show_alert=True)
-        return
-    
-    item = cache.get("by_key", {}).get(key)
-    if not item:
-        bot.answer_callback_query(c.id, "Новость устарела. Запустите выгрузку заново.", show_alert=True)
-        return
-    
-    try:
-        # Получаем полный текст и изображение
-        title = item.get("title", "")
-        full_text = item.get("full_text", "")
-        
-        # Если нет полного текста, пробуем загрузить
-        if not full_text:
-            full_text = fetch_article_full_text_generic(item.get("url", ""))
-        
-        # Получаем изображение
-        image_url = item.get("image", "")
-        photo_bytes = None
-        
-        if image_url:
-            try:
-                photo_bytes = get_cached_image(image_url)
-            except Exception as e:
-                logger.error(f"Failed to fetch image: {e}")
-        
-        # Очищаем текст
-        clean_text = _clean_text(full_text) if full_text else "Полный текст не найден"
-        
-        # Отправляем уведомление о начале загрузки
-        bot.send_message(c.message.chat.id, "⏳ Загружаю полный текст и фото...")
-        
-        # Отправляем фото, если есть
-        if photo_bytes and check_file_size(photo_bytes):
-            try:
-                bot.send_photo(
-                    c.message.chat.id,
-                    photo=photo_bytes,
-                    caption=f"<b>{html.escape(title)}</b>",
-                    parse_mode="HTML"
-                )
-            except Exception as e:
-                logger.error(f"Error sending photo: {e}")
-                bot.send_message(
-                    c.message.chat.id,
-                    f"<b>{html.escape(title)}</b>",
-                    parse_mode="HTML"
-                )
-        else:
-            bot.send_message(
-                c.message.chat.id,
-                f"<b>{html.escape(title)}</b>",
-                parse_mode="HTML"
-            )
-        
-        # Отправляем полный текст
-        # Разбиваем на части если текст очень длинный
-        if len(clean_text) <= 4000:
-            bot.send_message(c.message.chat.id, clean_text, parse_mode="HTML")
-        else:
-            # Разбиваем на части по 4000 символов
-            text_parts = []
-            remaining = clean_text
-            while remaining:
-                if len(remaining) <= 4000:
-                    text_parts.append(remaining)
-                    break
-                else:
-                    # Ищем место для разрыва
-                    split_point = remaining[:4000].rfind('\n\n')
-                    if split_point == -1:
-                        split_point = remaining[:4000].rfind('. ')
-                    if split_point == -1:
-                        split_point = 4000
-                    
-                    text_parts.append(remaining[:split_point])
-                    remaining = remaining[split_point:].lstrip()
             
-            # Отправляем все части
-            for i, part in enumerate(text_parts):
-                if i == 0:
-                    bot.send_message(c.message.chat.id, part, parse_mode="HTML")
-                else:
-                    bot.send_message(
-                        c.message.chat.id,
-                        f"<i>Продолжение ({i+1}/{len(text_parts)}):</i>\n\n{part}",
-                        parse_mode="HTML"
-                    )
-        
-        bot.answer_callback_query(c.id, "✅ Готово")
-        
-    except Exception as e:
-        logger.error(f"Error sending full news: {e}")
-        bot.answer_callback_query(c.id, "Ошибка при загрузке", show_alert=True)
-
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("load_more:"))
-def on_load_more(c):
-    """Обработчик кнопки 'Загрузить еще'"""
-    chat_id = int(c.data.split(":", 1)[1])
-    
-    cache_key = f"news_cache_{chat_id}"
-    cache = user_state.get(cache_key)
-    
-    if not cache:
-        bot.answer_callback_query(c.id, "Кэш не найден. Запустите выгрузку заново.", show_alert=True)
-        return
-    
-    current_idx = cache.get("current_index", 0)
-    
-    # Отправляем следующую порцию
-    news_publisher._send_news_batch(chat_id, current_idx, NEWS_MORE_SIZE, manual=True)
-    
-    bot.answer_callback_query(c.id, f"Загружаю еще {NEWS_MORE_SIZE} новостей...")
+            logger.info(f"News publication completed. Published: {published_count}")
+            
+        except Exception as e:
+            logger.error(f"Failed to publish news to channel: {e}")
+            error_msg = f"❌ Ошибка при публикации в канал: {str(e)[:100]}"
+            try:
+                self.bot.send_message(self.admin_chat_id, error_msg, reply_markup=main_menu_kb())
+            except:
+                pass
 
 
 # =========================
-# Обработчик ручной выгрузки
+# Обработчик ручной публикации
+# =========================
+@bot.message_handler(func=lambda message: message.text == BTN_AUTO_PUBLISH)
+def cmd_manual_publish(message):
+    """Ручной запуск публикации в канал"""
+    uid = message.from_user.id
+    
+    # Проверяем, есть ли авто-публикация для этого чата
+    if str(uid) != str(AUTO_NEWS_CHAT_ID):
+        bot.reply_to(message, "❌ У вас нет доступа к этой функции")
+        return
+    
+    bot.send_message(
+        message.chat.id,
+        "🔄 Запускаю ручную публикацию новостей в канал...",
+        reply_markup=main_menu_kb()
+    )
+    
+    # Запускаем публикацию
+    news_publisher.publish_news_to_channel(manual=True)
+
+
+# =========================
+# Обработчик ручной выгрузки (старый, оставляем для совместимости)
 # =========================
 @bot.message_handler(func=lambda message: message.text == BTN_GET_NEWS_MANUAL)
 def cmd_manual_news(message):
-    """Ручной запуск выгрузки новостей"""
+    """Ручной запуск выгрузки новостей (только для просмотра)"""
     uid = message.from_user.id
     
     # Проверяем, есть ли авто-выгрузка для этого чата
@@ -1816,12 +1697,14 @@ def cmd_manual_news(message):
     
     bot.send_message(
         message.chat.id,
-        "🔄 Запускаю ручную выгрузку новостей...",
+        "🔄 Запускаю ручную выгрузку новостей для просмотра...",
         reply_markup=main_menu_kb()
     )
     
-    # Запускаем выгрузку
-    news_publisher.publish_news_digest(manual=True)
+    # Запускаем выгрузку для просмотра (старая функция)
+    items = fetch_all_news_last24h()
+    set_news_cache(uid, items)
+    send_news_batch(message.chat.id, uid, NEWS_FIRST_BATCH)
 
 
 # =========================
@@ -1865,7 +1748,8 @@ def cmd_start(message):
         "Команды:\n"
         "• /post — оформить пост\n"
         "• /news — получить новости за 24 часа\n"
-        "• /template — выбрать шаблон (МН / ЧП ВМ / АМ / Сторис ФДР)\n",
+        "• /template — выбрать шаблон (МН / ЧП ВМ / АМ / Сторис ФДР)\n"
+        "• /publish_now — срочная публикация в канал\n",
         reply_markup=main_menu_kb()
     )
 
@@ -1889,9 +1773,27 @@ def cmd_post(message):
     bot.send_message(message.chat.id, "Выбери шаблон оформления:", reply_markup=template_kb())
 
 
+@bot.message_handler(commands=["publish_now"])
+def cmd_publish_now(message):
+    """Срочная публикация в канал"""
+    uid = message.from_user.id
+    
+    if str(uid) != str(AUTO_NEWS_CHAT_ID):
+        bot.reply_to(message, "❌ У вас нет доступа к этой функции")
+        return
+    
+    bot.send_message(
+        message.chat.id,
+        "⚡ Запускаю срочную публикацию новостей в канал...",
+        reply_markup=main_menu_kb()
+    )
+    
+    news_publisher.publish_news_to_channel(manual=True)
+
+
 @bot.message_handler(commands=["news"])
 def cmd_news(message):
-    """Обычная команда получения новостей"""
+    """Обычная команда получения новостей для просмотра"""
     uid = message.from_user.id
     
     # Если это чат с авто-выгрузкой, используем расширенную версию
@@ -2248,6 +2150,10 @@ def on_text(message):
     if text == BTN_GET_NEWS_MANUAL:
         cmd_manual_news(message)
         return
+        
+    if text == BTN_AUTO_PUBLISH:
+        cmd_manual_publish(message)
+        return
 
     step = st.get("step")
 
@@ -2430,7 +2336,7 @@ def cmd_health(message):
 # =========================
 # Создание экземпляра планировщика
 # =========================
-news_publisher = NewsAutoPublisher(bot, AUTO_NEWS_CHAT_ID)
+news_publisher = NewsAutoPublisher(bot, AUTO_NEWS_CHAT_ID, CHANNEL)
 
 
 # =========================
@@ -2442,14 +2348,16 @@ if __name__ == "__main__":
     logger.info("Fonts loaded successfully")
     
     # Запускаем планировщик новостей
-    if AUTO_NEWS_CHAT_ID:
+    if AUTO_NEWS_CHAT_ID and CHANNEL:
         news_publisher.start()
+    else:
+        logger.warning("Auto news publisher not started: missing AUTO_NEWS_CHAT_ID or CHANNEL")
     
     try:
         bot.infinity_polling(timeout=60, long_polling_timeout=60)
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
         # Останавливаем планировщик при падении бота
-        if AUTO_NEWS_CHAT_ID:
+        if AUTO_NEWS_CHAT_ID and CHANNEL:
             news_publisher.stop()
         raise
