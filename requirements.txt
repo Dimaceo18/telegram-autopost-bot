@@ -3,3 +3,5 @@ lxml==5.2.2
 requests
 Pillow
 pyTelegramBotAPI
+apscheduler
+pytz
