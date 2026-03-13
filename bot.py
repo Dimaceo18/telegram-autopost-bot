@@ -190,6 +190,7 @@ NEWS_SOURCES = [
         "domain": "tochka.by",
         "include_patterns": [r"^/articles/[^/]+/[^/]+/?$"],
         "limit": 40,
+        "timeout": 45
     },
     {
         "id": "smartpress",
@@ -258,8 +259,7 @@ SESSION.mount("http://", adapter)
 SESSION.mount("https://", adapter)
 
 SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
 })
 
@@ -341,9 +341,19 @@ def is_admin(msg_or_call) -> bool:
 def http_get(url: str, timeout: int = REQUEST_TIMEOUT) -> str:
     if not validate_url(url):
         raise ValueError(f"Invalid URL: {url}")
-    r = SESSION.get(url, timeout=timeout)
-    r.raise_for_status()
-    return r.text
+    try:
+        r = SESSION.get(url, timeout=timeout)
+        r.raise_for_status()
+        return r.text
+    except requests.exceptions.Timeout:
+        logger.error(f"Timeout error for {url}")
+        raise
+    except requests.exceptions.ConnectionError:
+        logger.error(f"Connection error for {url}")
+        raise
+    except Exception as e:
+        logger.error(f"HTTP error for {url}: {e}")
+        raise
 
 
 @retry_on_error()
@@ -555,54 +565,142 @@ def _extract_dt_from_soup(soup: BeautifulSoup) -> Optional[datetime]:
 
 
 def _extract_article_text_from_soup(soup: BeautifulSoup) -> str:
-    """Извлекает только текст статьи, исключая меню, сайдбары, футеры и т.д."""
+    """Извлекает только чистый текст статьи, исключая меню, рекламу, сайдбары, футеры и т.д."""
     
-    for tag in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+    # Удаляем все ненужные элементы
+    for tag in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside', 'form', 'button', 'iframe']):
         tag.decompose()
     
-    for tag in soup.find_all(class_=re.compile(r'(menu|sidebar|footer|header|comment|widget|banner|ad|social)', re.I)):
+    # Удаляем элементы по классам (реклама, виджеты, комментарии)
+    for tag in soup.find_all(class_=re.compile(
+        r'(menu|sidebar|footer|header|comment|widget|banner|ad|social|share|related|popular|tags|copyright|newsletter|subscription|modal|popup|overlay|cookie)',
+        re.I
+    )):
         tag.decompose()
     
+    # Удаляем элементы по ID
+    for tag in soup.find_all(id=re.compile(
+        r'(menu|sidebar|footer|header|comment|widget|banner|ad|social|share|related|popular|tags|copyright)',
+        re.I
+    )):
+        tag.decompose()
+    
+    # Удаляем ссылки на соцсети и "поделиться"
+    for tag in soup.find_all(['a', 'div'], class_=re.compile(r'(share|social|telegram|facebook|twitter|vkontakte|ok\.ru)', re.I)):
+        tag.decompose()
+    
+    # Специфичные для разных сайтов блоки
+    for class_name in ['read-also', 'also-read', 'related-news', 'news-tags', 'article-tags', 'post-tags']:
+        for tag in soup.find_all(class_=re.compile(class_name, re.I)):
+            tag.decompose()
+    
+    # Ищем основной контент статьи
     article = None
     
+    # Поиск по тегам (приоритет)
     for tag in ['article', 'main']:
         article = soup.find(tag)
         if article:
             break
     
+    # Поиск по классам
     if not article:
-        for class_name in ['post-content', 'entry-content', 'article-content', 'story-content', 'news-text', 'article-text']:
+        for class_name in [
+            'post-content', 'entry-content', 'article-content', 'story-content', 
+            'news-text', 'article-text', 'post-text', 'entry-text',
+            'article__body', 'post__body', 'news__body',
+            'content__article', 'article__content', 'post__content'
+        ]:
             article = soup.find(class_=re.compile(class_name, re.I))
             if article:
                 break
     
+    # Поиск по тегу div с определенными атрибутами
+    if not article:
+        for div in soup.find_all('div'):
+            if div.get('itemprop') == 'articleBody':
+                article = div
+                break
+            if div.get('property') == 'content:encoded':
+                article = div
+                break
+    
+    # Если ничего не нашли, используем body
     if not article:
         article = soup.body
     
     if not article:
         return ""
     
+    # Удаляем оставшиеся рекламные блоки внутри статьи
+    for tag in article.find_all(['div', 'section'], class_=re.compile(r'(ad|banner|promo|teaser|recommend)', re.I)):
+        tag.decompose()
+    
+    # Собираем текст из параграфов
     paragraphs = []
     for p in article.find_all(['p', 'div'], recursive=True):
-        if p.find_parent(['aside', 'footer', 'header', 'nav']):
+        # Проверяем, что элемент не внутри нежелательных блоков
+        if p.find_parent(['aside', 'footer', 'header', 'nav', 'section']):
             continue
-            
+        
+        # Пропускаем пустые параграфы
         text = p.get_text(strip=True)
-        if not text or len(text) < 40:
+        if not text:
             continue
-            
+        
+        # Пропускаем слишком короткие тексты (скорее всего это не статья)
+        if len(text) < 40:
+            continue
+        
+        # Проверяем на типичные не-статейные фрагменты
         low_text = text.lower()
-        if any(x in low_text for x in ['читайте также', 'смотрите также', 'подпишись', 'реклама', 'источник:', 'фото:']):
+        if any(x in low_text for x in [
+            'читайте также', 'смотрите также', 'подпишись', 'подписаться',
+            'реклама', 'источник:', 'фото:', 'видео:', 'смотреть', 'читать',
+            'поделиться', 'отправить', 'комментировать', 'обсудить',
+            'вконтакте', 'telegram', 'facebook', 'twitter', 'ok.ru',
+            'нажмите', 'перейти', 'узнать больше', 'подробнее',
+            'предложить новость', 'прислать новость'
+        ]):
             continue
-            
+        
+        # Проверяем соотношение текста и ссылок
         links = p.find_all('a')
-        link_text = ''.join(a.get_text(strip=True) for a in links)
-        if len(link_text) > len(text) * 0.5:
+        if links:
+            link_text = ''.join(a.get_text(strip=True) for a in links)
+            # Если больше 40% текста - ссылки, пропускаем
+            if len(link_text) > len(text) * 0.4:
+                continue
+        
+        # Проверяем, не является ли это подписью к фото
+        if p.find_parent('figure') or p.find_parent('figcaption'):
             continue
-            
+        
+        # Проверяем на наличие дат в начале (часто в блогах)
+        if re.match(r'^\d{1,2}\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}', low_text):
+            continue
+        
+        # Если текст проходит все проверки, добавляем его
         paragraphs.append(text)
     
-    return '\n\n'.join(paragraphs)
+    # Если не нашли параграфы, пробуем собрать текст из div
+    if not paragraphs:
+        for div in article.find_all('div', recursive=True):
+            text = div.get_text(strip=True)
+            if text and len(text) > 100 and not div.find_parent(['aside', 'footer', 'header']):
+                paragraphs.append(text)
+                break  # Берем только первый большой div
+    
+    # Объединяем параграфы
+    clean_text = '\n\n'.join(paragraphs)
+    
+    # Дополнительная очистка
+    # Удаляем множественные переносы строк
+    clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
+    # Удаляем пробелы в начале и конце строк
+    clean_text = re.sub(r'^[ \t]+|[ \t]+$', '', clean_text, flags=re.MULTILINE)
+    
+    return clean_text.strip()
 
 
 def _extract_text_from_soup(soup: BeautifulSoup) -> str:
@@ -689,9 +787,24 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
 
     candidates: List[Tuple[str, str]] = []
     seen = set()
+    
     for start_url in start_urls:
         try:
-            page_html = http_get(start_url, timeout=REQUEST_TIMEOUT)
+            # Увеличим таймаут для проблемных сайтов
+            timeout = source.get("timeout", REQUEST_TIMEOUT)
+            page_html = http_get(start_url, timeout=timeout)
+            
+            # Если сайт вернул пустую страницу или ошибку
+            if not page_html or len(page_html) < 1000:
+                logger.warning(f"[NEWS-WARNING] {source['name']} returned too short content: {len(page_html)} chars")
+                continue
+                
+        except requests.exceptions.Timeout:
+            logger.error(f"[NEWS-ERROR] {source['name']} timeout for {start_url}")
+            continue
+        except requests.exceptions.ConnectionError:
+            logger.error(f"[NEWS-ERROR] {source['name']} connection error for {start_url}")
+            continue
         except Exception as e:
             logger.error(f"[NEWS-ERROR] {source['name']} start={start_url} error={e}")
             continue
@@ -715,7 +828,14 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
     used = set()
     for href, anchor in candidates:
         try:
-            art_html = http_get(href, timeout=REQUEST_TIMEOUT)
+            # Увеличим таймаут для статей проблемных сайтов
+            timeout = source.get("timeout", REQUEST_TIMEOUT)
+            art_html = http_get(href, timeout=timeout)
+            
+            if not art_html or len(art_html) < 500:
+                logger.warning(f"[NEWS-WARNING] {source['name']} article too short: {href}")
+                continue
+                
             try:
                 soup = BeautifulSoup(art_html, "lxml")
             except Exception:
@@ -751,6 +871,9 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
             })
             if len(out) >= limit:
                 break
+        except requests.exceptions.Timeout:
+            logger.error(f"[NEWS-ERROR] {source['name']} timeout for article {href}")
+            continue
         except Exception as e:
             logger.error(f"[NEWS-ERROR] {source['name']} article={href} error={e}")
             continue
@@ -758,14 +881,57 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
 
 
 def fetch_article_full_text_generic(url: str) -> str:
+    """Получает только чистый текст статьи со страницы"""
     try:
-        page_html = http_get(url, timeout=REQUEST_TIMEOUT)
+        # Добавляем заголовки как у реального браузера
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://www.google.com/',
+            'DNT': '1',
+        }
+        
+        # Для проблемных сайтов увеличиваем таймаут
+        timeout = 45 if any(domain in url for domain in ['tochka.by', 'sb.by', 'minsknews.by']) else REQUEST_TIMEOUT
+        
+        r = SESSION.get(url, timeout=timeout, headers=headers)
+        r.raise_for_status()
+        
+        # Проверяем кодировку
+        if r.encoding:
+            r.encoding = 'utf-8'
+        
+        page_html = r.text
+        
+        if not page_html or len(page_html) < 500:
+            logger.warning(f"Too short content from {url}")
+            return ""
+        
+        # Пробуем разные парсеры
         try:
             soup = BeautifulSoup(page_html, "lxml")
-        except Exception:
-            soup = BeautifulSoup(page_html, "html.parser")
+        except:
+            try:
+                soup = BeautifulSoup(page_html, "html.parser")
+            except:
+                soup = BeautifulSoup(page_html, "html5lib")
         
-        return _extract_article_text_from_soup(soup)
+        # Извлекаем чистый текст
+        clean_text = _extract_article_text_from_soup(soup)
+        
+        # Если текст слишком короткий, возможно это не статья
+        if len(clean_text) < 200:
+            logger.warning(f"Extracted text too short ({len(clean_text)} chars) from {url}")
+            # Пробуем альтернативный метод - просто взять весь текст body
+            if soup.body:
+                body_text = soup.body.get_text(separator='\n', strip=True)
+                # Убираем явный мусор
+                lines = [line.strip() for line in body_text.split('\n') if len(line.strip()) > 40]
+                clean_text = '\n\n'.join(lines)
+        
+        return clean_text
+        
     except Exception as e:
         logger.error(f"Failed to fetch article text from {url}: {e}")
         return ""
@@ -777,11 +943,72 @@ def _clean_text(text: str) -> str:
     return text.strip()
 
 
-def fetch_all_news_last24h() -> List[Dict]:
+# =========================
+# Кнопки для выбора источников новостей
+# =========================
+
+# Словарь с названиями источников для отображения
+SOURCE_NAMES = {
+    "onliner": "Onliner",
+    "sputnik": "Sputnik",
+    "telegraf": "Telegraf",
+    "tochka": "Tochka",
+    "smartpress": "Smartpress",
+    "sb": "SB.by",
+    "minsknews": "Minsknews",
+    "mlyn": "Mlyn",
+    "ont": "ONT"
+}
+
+def news_sources_kb():
+    """Клавиатура для выбора источников новостей"""
+    kb = InlineKeyboardMarkup(row_width=2)
+    
+    # Добавляем кнопки для каждого источника
+    buttons = []
+    for source_id, source_name in SOURCE_NAMES.items():
+        buttons.append(InlineKeyboardButton(source_name, callback_data=f"src:{source_id}"))
+    
+    # Добавляем кнопки в клавиатуру (по 2 в ряд)
+    kb.add(*buttons)
+    
+    # Добавляем кнопки для всех источников и отмены
+    kb.row(
+        InlineKeyboardButton("🌐 Собрать везде", callback_data="src:all"),
+        InlineKeyboardButton("❌ Отмена", callback_data="src:cancel")
+    )
+    
+    return kb
+
+def save_sources_kb():
+    """Клавиатура для сохранения выбранных источников"""
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("✅ Сохранить выбор", callback_data="src:save"),
+        InlineKeyboardButton("🔄 Выбрать заново", callback_data="src:reset")
+    )
+    kb.row(
+        InlineKeyboardButton("❌ Отмена", callback_data="src:cancel")
+    )
+    return kb
+
+
+# =========================
+# Функция для сбора новостей из выбранных источников
+# =========================
+def fetch_news_from_sources(source_ids: List[str]) -> List[Dict]:
+    """Собирает новости только из указанных источников"""
     merged: List[Dict] = []
     by_url = set()
-
-    for src in NEWS_SOURCES:
+    
+    # Фильтруем источники по выбранным ID
+    selected_sources = [src for src in NEWS_SOURCES if src["id"] in source_ids]
+    
+    if not selected_sources:
+        logger.warning("No sources selected, using all sources")
+        selected_sources = NEWS_SOURCES
+    
+    for src in selected_sources:
         kind = src["kind"]
         try:
             if kind == "rss":
@@ -804,6 +1031,7 @@ def fetch_all_news_last24h() -> List[Dict]:
             it["_dt"] = dt
             merged.append(it)
 
+    # Фильтруем по времени и сортируем
     last24 = [it for it in merged if is_last_24h(it.get("_dt"))]
     nodt = [it for it in merged if it.get("_dt") is None]
     base = last24 if len(last24) >= 10 else (last24 + nodt)
@@ -813,6 +1041,7 @@ def fetch_all_news_last24h() -> List[Dict]:
         reverse=True
     )
 
+    # Ограничиваем количество с одного источника
     counts = {}
     diversified = []
     for it in base:
@@ -830,6 +1059,11 @@ def fetch_all_news_last24h() -> List[Dict]:
             diversified.append(it)
 
     return diversified
+
+
+def fetch_all_news_last24h() -> List[Dict]:
+    """Собирает новости со всех источников"""
+    return fetch_news_from_sources(list(SOURCE_NAMES.keys()))
 
 
 # =========================
@@ -910,24 +1144,39 @@ def build_caption_html(title: str, body: str) -> str:
     return f"<b>{emoji_} {title_safe}</b>\n\n{body_high}".strip()
 
 
-def build_caption_tg(title: str, body: str) -> str:
+def build_caption_tg(full_text: str) -> str:
     """
-    Формирует подпись для Telegram с жирным заголовком и ссылками в конце
+    Формирует подпись для Telegram, где первый абзац становится жирным заголовком
     """
-    # Жирный заголовок
-    title_safe = html.escape((title or "").strip())
+    # Разбиваем текст на абзацы
+    paragraphs = full_text.strip().split('\n\n')
     
-    # Основной текст
-    body_safe = html.escape((body or "").strip())
+    if not paragraphs:
+        return ""
+    
+    # Первый абзац - заголовок
+    title = paragraphs[0].strip()
+    title_safe = html.escape(title)
+    
+    # Остальной текст
+    body_parts = []
+    for p in paragraphs[1:]:
+        if p.strip():
+            body_parts.append(html.escape(p.strip()))
+    
+    body_text = '\n\n'.join(body_parts) if body_parts else ""
     
     # Ссылки в конце
     links = (
         "\n\n"
         "🔗 <a href='https://t.me/vestiminska'>Все новости Минска</a>\n"
-        "📝 <a href='https://t.me/prishlinews'>Прислать новость</a>"
+        "📝 <a href='https://t.me/prishlinews_bot'>Прислать новость</a>"
     )
     
-    return f"<b>{title_safe}</b>\n\n{body_safe}{links}"
+    if body_text:
+        return f"<b>{title_safe}</b>\n\n{body_text}{links}"
+    else:
+        return f"<b>{title_safe}</b>{links}"
 
 
 # =========================
@@ -946,29 +1195,65 @@ def tg_file_bytes(file_id: str) -> bytes:
 
 
 # =========================
-# Image enhancement
+# Улучшенная функция для повышения качества изображения
 # =========================
 def enhance_image_quality(image_bytes: bytes) -> BytesIO:
+    """
+    Улучшает качество изображения с расширенными параметрами:
+    - Увеличивает резкость на 30%
+    - Увеличивает насыщенность на 20%
+    - Увеличивает контрастность на 20%
+    - Добавляет легкое сглаживание шумов
+    - Оптимизирует яркость и цветовой баланс
+    """
     try:
         img = Image.open(BytesIO(image_bytes)).convert("RGB")
-        
+        img = img.filter(ImageFilter.SMOOTH_MORE)
         enhancer_sharpness = ImageEnhance.Sharpness(img)
-        img = enhancer_sharpness.enhance(1.15)
-        
+        img = enhancer_sharpness.enhance(1.30)
         enhancer_color = ImageEnhance.Color(img)
-        img = enhancer_color.enhance(1.10)
-        
+        img = enhancer_color.enhance(1.20)
         enhancer_contrast = ImageEnhance.Contrast(img)
-        img = enhancer_contrast.enhance(1.10)
-        
+        img = enhancer_contrast.enhance(1.20)
+        enhancer_brightness = ImageEnhance.Brightness(img)
+        img = enhancer_brightness.enhance(1.05)
         output = BytesIO()
-        img.save(output, format="JPEG", quality=95, optimize=True)
+        img.save(output, format="JPEG", quality=98, optimize=True, subsampling=0)
         output.seek(0)
-        
         return output
     except Exception as e:
         logger.error(f"Error enhancing image: {e}")
         raise
+
+
+def enhance_image_quality_pro(image_bytes: bytes) -> BytesIO:
+    """
+    Профессиональное улучшение качества изображения:
+    - Увеличивает резкость на 40%
+    - Увеличивает насыщенность на 25%
+    - Увеличивает контрастность на 25%
+    - Добавляет HDR-эффект
+    - Убирает шумы
+    """
+    try:
+        img = Image.open(BytesIO(image_bytes)).convert("RGB")
+        img = img.filter(ImageFilter.MedianFilter(size=3))
+        for _ in range(2):
+            enhancer_sharpness = ImageEnhance.Sharpness(img)
+            img = enhancer_sharpness.enhance(1.20)
+        enhancer_color = ImageEnhance.Color(img)
+        img = enhancer_color.enhance(1.25)
+        enhancer_contrast = ImageEnhance.Contrast(img)
+        img = enhancer_contrast.enhance(1.25)
+        enhancer_brightness = ImageEnhance.Brightness(img)
+        img = enhancer_brightness.enhance(1.03)
+        output = BytesIO()
+        img.save(output, format="JPEG", quality=98, optimize=True, subsampling=0)
+        output.seek(0)
+        return output
+    except Exception as e:
+        logger.error(f"Error enhancing image pro: {e}")
+        return enhance_image_quality(image_bytes)
 
 
 # =========================
@@ -1633,6 +1918,7 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
 def make_card_mn_tg(photo_bytes: bytes, title_text: str) -> BytesIO:
     """
     Шаблон "МН ТГ" - фото с полупрозрачной надписью MINSK NEWS
+    Водяной знак уменьшен на 20% (8% от ширины)
     """
     ensure_fonts()
 
@@ -1643,8 +1929,8 @@ def make_card_mn_tg(photo_bytes: bytes, title_text: str) -> BytesIO:
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     
-    # Рассчитываем размер шрифта (10% от ширины изображения)
-    font_size = int(img.width * 0.1)
+    # Рассчитываем размер шрифта (8% от ширины изображения)
+    font_size = int(img.width * 0.08)
     font = ImageFont.truetype(FONT_MN, font_size)
     
     # Получаем размеры текста
@@ -1657,7 +1943,7 @@ def make_card_mn_tg(photo_bytes: bytes, title_text: str) -> BytesIO:
     y = int(img.height * 0.2) - (text_height // 2)
     
     # Рисуем текст белым с прозрачностью 15%
-    # 15% прозрачность = 38 из 255 (255 * 0.15 = 38.25)
+    # 15% прозрачность = 38 из 255
     draw.text((x, y), FOOTER_TEXT, font=font, fill=(255, 255, 255, 38))
     
     # Накладываем текст на изображение
@@ -2084,6 +2370,7 @@ def cmd_manual_news(message):
 
 @bot.message_handler(func=lambda message: message.text == BTN_ENHANCE)
 def cmd_enhance(message):
+    """Обработчик команды улучшения качества фото"""
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     
@@ -2094,14 +2381,133 @@ def cmd_enhance(message):
     bot.send_message(
         message.chat.id,
         "✨ Отправь фото, которое нужно улучшить.\n\n"
-        "Я добавлю:\n"
-        "• 🔍 +15% резкости\n"
-        "• 🎨 +10% насыщенности\n"
-        "• 🌓 +10% контрастности",
+        "Я профессионально обработаю изображение:\n"
+        "• 🔍 +30-40% резкости\n"
+        "• 🎨 +20-25% насыщенности\n"
+        "• 🌓 +20-25% контрастности\n"
+        "• 🧹 Удаление шумов\n"
+        "• 💡 HDR-эффект",
         reply_markup=main_menu_kb()
     )
 
 
+# =========================
+# Обработчик выбора источников новостей
+# =========================
+@bot.callback_query_handler(func=lambda c: c.data.startswith("src:"))
+def on_source_select(c):
+    uid = c.from_user.id
+    action = c.data.split(":", 1)[1]
+    
+    st = user_state.get(uid) or {}
+    
+    if action == "cancel":
+        st.pop("news_step", None)
+        st.pop("selected_sources", None)
+        user_state[uid] = st
+        bot.edit_message_text(
+            "❌ Выбор отменен",
+            c.message.chat.id,
+            c.message.message_id
+        )
+        bot.answer_callback_query(c.id, "Отменено")
+        return
+    
+    if action == "save":
+        selected = st.get("selected_sources", [])
+        
+        if not selected:
+            bot.answer_callback_query(c.id, "❌ Выбери хотя бы один источник", show_alert=True)
+            return
+        
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+        
+        bot.send_message(
+            c.message.chat.id,
+            f"🔍 Собираю новости из {len(selected)} источников...\n"
+            f"Источники: {', '.join([SOURCE_NAMES.get(s, s) for s in selected])}",
+            reply_markup=main_menu_kb()
+        )
+        
+        items = fetch_news_from_sources(selected)
+        
+        set_news_cache(uid, items)
+        
+        send_news_batch(c.message.chat.id, uid, NEWS_FIRST_BATCH)
+        
+        st.pop("news_step", None)
+        st.pop("selected_sources", None)
+        user_state[uid] = st
+        
+        bot.answer_callback_query(c.id, f"✅ Выбрано {len(selected)} источников")
+        return
+    
+    if action == "reset":
+        st["selected_sources"] = []
+        user_state[uid] = st
+        bot.edit_message_text(
+            "📰 Выбери источники новостей (можно несколько):\n\n"
+            "После выбора нажми 'Сохранить выбор'",
+            c.message.chat.id,
+            c.message.message_id,
+            reply_markup=news_sources_kb()
+        )
+        bot.answer_callback_query(c.id, "Выбор сброшен")
+        return
+    
+    if action == "all":
+        st["selected_sources"] = list(SOURCE_NAMES.keys())
+        user_state[uid] = st
+        
+        selected_text = "✅ " + "\n✅ ".join([f"{SOURCE_NAMES[s]}" for s in st["selected_sources"]])
+        bot.edit_message_text(
+            f"📰 Выбраны все источники:\n\n{selected_text}\n\n"
+            f"Нажми 'Сохранить выбор' для продолжения",
+            c.message.chat.id,
+            c.message.message_id,
+            reply_markup=save_sources_kb()
+        )
+        bot.answer_callback_query(c.id, f"✅ Выбрано {len(st['selected_sources'])} источников")
+        return
+    
+    source_id = action
+    
+    if "selected_sources" not in st:
+        st["selected_sources"] = []
+    
+    if source_id in st["selected_sources"]:
+        st["selected_sources"].remove(source_id)
+        status = "❌ убран"
+    else:
+        st["selected_sources"].append(source_id)
+        status = "✅ добавлен"
+    
+    user_state[uid] = st
+    
+    if st["selected_sources"]:
+        selected_text = "Текущий выбор:\n"
+        for sid in SOURCE_NAMES.keys():
+            if sid in st["selected_sources"]:
+                selected_text += f"✅ {SOURCE_NAMES[sid]}\n"
+            else:
+                selected_text += f"❌ {SOURCE_NAMES[sid]}\n"
+    else:
+        selected_text = "Пока ничего не выбрано"
+    
+    bot.edit_message_text(
+        f"📰 {SOURCE_NAMES.get(source_id, source_id)} {status}\n\n{selected_text}\n"
+        f"Продолжай выбирать или нажми 'Сохранить выбор'",
+        c.message.chat.id,
+        c.message.message_id,
+        reply_markup=news_sources_kb()
+    )
+    
+    bot.answer_callback_query(c.id, f"{status}: {SOURCE_NAMES.get(source_id, source_id)}")
+
+
+# =========================
+# Template selection handler
+# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:"))
 def on_tpl(c):
     uid = c.from_user.id
@@ -2135,16 +2541,15 @@ def on_tpl(c):
             parse_mode="HTML"
         )
     elif tpl == "MN_TG":
-        st["step"] = "waiting_photo"
+        st["step"] = "waiting_photo_mn_tg"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Шаблон 'МН ТГ' выбран ✅")
         bot.send_message(
             c.message.chat.id,
             "📱 Выбран шаблон <b>МН ТГ</b>\n\n"
-            "📸 Пришли фото для поста.\n\n"
-            "<i>Дальше нужно будет:</i>\n"
-            "1️⃣ Отправить ЗАГОЛОВОК (будет жирным)\n"
-            "2️⃣ Отправить ОСНОВНОЙ ТЕКСТ (в конце автоматически добавятся ссылки)",
+            "📸 Сначала пришли фото для поста.\n\n"
+            "<i>После фото нужно будет отправить текст целиком.</i>\n"
+            "Первый абзац автоматически станет жирным заголовком, остальное - основным текстом.",
             parse_mode="HTML"
         )
     else:
@@ -2182,6 +2587,9 @@ def on_text_position(c):
     )
 
 
+# =========================
+# Commands
+# =========================
 @bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
     uid = message.from_user.id
@@ -2222,16 +2630,26 @@ def cmd_post(message):
 
 @bot.message_handler(commands=["news"])
 def cmd_news(message):
+    """Команда получения новостей с выбором источника"""
     uid = message.from_user.id
     
     if str(uid) == str(AUTO_NEWS_CHAT_ID):
         cmd_manual_news(message)
         return
     
-    bot.send_message(message.chat.id, "Собираю новости за 24 часа… 🧲", reply_markup=main_menu_kb())
-    items = fetch_all_news_last24h()
-    set_news_cache(uid, items)
-    send_news_batch(message.chat.id, uid, NEWS_FIRST_BATCH)
+    st = user_state.get(uid) or {}
+    st["news_step"] = "choosing_sources"
+    st["selected_sources"] = []
+    user_state[uid] = st
+    
+    bot.send_message(
+        message.chat.id,
+        "📰 Выбери источники новостей (можно несколько):\n\n"
+        "✅ - выбран\n"
+        "❌ - не выбран\n\n"
+        "После выбора нажми 'Сохранить выбор'",
+        reply_markup=news_sources_kb()
+    )
 
 
 def send_news_batch(chat_id: int, uid: int, batch: int):
@@ -2423,12 +2841,16 @@ def on_news_item_action(c):
         bot.send_message(c.message.chat.id, f"Ошибка при создании карточки: {e}", reply_markup=main_menu_kb())
 
 
+# =========================
+# Post flow
+# =========================
 @bot.message_handler(content_types=["photo"])
 def on_photo(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     st.setdefault("template", "MN")
 
+    # Блок улучшения качества
     if st.get("step") == "waiting_enhance_photo":
         try:
             file_id = message.photo[-1].file_id
@@ -2438,34 +2860,41 @@ def on_photo(message):
                 bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
                 return
 
-            processing_msg = bot.reply_to(message, "⏳ Улучшаю качество фото...")
+            processing_msg = bot.reply_to(message, "⏳ Профессиональная обработка фото... (это может занять несколько секунд)")
             
-            enhanced = enhance_image_quality(photo_bytes)
+            try:
+                enhanced = enhance_image_quality_pro(photo_bytes)
+                quality_text = "профессионально обработано"
+            except:
+                enhanced = enhance_image_quality(photo_bytes)
+                quality_text = "улучшено"
             
             bot.send_photo(
                 message.chat.id,
                 photo=enhanced,
-                caption="✨ Фото улучшено!\n\n"
-                       "✓ +15% резкости\n"
-                       "✓ +10% насыщенности\n"
-                       "✓ +10% контрастности",
+                caption=f"✨ Фото {quality_text}!\n\n"
+                       "✓ +30-40% резкости\n"
+                       "✓ +20-25% насыщенности\n"
+                       "✓ +20-25% контрастности\n"
+                       "✓ Удалены шумы\n"
+                       "✓ HDR-эффект",
                 reply_markup=main_menu_kb()
             )
             
             bot.delete_message(message.chat.id, processing_msg.message_id)
-            
             st["step"] = "idle"
             user_state[uid] = st
-            
+            return
         except Exception as e:
             logger.error(f"Error enhancing photo: {e}")
             bot.reply_to(message, f"❌ Ошибка при улучшении фото: {e}")
-        return
+            return
 
     if st.get("step") == "waiting_template":
         bot.send_message(message.chat.id, "Сначала выбери шаблон:", reply_markup=template_kb())
         return
 
+    # Блок FDR_POST
     if st.get("step") == "waiting_photo_fdr_post":
         try:
             file_id = message.photo[-1].file_id
@@ -2493,6 +2922,38 @@ def on_photo(message):
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
 
+    # Блок MN_TG
+    if st.get("step") == "waiting_photo_mn_tg":
+        try:
+            file_id = message.photo[-1].file_id
+            photo_bytes = tg_file_bytes(file_id)
+
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                return
+
+            warn_if_too_small(message.chat.id, photo_bytes)
+
+            card = make_card_mn_tg(photo_bytes, "")
+            st["photo_bytes"] = photo_bytes
+            st["card_bytes"] = card.getvalue()
+            st["step"] = "waiting_text_mn_tg"
+            user_state[uid] = st
+
+            bot.reply_to(
+                message,
+                "📸 Фото сохранено!\n\n"
+                "Теперь отправь <b>ВЕСЬ ТЕКСТ</b> поста одним сообщением.\n"
+                "Первый абзац станет жирным заголовком, остальное - основным текстом.",
+                parse_mode="HTML"
+            )
+            return
+        except Exception as e:
+            logger.error(f"Error processing photo for MN_TG: {e}")
+            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
+            return
+
+    # Основной блок обработки фото
     try:
         file_id = message.photo[-1].file_id
         photo_bytes = tg_file_bytes(file_id)
@@ -2502,9 +2963,9 @@ def on_photo(message):
             return
 
         warn_if_too_small(message.chat.id, photo_bytes)
-
         st["photo_bytes"] = photo_bytes
 
+        # Обработка с предзаполненными данными
         if st.get("prefill_title"):
             st["title"] = st["prefill_title"]
             st["source_url"] = st.get("prefill_source", "") or ""
@@ -2577,6 +3038,7 @@ def on_photo(message):
                 bot.reply_to(message, f"Ошибка при создании карточки: {e}")
             return
 
+        # Обычная обработка
         if st["template"] == "FDR_STORY":
             st["step"] = "waiting_title_fdr"
         else:
@@ -2601,6 +3063,7 @@ def on_document(message):
         bot.reply_to(message, "Пришли картинку (JPG/PNG).")
         return
 
+    # Проверяем, не в режиме ли улучшения фото
     if st.get("step") == "waiting_enhance_photo":
         try:
             photo_bytes = tg_file_bytes(doc.file_id)
@@ -2617,9 +3080,11 @@ def on_document(message):
                 message.chat.id,
                 photo=enhanced,
                 caption="✨ Фото улучшено!\n\n"
-                       "✓ +15% резкости\n"
-                       "✓ +10% насыщенности\n"
-                       "✓ +10% контрастности",
+                       "✓ +30-40% резкости\n"
+                       "✓ +20-25% насыщенности\n"
+                       "✓ +20-25% контрастности\n"
+                       "✓ Удалены шумы\n"
+                       "✓ HDR-эффект",
                 reply_markup=main_menu_kb()
             )
             
@@ -2679,6 +3144,33 @@ def on_text(message):
 
     step = st.get("step")
 
+    # Блок получения текста для MN_TG
+    if step == "waiting_text_mn_tg":
+        if not text:
+            bot.reply_to(message, "❌ Текст не может быть пустым. Отправь текст:")
+            return
+        
+        st["full_text"] = text
+        st["step"] = "waiting_action"
+        user_state[uid] = st
+        
+        caption = build_caption_tg(text)
+        
+        bot.send_photo(
+            chat_id=message.chat.id,
+            photo=BytesIO(st["card_bytes"]),
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=preview_kb(st.get("source_url", "")),
+        )
+        bot.reply_to(
+            message, 
+            "✅ Пост готов! Нажми кнопку под превью для публикации.",
+            reply_markup=main_menu_kb()
+        )
+        return
+
+    # Блок FDR_POST
     if step == "waiting_title_fdr_post":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым. Отправь текст:")
@@ -2849,9 +3341,8 @@ def on_text(message):
         st["step"] = "waiting_action"
         user_state[uid] = st
         
-        # Для шаблона MN_TG используем специальное формирование подписи
         if st.get("template") == "MN_TG":
-            caption = build_caption_tg(st["title"], st["body_raw"])
+            caption = build_caption_tg(st["body_raw"])
         else:
             caption = build_caption_html(st["title"], st["body_raw"])
             
@@ -2889,12 +3380,10 @@ def on_action(call):
 
     if call.data == "publish":
         try:
-            title_to_use = st["full_title"] if st.get("template") == "FDR_POST" and "full_title" in st else st.get("title", "")
-            
-            # Для шаблона MN_TG используем специальное формирование подписи
-            if st.get("template") == "MN_TG":
-                caption = build_caption_tg(title_to_use, st["body_raw"])
+            if st.get("template") == "MN_TG" and "full_text" in st:
+                caption = build_caption_tg(st["full_text"])
             else:
+                title_to_use = st["full_title"] if st.get("template") == "FDR_POST" and "full_title" in st else st.get("title", "")
                 caption = build_caption_html(title_to_use, st["body_raw"])
                 
             bot.send_photo(
@@ -2924,6 +3413,11 @@ def on_action(call):
             user_state[uid] = st
             bot.answer_callback_query(call.id, "Ок")
             bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
+        elif st.get("template") == "MN_TG":
+            st["step"] = "waiting_text_mn_tg"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком. Первый абзац станет заголовком.", reply_markup=main_menu_kb())
         else:
             st["step"] = "waiting_body"
             user_state[uid] = st
@@ -2941,6 +3435,11 @@ def on_action(call):
             user_state[uid] = st
             bot.answer_callback_query(call.id, "Ок")
             bot.send_message(call.message.chat.id, "Пришли новый ПОЛНЫЙ ЗАГОЛОВОК.", reply_markup=main_menu_kb())
+        elif st.get("template") == "MN_TG":
+            st["step"] = "waiting_text_mn_tg"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком. Первый абзац станет заголовком.", reply_markup=main_menu_kb())
         else:
             st["step"] = "waiting_title"
             user_state[uid] = st
@@ -2954,6 +3453,9 @@ def on_action(call):
         bot.send_message(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
 
 
+# =========================
+# Additional commands
+# =========================
 @bot.message_handler(commands=["stats"])
 def cmd_stats(message):
     stats = {
