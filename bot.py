@@ -87,6 +87,10 @@ MAX_RETRIES = 3
 FDR_POST_PURPLE_COLOR = (122, 58, 240)  # Фиолетовый цвет как в сторис
 FDR_POST_PLATE_HEIGHT_PCT = 0.15  # Высота фиолетовой плашки
 
+# Позиции текста для шаблона МН
+TEXT_POSITION_TOP = "top"
+TEXT_POSITION_BOTTOM = "bottom"
+
 
 # =========================
 # UI BUTTONS
@@ -993,7 +997,7 @@ def fit_text_block(
 # =========================
 # Cards
 # =========================
-def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
+def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
 
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -1038,7 +1042,14 @@ def make_card_mn(photo_bytes: bytes, title_text: str) -> BytesIO:
     block_x = (img.width - block_w) // 2
     block_x = max(margin_x, block_x)
 
-    y = margin_top
+    # Определяем позицию текста
+    if text_position == TEXT_POSITION_TOP:
+        y = margin_top
+    else:  # TEXT_POSITION_BOTTOM
+        # Рассчитываем общую высоту текстового блока
+        total_text_height = sum(heights) + spacing * (len(lines) - 1)
+        y = img.height - margin_bottom - total_text_height - footer_h - 10
+
     for i, ln in enumerate(lines):
         draw.text((block_x, y), ln, font=font, fill="white")
         y += heights[i] + spacing
@@ -1469,7 +1480,7 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     return out
 
 
-def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "") -> BytesIO:
+def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     if template == "CHP":
         return make_card_chp(photo_bytes, title_text)
     if template == "AM":
@@ -1478,7 +1489,8 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
         return make_card_fdr_story(photo_bytes, title_text, body_text)
     if template == "FDR_POST":
         return make_card_fdr_post(photo_bytes, title_text, highlight_phrase)
-    return make_card_mn(photo_bytes, title_text)
+    # Для MN передаем позицию текста
+    return make_card_mn(photo_bytes, title_text, text_position)
 
 
 # =========================
@@ -1496,6 +1508,15 @@ def template_kb():
     )
     kb.row(
         InlineKeyboardButton("💜 Пост ФДР", callback_data="tpl:FDR_POST")
+    )
+    return kb
+
+
+def text_position_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("⬆️ Сверху", callback_data="text_pos:top"),
+        InlineKeyboardButton("⬇️ Снизу", callback_data="text_pos:bottom")
     )
     return kb
 
@@ -1916,7 +1937,19 @@ def on_tpl(c):
     st = user_state.get(uid) or {}
     st["template"] = tpl
     
-    if tpl == "FDR_POST":
+    if tpl == "MN":
+        # Для шаблона МН спрашиваем позицию текста
+        st["step"] = "waiting_text_position"
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, "Шаблон МН выбран ✅")
+        bot.send_message(
+            c.message.chat.id,
+            "📰 Выбран шаблон <b>МН</b>\n\n"
+            "Где разместить текст?",
+            parse_mode="HTML",
+            reply_markup=text_position_kb()
+        )
+    elif tpl == "FDR_POST":
         st["step"] = "waiting_photo_fdr_post"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
@@ -1937,13 +1970,32 @@ def on_tpl(c):
         bot.answer_callback_query(c.id, "Ок ✅")
         
         tpl_names = {
-            'MN': 'МН',
             'CHP': 'ЧП ВМ',
             'AM': 'АМ',
             'FDR_STORY': 'Сторис ФДР'
         }
         tpl_name = tpl_names.get(tpl, tpl)
         bot.send_message(c.message.chat.id, f"Шаблон выбран: {tpl_name}. Пришли фото 📷")
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("text_pos:"))
+def on_text_position(c):
+    uid = c.from_user.id
+    position = c.data.split(":", 1)[1]
+    st = user_state.get(uid) or {}
+    
+    st["text_position"] = position
+    st["step"] = "waiting_photo"
+    user_state[uid] = st
+    
+    position_text = "сверху" if position == "top" else "снизу"
+    bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
+    bot.send_message(
+        c.message.chat.id,
+        f"Текст будет расположен <b>{position_text}</b> фотографии.\n\n"
+        "Теперь пришли фото 📷",
+        parse_mode="HTML"
+    )
 
 
 # =========================
@@ -2160,7 +2212,11 @@ def on_news_item_action(c):
             return
 
     try:
-        card = make_card(photo_bytes, title, st["template"])
+        # Для MN передаем позицию текста
+        if st["template"] == "MN":
+            card = make_card(photo_bytes, title, st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP))
+        else:
+            card = make_card(photo_bytes, title, st["template"])
         st["card_bytes"] = card.getvalue()
 
         if auto_body:
@@ -2277,7 +2333,12 @@ def on_photo(message):
                         bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
                         return
 
-                card = make_card(st["photo_bytes"], st["title"], st["template"])
+                # Для MN передаем позицию текста
+                if st["template"] == "MN":
+                    card = make_card(st["photo_bytes"], st["title"], st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP))
+                else:
+                    card = make_card(st["photo_bytes"], st["title"], st["template"])
+                
                 st["card_bytes"] = card.getvalue()
 
                 if st.get("prefill_body"):
@@ -2529,7 +2590,12 @@ def on_text(message):
     if step == "waiting_title":
         st["title"] = text
         try:
-            card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"))
+            # Для MN передаем позицию текста
+            if st.get("template") == "MN":
+                card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), text_position=st.get("text_position", TEXT_POSITION_TOP))
+            else:
+                card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"))
+            
             st["card_bytes"] = card.getvalue()
             st["step"] = "waiting_body"
             user_state[uid] = st
@@ -2563,6 +2629,9 @@ def on_text(message):
 
     elif step == "waiting_template":
         bot.send_message(message.chat.id, "Выбери шаблон кнопками:", reply_markup=template_kb())
+
+    elif step == "waiting_text_position":
+        bot.send_message(message.chat.id, "Сначала выбери расположение текста:", reply_markup=text_position_kb())
 
     else:
         user_state[uid] = st
