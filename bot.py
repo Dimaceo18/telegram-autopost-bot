@@ -1514,98 +1514,70 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     margin_bottom = int(img.height * 0.08)
     safe_w = img.width - 2 * margin_x
     
-    # Разбиваем заголовок на слова
-    title_words = title_text.strip().split()
-    highlight_words = highlight_phrase.strip().split()
+    # Подготавливаем текст
+    title_text_upper = title_text.strip().upper()
+    highlight_phrase_upper = highlight_phrase.strip().upper()
     
-    # Создаем список для хранения информации о каждом слове
-    words_info = []
-    current_line = []
-    current_line_width = 0
-    space_width = text_width(draw, " ", ImageFont.truetype(FONT_CHP, int(img.height * 0.11)))
-    
-    # Сначала разбиваем на строки как в ЧП ВМ
+    # Используем ту же логику что и в ЧП ВМ для размера шрифта
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
-    title_font_size = int(img.height * 0.11)
-    title_font = ImageFont.truetype(FONT_CHP, title_font_size)
     
-    for word in title_words:
-        word_width = text_width(draw, word, title_font)
+    # Подбираем шрифт как в ЧП ВМ
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw,
+        text=title_text_upper,
+        font_path=FONT_CHP,  # Тот же шрифт что в ЧП ВМ
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(img.height * 0.11),
+        min_size=16,
+        line_spacing_ratio=0.22
+    )
+    
+    # Размещаем текст внизу как в ЧП ВМ
+    y = img.height - margin_bottom - total_h
+    
+    # Разбиваем заголовок на отдельные строки из fit_text_block
+    # и для каждой строки определяем, есть ли в ней выделяемые слова
+    for line in lines:
+        # Разбиваем строку на слова
+        line_words = line.split()
+        line_has_highlight = any(word in highlight_phrase_upper for word in line_words)
         
-        if current_line_width + word_width + (space_width if current_line else 0) <= safe_w:
-            # Добавляем слово в текущую строку
-            if current_line:
-                current_line_width += space_width
-            current_line.append(word)
-            current_line_width += word_width
-        else:
-            # Сохраняем текущую строку и начинаем новую
-            if current_line:
-                words_info.append({
-                    'words': current_line.copy(),
-                    'width': current_line_width,
-                    'highlight': any(w in highlight_words for w in current_line)
-                })
-            current_line = [word]
-            current_line_width = word_width
-    
-    # Добавляем последнюю строку
-    if current_line:
-        words_info.append({
-            'words': current_line.copy(),
-            'width': current_line_width,
-            'highlight': any(w in highlight_words for w in current_line)
-        })
-    
-    # Рассчитываем высоту каждой строки
-    line_height = text_width(draw, "A", title_font)  # Примерная высота строки
-    line_spacing = int(title_font_size * 0.22)
-    total_text_height = len(words_info) * (line_height + line_spacing) - line_spacing
-    
-    # Размещаем заголовок внизу как в ЧП ВМ
-    title_y = img.height - margin_bottom - total_text_height
-    
-    # Рисуем каждую строку
-    for line_info in words_info:
-        line_words = line_info['words']
-        line_text = " ".join(line_words)
-        
-        # Если строка содержит выделенные слова
-        if line_info['highlight']:
-            # Рисуем каждое слово отдельно для выделения
-            x = margin_x
-            y = title_y
+        if line_has_highlight:
+            # Если есть выделяемые слова, рисуем каждое слово отдельно
+            current_x = margin_x
             
             for word in line_words:
-                word_width = text_width(draw, word, title_font)
+                word_width = text_width(draw, word, font)
                 
                 # Проверяем, нужно ли выделить это слово
-                if word in highlight_words:
+                if word in highlight_phrase_upper:
                     # Рисуем фиолетовую плашку под слово
-                    plate_padding = 5
-                    plate_height = line_height + 10
+                    # Плашка точно по размеру слова
+                    plate_padding = 8
+                    plate_height = heights[lines.index(line)] + 10
                     
                     # Рисуем прямоугольник с фиолетовым цветом
                     draw.rectangle(
-                        [x - plate_padding, y - 2, 
-                         x + word_width + plate_padding, y + plate_height],
+                        [current_x - plate_padding, y - 3, 
+                         current_x + word_width + plate_padding, y + plate_height],
                         fill=FDR_POST_PURPLE_COLOR
                     )
                 
                 # Рисуем слово белым
-                draw.text((x, y), word, font=title_font, fill="white")
-                x += word_width + space_width
+                draw.text((current_x, y), word, font=font, fill="white")
+                current_x += word_width + text_width(draw, " ", font)
         else:
-            # Рисуем всю строку обычным белым
-            draw.text((margin_x, title_y), line_text, font=title_font, fill="white")
+            # Если нет выделяемых слов, рисуем всю строку целиком
+            draw.text((margin_x, y), line, font=font, fill="white")
         
-        title_y += line_height + line_spacing
+        y += heights[lines.index(line)] + spacing
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
     out.seek(0)
     return out
-
 
 def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     if template == "CHP":
