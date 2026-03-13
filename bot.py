@@ -123,22 +123,11 @@ BTN_POST = "📝 Оформить пост"
 BTN_NEWS = "📰 Получить новости"
 BTN_GET_NEWS_MANUAL = "📰 Выгрузить новости сейчас"
 BTN_ENHANCE = "✨ Улучшить качество"
-BTN_HEADLINES = "🎯 Сгенерировать заголовки"
-BTN_SHORTEN = "✂️ Сократить текст"
-BTN_BACK = "🔙 Назад"
-BTN_HELP = "❓ Помощь"
 
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_NEWS))
     kb.row(KeyboardButton(BTN_GET_NEWS_MANUAL), KeyboardButton(BTN_ENHANCE))
-    kb.row(KeyboardButton(BTN_HEADLINES), KeyboardButton(BTN_SHORTEN))
-    kb.row(KeyboardButton(BTN_HELP))
-    return kb
-
-def back_button_kb():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton(BTN_BACK))
     return kb
 
 
@@ -201,6 +190,13 @@ NEWS_SOURCES = [
         "domain": "tochka.by",
         "include_patterns": [r"^/articles/[^/]+/[^/]+/?$"],
         "limit": 40,
+        "timeout": 60,
+        "headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://www.google.com/"
+        }
     },
     {
         "id": "smartpress",
@@ -211,15 +207,16 @@ NEWS_SOURCES = [
         "exclude_patterns": [r"/about/", r"/projects/", r"/authors?/", r"/news/page/", r"/search/"],
         "limit": 40,
     },
-    {
-        "id": "sb",
-        "name": "SB.by",
-        "kind": "html_og",
-        "start_urls": ["https://www.sb.by/news/", "https://www.sb.by/articles/"],
-        "domain": "www.sb.by",
-        "exclude_patterns": [r"/video/", r"/photo/", r"/news/page/", r"/authors?/"],
-        "limit": 40,
-    },
+    # SB.by временно отключен из-за блокировки 403
+    # {
+    #     "id": "sb",
+    #     "name": "SB.by",
+    #     "kind": "html_og",
+    #     "start_urls": ["https://www.sb.by/news/", "https://www.sb.by/articles/"],
+    #     "domain": "www.sb.by",
+    #     "exclude_patterns": [r"/video/", r"/photo/", r"/news/page/", r"/authors?/"],
+    #     "limit": 40,
+    # },
     {
         "id": "minsknews",
         "name": "Minsknews",
@@ -348,11 +345,15 @@ def is_admin(msg_or_call) -> bool:
 
 
 @retry_on_error()
-def http_get(url: str, timeout: int = REQUEST_TIMEOUT) -> str:
+def http_get(url: str, timeout: int = REQUEST_TIMEOUT, headers: dict = None) -> str:
     if not validate_url(url):
         raise ValueError(f"Invalid URL: {url}")
     try:
-        r = SESSION.get(url, timeout=timeout)
+        request_headers = SESSION.headers.copy()
+        if headers:
+            request_headers.update(headers)
+            
+        r = SESSION.get(url, timeout=timeout, headers=request_headers)
         r.raise_for_status()
         return r.text
     except requests.exceptions.Timeout:
@@ -360,6 +361,11 @@ def http_get(url: str, timeout: int = REQUEST_TIMEOUT) -> str:
         raise
     except requests.exceptions.ConnectionError:
         logger.error(f"Connection error for {url}")
+        raise
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 403:
+            logger.error(f"Access forbidden (403) for {url} - site is blocking requests")
+            return ""
         raise
     except Exception as e:
         logger.error(f"HTTP error for {url}: {e}")
@@ -794,17 +800,16 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
     include_patterns = source.get("include_patterns")
     exclude_patterns = source.get("exclude_patterns")
     max_candidates = min(max(limit * 6, 40), 140)
+    source_headers = source.get("headers", {})
 
     candidates: List[Tuple[str, str]] = []
     seen = set()
     
     for start_url in start_urls:
         try:
-            # Увеличим таймаут для проблемных сайтов
             timeout = source.get("timeout", REQUEST_TIMEOUT)
-            page_html = http_get(start_url, timeout=timeout)
+            page_html = http_get(start_url, timeout=timeout, headers=source_headers)
             
-            # Если сайт вернул пустую страницу или ошибку
             if not page_html or len(page_html) < 1000:
                 logger.warning(f"[NEWS-WARNING] {source['name']} returned too short content: {len(page_html)} chars")
                 continue
@@ -838,9 +843,8 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
     used = set()
     for href, anchor in candidates:
         try:
-            # Увеличим таймаут для статей проблемных сайтов
             timeout = source.get("timeout", REQUEST_TIMEOUT)
-            art_html = http_get(href, timeout=timeout)
+            art_html = http_get(href, timeout=timeout, headers=source_headers)
             
             if not art_html or len(art_html) < 500:
                 logger.warning(f"[NEWS-WARNING] {source['name']} article too short: {href}")
@@ -964,7 +968,7 @@ SOURCE_NAMES = {
     "telegraf": "Telegraf",
     "tochka": "Tochka",
     "smartpress": "Smartpress",
-    "sb": "SB.by",
+    # "sb": "SB.by",  # Временно отключено
     "minsknews": "Minsknews",
     "mlyn": "Mlyn",
     "ont": "ONT"
@@ -1267,217 +1271,7 @@ def enhance_image_quality_pro(image_bytes: bytes) -> BytesIO:
 
 
 # =========================
-# НОВЫЕ ФУНКЦИИ: Генератор заголовков и сокращение текста
-# =========================
-
-# Стили заголовков
-HEADLINE_STYLES = [
-    {
-        "name": "Вопрос",
-        "pattern": "❓ {text}?",
-        "description": "Задает вопрос читателю"
-    },
-    {
-        "name": "Срочно",
-        "pattern": "⚡️ СРОЧНО: {text}",
-        "description": "Привлекает внимание срочностью"
-    },
-    {
-        "name": "Интрига",
-        "pattern": "🤔 {text}: что известно?",
-        "description": "Оставляет интригу"
-    },
-    {
-        "name": "Цифра",
-        "pattern": "📊 {text}: факты и цифры",
-        "description": "Добавляет аналитики"
-    },
-    {
-        "name": "Список",
-        "pattern": "📌 {text}: главное в 5 пунктах",
-        "description": "Обещает структуру"
-    },
-    {
-        "name": "Цитата",
-        "pattern": "💬 {text} — эксперты комментируют",
-        "description": "Добавляет мнение экспертов"
-    },
-    {
-        "name": "Место",
-        "pattern": "📍 {text} в Минске",
-        "description": "Привязка к локации"
-    },
-    {
-        "name": "Время",
-        "pattern": "⏰ Сегодня: {text}",
-        "description": "Акцент на актуальности"
-    },
-    {
-        "name": "Эмоция",
-        "pattern": "🔥 {text} (фото/видео)",
-        "description": "Добавляет эмоций"
-    },
-    {
-        "name": "Полезно",
-        "pattern": "✅ Полезно знать: {text}",
-        "description": "Подача как полезной информации"
-    }
-]
-
-def generate_headlines(text: str, count: int = 10) -> List[Dict[str, str]]:
-    """
-    Генерирует варианты заголовков на основе текста новости
-    """
-    # Очищаем текст от лишних символов
-    clean_text = re.sub(r'[^\w\s]', ' ', text)
-    
-    # Берем первые 50 символов для заголовка
-    if len(clean_text) > 50:
-        base = clean_text[:50].rsplit(' ', 1)[0] + '...'
-    else:
-        base = clean_text
-    
-    # Находим ключевые слова (существительные)
-    words = re.findall(r'\b[А-Яа-я]{4,}\b', clean_text)
-    keywords = list(set(words))[:3]
-    
-    # Генерируем варианты
-    headlines = []
-    
-    for i, style in enumerate(HEADLINE_STYLES[:count]):
-        headline = style["pattern"].format(text=base)
-        
-        # Добавляем ключевые слова в некоторые заголовки
-        if keywords and i % 3 == 0:
-            headline = headline.replace(base, f"{base} {', '.join(keywords)}")
-        
-        headlines.append({
-            "text": headline,
-            "style": style["name"],
-            "description": style["description"]
-        })
-    
-    return headlines
-
-def headlines_kb(headline_index: int = 0, total: int = 10):
-    kb = InlineKeyboardMarkup(row_width=3)
-    kb.add(
-        InlineKeyboardButton("◀️", callback_data=f"headline_prev:{headline_index}"),
-        InlineKeyboardButton(f"{headline_index+1}/{total}", callback_data="headline_count"),
-        InlineKeyboardButton("▶️", callback_data=f"headline_next:{headline_index}"),
-    )
-    kb.add(
-        InlineKeyboardButton("🔄 Сгенерировать заново", callback_data="headline_regenerate"),
-        InlineKeyboardButton("📋 Скопировать", callback_data=f"headline_copy:{headline_index}")
-    )
-    kb.add(InlineKeyboardButton("❌ Закрыть", callback_data="headline_close"))
-    return kb
-
-def shorten_text(text: str, max_sentences: int = 3) -> str:
-    """
-    Сжимает текст до указанного количества предложений
-    """
-    # Разбиваем на предложения
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    
-    # Фильтруем пустые предложения
-    sentences = [s.strip() for s in sentences if s.strip()]
-    
-    if len(sentences) <= max_sentences:
-        return text
-    
-    # Берем первые max_sentences предложений
-    shortened = ' '.join(sentences[:max_sentences])
-    
-    # Добавляем многоточие, если текст обрезан
-    if len(sentences) > max_sentences:
-        shortened += '...'
-    
-    return shortened
-
-def process_headlines(chat_id: int, uid: int, text: str):
-    """Обрабатывает генерацию заголовков и отправляет результат"""
-    try:
-        headlines = generate_headlines(text)
-        
-        # Сохраняем в состояние
-        st = user_state.get(uid, {})
-        st["headlines"] = headlines
-        st["headlines_text"] = text
-        st["step"] = "headlines_result"
-        user_state[uid] = st
-        
-        # Отправляем первый заголовок
-        headline = headlines[0]
-        msg = (
-            f"🎯 <b>Вариант 1 из {len(headlines)}</b>\n\n"
-            f"<b>{headline['text']}</b>\n"
-            f"<i>Стиль: {headline['style']}</i>\n"
-            f"<i>{headline['description']}</i>"
-        )
-        
-        bot.send_message(
-            chat_id,
-            msg,
-            parse_mode="HTML",
-            reply_markup=headlines_kb(0, len(headlines))
-        )
-        
-    except Exception as e:
-        logger.error(f"Error generating headlines: {e}")
-        bot.send_message(
-            chat_id,
-            f"❌ Ошибка при генерации заголовков: {e}",
-            reply_markup=main_menu_kb()
-        )
-
-def process_shorten(chat_id: int, uid: int, text: str):
-    """Обрабатывает сокращение текста и отправляет результат"""
-    try:
-        shortened = shorten_text(text)
-        
-        # Сохраняем в состояние
-        st = user_state.get(uid, {})
-        st["shortened_text"] = shortened
-        st["step"] = "shorten_result"
-        user_state[uid] = st
-        
-        # Подсчитываем статистику
-        original_len = len(text)
-        shortened_len = len(shortened)
-        percent = int((1 - shortened_len / original_len) * 100)
-        
-        msg = (
-            f"✂️ <b>Сокращенный текст:</b>\n\n"
-            f"{shortened}\n\n"
-            f"<i>Статистика:</i>\n"
-            f"• Было: {original_len} символов\n"
-            f"• Стало: {shortened_len} символов\n"
-            f"• Сжатие: {percent}%"
-        )
-        
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("📋 Скопировать", callback_data="shorten_copy"))
-        kb.add(InlineKeyboardButton("🔄 Еще раз", callback_data="shorten_again"))
-        
-        bot.send_message(
-            chat_id,
-            msg,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-        
-    except Exception as e:
-        logger.error(f"Error shortening text: {e}")
-        bot.send_message(
-            chat_id,
-            f"❌ Ошибка при сокращении текста: {e}",
-            reply_markup=main_menu_kb()
-        )
-
-
-# =========================
-# Wrapping + drawing (продолжение)
+# Wrapping + drawing
 # =========================
 def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) -> int:
     bb = draw.textbbox((0, 0), s, font=font)
@@ -2810,7 +2604,7 @@ def on_text_position(c):
 # =========================
 # Commands
 # =========================
-@bot.message_handler(commands=["start"])
+@bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
@@ -2818,83 +2612,15 @@ def cmd_start(message):
     st["step"] = "idle"
     user_state[uid] = st
 
-    welcome_text = (
-        "👋 <b>Привет! Я бот для создания и оформления новостей.</b>\n\n"
-        "📝 <b>Основные возможности:</b>\n"
-        "• 🎨 Оформление постов в разных шаблонах\n"
-        "• 📰 Автоматический сбор новостей\n"
-        "• ✨ Улучшение качества фото\n"
-        "• 🎯 Генерация заголовков\n"
-        "• ✂️ Сокращение текста\n\n"
-        "❓ Нажми /help для полного списка команд"
+    bot.send_message(message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
+    bot.send_message(
+        message.chat.id,
+        "Команды:\n"
+        "• /post — оформить пост\n"
+        "• /news — получить новости за 24 часа\n"
+        "• /template — выбрать шаблон (МН / ЧП ВМ / АМ / Сторис ФДР / Пост ФДР)\n",
+        reply_markup=main_menu_kb()
     )
-    
-    bot.send_message(message.chat.id, welcome_text, parse_mode="HTML", reply_markup=main_menu_kb())
-
-
-@bot.message_handler(commands=["help"])
-def cmd_help(message):
-    help_text = (
-        "📚 <b>Справка по командам:</b>\n\n"
-        "<b>Основные:</b>\n"
-        "• /start — приветствие\n"
-        "• /help — это сообщение\n"
-        "• /post — создать новый пост\n"
-        "• /news — получить свежие новости\n\n"
-        "<b>Полезные функции:</b>\n"
-        "• /headlines [текст] — сгенерировать заголовки\n"
-        "• /shorten [текст] — сократить текст\n"
-        "• /enhance — улучшить качество фото\n\n"
-        "<b>Для админов:</b>\n"
-        "• /stats — статистика бота\n"
-        "• /health — проверка здоровья\n\n"
-        "Нажми кнопку в меню, чтобы начать 👇"
-    )
-    bot.reply_to(message, help_text, parse_mode="HTML", reply_markup=main_menu_kb())
-
-
-@bot.message_handler(commands=["headlines"])
-def cmd_headlines(message):
-    """Генерирует варианты заголовков для текста"""
-    uid = message.from_user.id
-    text = message.text.replace("/headlines", "").strip()
-    
-    if not text:
-        # Если текста нет, просим прислать
-        st = user_state.get(uid, {})
-        st["step"] = "waiting_headlines_text"
-        user_state[uid] = st
-        bot.reply_to(
-            message,
-            "📝 Отправь текст новости, а я придумаю для него 10 вариантов заголовков:",
-            reply_markup=back_button_kb()
-        )
-        return
-    
-    # Если текст есть, генерируем сразу
-    process_headlines(message.chat.id, uid, text)
-
-
-@bot.message_handler(commands=["shorten"])
-def cmd_shorten(message):
-    """Сокращает текст до 3 предложений"""
-    uid = message.from_user.id
-    text = message.text.replace("/shorten", "").strip()
-    
-    if not text:
-        # Если текста нет, просим прислать
-        st = user_state.get(uid, {})
-        st["step"] = "waiting_shorten_text"
-        user_state[uid] = st
-        bot.reply_to(
-            message,
-            "✂️ Отправь длинный текст, а я сокращу его до 3 предложений:",
-            reply_markup=back_button_kb()
-        )
-        return
-    
-    # Если текст есть, сокращаем сразу
-    process_shorten(message.chat.id, uid, text)
 
 
 @bot.message_handler(commands=["template"])
@@ -3429,44 +3155,8 @@ def on_text(message):
     if text == BTN_ENHANCE or text.lower() in {"улучшить качество", "улучшить фото", "улучшить"}:
         cmd_enhance(message)
         return
-    
-    if text == BTN_HEADLINES:
-        cmd_headlines(message)
-        return
-    
-    if text == BTN_SHORTEN:
-        cmd_shorten(message)
-        return
-    
-    if text == BTN_BACK:
-        clear_state(uid)
-        bot.send_message(message.chat.id, "🔙 Возврат в главное меню", reply_markup=main_menu_kb())
-        return
-    
-    if text == BTN_HELP:
-        cmd_help(message)
-        return
 
     step = st.get("step")
-
-    # НОВЫЕ ОБРАБОТЧИКИ
-    if step == "waiting_headlines_text":
-        if text == BTN_BACK:
-            clear_state(uid)
-            bot.send_message(message.chat.id, "🔙 Отменено", reply_markup=main_menu_kb())
-            return
-        
-        process_headlines(message.chat.id, uid, text)
-        return
-        
-    if step == "waiting_shorten_text":
-        if text == BTN_BACK:
-            clear_state(uid)
-            bot.send_message(message.chat.id, "🔙 Отменено", reply_markup=main_menu_kb())
-            return
-        
-        process_shorten(message.chat.id, uid, text)
-        return
 
     # Блок получения текста для MN_TG
     if step == "waiting_text_mn_tg":
@@ -3775,154 +3465,6 @@ def on_action(call):
         tpl = st.get("template", "MN")
         user_state[uid] = {"step": "idle", "template": tpl}
         bot.send_message(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
-
-
-# =========================
-# Обработчики callback-запросов для заголовков
-# =========================
-@bot.callback_query_handler(func=lambda c: c.data.startswith("headline_"))
-def on_headline_callback(c):
-    uid = c.from_user.id
-    st = user_state.get(uid, {})
-    headlines = st.get("headlines", [])
-    
-    if not headlines:
-        bot.answer_callback_query(c.id, "❌ Данные устарели, начните заново", show_alert=True)
-        return
-    
-    data = c.data.split(":")
-    
-    if data[0] == "headline_prev":
-        idx = int(data[1]) if len(data) > 1 else 0
-        new_idx = max(0, idx - 1)
-        
-        headline = headlines[new_idx]
-        msg = (
-            f"🎯 <b>Вариант {new_idx+1} из {len(headlines)}</b>\n\n"
-            f"<b>{headline['text']}</b>\n"
-            f"<i>Стиль: {headline['style']}</i>\n"
-            f"<i>{headline['description']}</i>"
-        )
-        
-        bot.edit_message_text(
-            msg,
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML",
-            reply_markup=headlines_kb(new_idx, len(headlines))
-        )
-        bot.answer_callback_query(c.id)
-        
-    elif data[0] == "headline_next":
-        idx = int(data[1]) if len(data) > 1 else 0
-        new_idx = min(len(headlines) - 1, idx + 1)
-        
-        headline = headlines[new_idx]
-        msg = (
-            f"🎯 <b>Вариант {new_idx+1} из {len(headlines)}</b>\n\n"
-            f"<b>{headline['text']}</b>\n"
-            f"<i>Стиль: {headline['style']}</i>\n"
-            f"<i>{headline['description']}</i>"
-        )
-        
-        bot.edit_message_text(
-            msg,
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML",
-            reply_markup=headlines_kb(new_idx, len(headlines))
-        )
-        bot.answer_callback_query(c.id)
-        
-    elif data[0] == "headline_count":
-        bot.answer_callback_query(c.id, f"Всего {len(headlines)} вариантов")
-        
-    elif data[0] == "headline_copy":
-        idx = int(data[1]) if len(data) > 1 else 0
-        headline = headlines[idx]
-        
-        bot.answer_callback_query(
-            c.id, 
-            f"✅ Скопировано: {headline['text'][:50]}...", 
-            show_alert=False
-        )
-        
-        bot.send_message(
-            c.message.chat.id,
-            f"<code>{headline['text']}</code>",
-            parse_mode="HTML"
-        )
-        
-    elif data[0] == "headline_regenerate":
-        text = st.get("headlines_text", "")
-        if text:
-            bot.edit_message_text(
-                "🔄 Генерирую новые варианты...",
-                c.message.chat.id,
-                c.message.message_id
-            )
-            headlines = generate_headlines(text)
-            st["headlines"] = headlines
-            user_state[uid] = st
-            
-            headline = headlines[0]
-            msg = (
-                f"🎯 <b>Вариант 1 из {len(headlines)}</b>\n\n"
-                f"<b>{headline['text']}</b>\n"
-                f"<i>Стиль: {headline['style']}</i>\n"
-                f"<i>{headline['description']}</i>"
-            )
-            
-            bot.edit_message_text(
-                msg,
-                c.message.chat.id,
-                c.message.message_id,
-                parse_mode="HTML",
-                reply_markup=headlines_kb(0, len(headlines))
-            )
-        bot.answer_callback_query(c.id)
-        
-    elif data[0] == "headline_close":
-        bot.delete_message(c.message.chat.id, c.message.message_id)
-        bot.send_message(c.message.chat.id, "Главное меню:", reply_markup=main_menu_kb())
-        bot.answer_callback_query(c.id)
-
-
-# =========================
-# Обработчики callback-запросов для сокращения текста
-# =========================
-@bot.callback_query_handler(func=lambda c: c.data.startswith("shorten_"))
-def on_shorten_callback(c):
-    uid = c.from_user.id
-    st = user_state.get(uid, {})
-    
-    if c.data == "shorten_copy":
-        text = st.get("shortened_text", "")
-        if text:
-            bot.answer_callback_query(c.id, "✅ Текст скопирован", show_alert=False)
-            bot.send_message(
-                c.message.chat.id,
-                f"<code>{text}</code>",
-                parse_mode="HTML"
-            )
-        else:
-            bot.answer_callback_query(c.id, "❌ Текст не найден", show_alert=True)
-            
-    elif c.data == "shorten_again":
-        st["step"] = "waiting_shorten_text"
-        user_state[uid] = st
-        bot.delete_message(c.message.chat.id, c.message.message_id)
-        bot.send_message(
-            c.message.chat.id,
-            "✂️ Отправь другой текст для сокращения:",
-            reply_markup=back_button_kb()
-        )
-        bot.answer_callback_query(c.id)
-
-
-# =========================
-# Обработчики кнопок меню для новых функций (уже добавлены выше)
-# =========================
 
 
 # =========================
