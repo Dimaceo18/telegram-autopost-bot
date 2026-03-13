@@ -584,62 +584,60 @@ def _extract_article_text_from_soup(soup: BeautifulSoup) -> str:
     """Извлекает только чистый текст статьи, исключая меню, рекламу, сайдбары, футеры и т.д."""
     
     # Удаляем все ненужные элементы
-    for tag in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside', 'form', 'button', 'iframe']):
+    for tag in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside', 'form', 'button', 'iframe', 'noscript']):
         tag.decompose()
     
     # Удаляем элементы по классам (реклама, виджеты, комментарии)
     for tag in soup.find_all(class_=re.compile(
-        r'(menu|sidebar|footer|header|comment|widget|banner|ad|social|share|related|popular|tags|copyright|newsletter|subscription|modal|popup|overlay|cookie)',
+        r'(menu|sidebar|footer|header|comment|widget|banner|ad|social|share|related|popular|tags|copyright|newsletter|subscription|modal|popup|overlay|cookie|recommend|promo|teaser|adv|banner|rating|subscribe)',
         re.I
     )):
         tag.decompose()
-    
-    # Удаляем элементы по ID
-    for tag in soup.find_all(id=re.compile(
-        r'(menu|sidebar|footer|header|comment|widget|banner|ad|social|share|related|popular|tags|copyright)',
-        re.I
-    )):
-        tag.decompose()
-    
-    # Удаляем ссылки на соцсети и "поделиться"
-    for tag in soup.find_all(['a', 'div'], class_=re.compile(r'(share|social|telegram|facebook|twitter|vkontakte|ok\.ru)', re.I)):
-        tag.decompose()
-    
-    # Специфичные для разных сайтов блоки
-    for class_name in ['read-also', 'also-read', 'related-news', 'news-tags', 'article-tags', 'post-tags']:
-        for tag in soup.find_all(class_=re.compile(class_name, re.I)):
-            tag.decompose()
     
     # Ищем основной контент статьи
     article = None
     
-    # Поиск по тегам (приоритет)
-    for tag in ['article', 'main']:
-        article = soup.find(tag)
+    # Приоритетные селекторы для разных сайтов
+    selectors = [
+        # Onliner
+        {'site': 'onliner', 'selector': '.news-text', 'type': 'class'},
+        {'site': 'onliner', 'selector': '.news-description', 'type': 'class'},
+        {'site': 'onliner', 'selector': '.news-header__title', 'type': 'class'},
+        
+        # Mlyn
+        {'site': 'mlyn', 'selector': '.entry-content', 'type': 'class'},
+        {'site': 'mlyn', 'selector': '.post-content', 'type': 'class'},
+        {'site': 'mlyn', 'selector': 'article .entry', 'type': 'class'},
+        
+        # Другие сайты
+        {'site': 'general', 'selector': 'article', 'type': 'tag'},
+        {'site': 'general', 'selector': 'main', 'type': 'tag'},
+        {'site': 'general', 'selector': '.post-content', 'type': 'class'},
+        {'site': 'general', 'selector': '.entry-content', 'type': 'class'},
+        {'site': 'general', 'selector': '.article-content', 'type': 'class'},
+        {'site': 'general', 'selector': '.story-content', 'type': 'class'},
+        {'site': 'general', 'selector': '.news-text', 'type': 'class'},
+        {'site': 'general', 'selector': '.article-text', 'type': 'class'},
+        {'site': 'general', 'selector': '.post-text', 'type': 'class'},
+        {'site': 'general', 'selector': '.entry-text', 'type': 'class'},
+        {'site': 'general', 'selector': '[itemprop="articleBody"]', 'type': 'attr'},
+        {'site': 'general', 'selector': '.article__body', 'type': 'class'},
+        {'site': 'general', 'selector': '.post__body', 'type': 'class'},
+        {'site': 'general', 'selector': '.news__body', 'type': 'class'},
+    ]
+    
+    # Пробуем найти контент по селекторам
+    for sel in selectors:
+        if sel['type'] == 'class':
+            article = soup.find(class_=re.compile(sel['selector'], re.I))
+        elif sel['type'] == 'tag':
+            article = soup.find(sel['selector'])
+        elif sel['type'] == 'attr':
+            article = soup.find(attrs={sel['selector'].split('=')[0]: sel['selector'].split('=')[1]})
+        
         if article:
+            logger.info(f"Found article content with selector: {sel['selector']} for site: {sel['site']}")
             break
-    
-    # Поиск по классам
-    if not article:
-        for class_name in [
-            'post-content', 'entry-content', 'article-content', 'story-content', 
-            'news-text', 'article-text', 'post-text', 'entry-text',
-            'article__body', 'post__body', 'news__body',
-            'content__article', 'article__content', 'post__content'
-        ]:
-            article = soup.find(class_=re.compile(class_name, re.I))
-            if article:
-                break
-    
-    # Поиск по тегу div с определенными атрибутами
-    if not article:
-        for div in soup.find_all('div'):
-            if div.get('itemprop') == 'articleBody':
-                article = div
-                break
-            if div.get('property') == 'content:encoded':
-                article = div
-                break
     
     # Если ничего не нашли, используем body
     if not article:
@@ -648,23 +646,33 @@ def _extract_article_text_from_soup(soup: BeautifulSoup) -> str:
     if not article:
         return ""
     
-    # Удаляем оставшиеся рекламные блоки внутри статьи
-    for tag in article.find_all(['div', 'section'], class_=re.compile(r'(ad|banner|promo|teaser|recommend)', re.I)):
-        tag.decompose()
+    # Специфичная очистка для Onliner
+    if 'onliner' in str(soup).lower():
+        # Удаляем блоки с рекламой и комментариями на Onliner
+        for tag in article.find_all(['div', 'section'], class_=re.compile(r'(banner|ad|comment|social|share)', re.I)):
+            tag.decompose()
+    
+    # Специфичная очистка для Mlyn
+    if 'mlyn' in str(soup).lower():
+        # Удаляем блоки с похожими новостями и тегами
+        for tag in article.find_all(['div', 'section'], class_=re.compile(r'(related|tags|share|social)', re.I)):
+            tag.decompose()
     
     # Собираем текст из параграфов
     paragraphs = []
+    
+    # Сначала ищем все параграфы
     for p in article.find_all(['p', 'div'], recursive=True):
-        # Проверяем, что элемент не внутри нежелательных блоков
-        if p.find_parent(['aside', 'footer', 'header', 'nav', 'section']):
+        # Пропускаем элементы, которые явно не являются текстом статьи
+        if p.name == 'div' and not p.find_all(['p']):
             continue
-        
-        # Пропускаем пустые параграфы
+            
+        # Получаем текст
         text = p.get_text(strip=True)
         if not text:
             continue
         
-        # Пропускаем слишком короткие тексты (скорее всего это не статья)
+        # Фильтруем по длине
         if len(text) < 40:
             continue
         
@@ -672,49 +680,51 @@ def _extract_article_text_from_soup(soup: BeautifulSoup) -> str:
         low_text = text.lower()
         if any(x in low_text for x in [
             'читайте также', 'смотрите также', 'подпишись', 'подписаться',
-            'реклама', 'источник:', 'фото:', 'видео:', 'смотреть', 'читать',
+            'реклама', 'источник:', 'фото:', 'видео:', 'смотреть',
             'поделиться', 'отправить', 'комментировать', 'обсудить',
             'вконтакте', 'telegram', 'facebook', 'twitter', 'ok.ru',
             'нажмите', 'перейти', 'узнать больше', 'подробнее',
-            'предложить новость', 'прислать новость'
+            'предложить новость', 'прислать новость', 'подписывайтесь',
+            'следите за новостями', 'все новости по теме',
+            'самое интересное', 'рекомендуем', 'популярное'
         ]):
             continue
         
-        # Проверяем соотношение текста и ссылок
+        # Проверяем на наличие множества ссылок (признак навигации)
         links = p.find_all('a')
-        if links:
+        if links and len(links) > 2:
             link_text = ''.join(a.get_text(strip=True) for a in links)
-            # Если больше 40% текста - ссылки, пропускаем
-            if len(link_text) > len(text) * 0.4:
+            if len(link_text) > len(text) * 0.3:
                 continue
         
-        # Проверяем, не является ли это подписью к фото
-        if p.find_parent('figure') or p.find_parent('figcaption'):
-            continue
-        
-        # Проверяем на наличие дат в начале (часто в блогах)
-        if re.match(r'^\d{1,2}\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}', low_text):
-            continue
-        
-        # Если текст проходит все проверки, добавляем его
         paragraphs.append(text)
     
-    # Если не нашли параграфы, пробуем собрать текст из div
-    if not paragraphs:
+    # Если параграфов мало, пробуем собрать текст из div
+    if len(paragraphs) < 3:
         for div in article.find_all('div', recursive=True):
+            # Пропускаем div с большим количеством ссылок
+            if len(div.find_all('a')) > 5:
+                continue
+                
             text = div.get_text(strip=True)
-            if text and len(text) > 100 and not div.find_parent(['aside', 'footer', 'header']):
-                paragraphs.append(text)
-                break  # Берем только первый большой div
+            if text and len(text) > 200:
+                # Разбиваем на предложения
+                sentences = re.split(r'[.!?]+', text)
+                valid_sentences = [s.strip() for s in sentences if len(s.strip()) > 40]
+                if valid_sentences:
+                    paragraphs = valid_sentences
+                    break
     
-    # Объединяем параграфы
+    # Объединяем параграфы с правильными отступами
     clean_text = '\n\n'.join(paragraphs)
     
-    # Дополнительная очистка
+    # Финальная очистка
     # Удаляем множественные переносы строк
     clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
     # Удаляем пробелы в начале и конце строк
     clean_text = re.sub(r'^[ \t]+|[ \t]+$', '', clean_text, flags=re.MULTILINE)
+    # Удаляем пустые строки в начале и конце
+    clean_text = clean_text.strip()
     
     return clean_text.strip()
 
@@ -897,6 +907,17 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
 def fetch_article_full_text_generic(url: str) -> str:
     """Получает только чистый текст статьи со страницы"""
     try:
+        # Определяем сайт для специфичной обработки
+        site = None
+        if 'onliner.by' in url:
+            site = 'onliner'
+            timeout = 30
+        elif 'mlyn.by' in url:
+            site = 'mlyn'
+            timeout = 30
+        else:
+            timeout = 45
+        
         # Добавляем заголовки как у реального браузера
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -906,8 +927,9 @@ def fetch_article_full_text_generic(url: str) -> str:
             'DNT': '1',
         }
         
-        # Для проблемных сайтов увеличиваем таймаут
-        timeout = 45 if any(domain in url for domain in ['tochka.by', 'sb.by', 'minsknews.by']) else REQUEST_TIMEOUT
+        # Для Onliner добавляем специфичные заголовки
+        if site == 'onliner':
+            headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
         
         r = SESSION.get(url, timeout=timeout, headers=headers)
         r.raise_for_status()
@@ -931,20 +953,18 @@ def fetch_article_full_text_generic(url: str) -> str:
             except:
                 soup = BeautifulSoup(page_html, "html5lib")
         
-        # Извлекаем чистый текст
+        # Извлекаем текст
         clean_text = _extract_article_text_from_soup(soup)
         
-        # Если текст слишком короткий, возможно это не статья
+        # Если текст слишком короткий, логируем предупреждение
         if len(clean_text) < 200:
             logger.warning(f"Extracted text too short ({len(clean_text)} chars) from {url}")
-            # Пробуем альтернативный метод - просто взять весь текст body
-            if soup.body:
-                body_text = soup.body.get_text(separator='\n', strip=True)
-                # Убираем явный мусор
-                lines = [line.strip() for line in body_text.split('\n') if len(line.strip()) > 40]
-                clean_text = '\n\n'.join(lines)
         
         return clean_text
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch article text from {url}: {e}")
+        return ""
         
     except Exception as e:
         logger.error(f"Failed to fetch article text from {url}: {e}")
@@ -2252,6 +2272,7 @@ class NewsAutoPublisher:
 # Обработчики для новостей
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("read_full:"))
+@bot.callback_query_handler(func=lambda c: c.data.startswith("read_full:"))
 def on_read_full_news(c):
     uid = c.from_user.id
     key = c.data.split(":", 1)[1]
@@ -2271,32 +2292,31 @@ def on_read_full_news(c):
     try:
         title = item.get("title", "")
         full_text = item.get("full_text", "")
+        image_url = item.get("image", "")
+        source_url = item.get("url", "")
         
+        # Если нет полного текста, пробуем загрузить
         if not full_text:
-            full_text = fetch_article_full_text_generic(item.get("url", ""))
+            full_text = fetch_article_full_text_generic(source_url)
             item["full_text"] = full_text
         
-        image_url = item.get("image", "")
-        photo_bytes = None
-        
+        # Сначала отправляем фото и заголовок
         if image_url:
             try:
                 photo_bytes = get_cached_image(image_url)
-            except Exception as e:
-                logger.error(f"Failed to fetch image: {e}")
-        
-        clean_text = _clean_text(full_text) if full_text else "Полный текст не найден"
-        
-        bot.send_message(c.message.chat.id, "⏳ Загружаю полный текст и фото...")
-        
-        if photo_bytes and check_file_size(photo_bytes):
-            try:
-                bot.send_photo(
-                    c.message.chat.id,
-                    photo=photo_bytes,
-                    caption=f"<b>{html.escape(title)}</b>",
-                    parse_mode="HTML"
-                )
+                if photo_bytes and check_file_size(photo_bytes):
+                    bot.send_photo(
+                        c.message.chat.id,
+                        photo=photo_bytes,
+                        caption=f"<b>{html.escape(title)}</b>",
+                        parse_mode="HTML"
+                    )
+                else:
+                    bot.send_message(
+                        c.message.chat.id,
+                        f"<b>{html.escape(title)}</b>",
+                        parse_mode="HTML"
+                    )
             except Exception as e:
                 logger.error(f"Error sending photo: {e}")
                 bot.send_message(
@@ -2311,36 +2331,51 @@ def on_read_full_news(c):
                 parse_mode="HTML"
             )
         
-        if len(clean_text) <= 4000:
-            bot.send_message(c.message.chat.id, clean_text, parse_mode="HTML")
-        else:
-            text_parts = []
-            remaining = clean_text
-            while remaining:
-                if len(remaining) <= 4000:
-                    text_parts.append(remaining)
-                    break
-                else:
-                    split_point = remaining[:4000].rfind('\n\n')
-                    if split_point == -1:
-                        split_point = remaining[:4000].rfind('. ')
-                    if split_point == -1:
-                        split_point = 4000
-                    
-                    text_parts.append(remaining[:split_point])
-                    remaining = remaining[split_point:].lstrip()
+        # Затем отправляем текст статьи
+        if full_text:
+            # Очищаем текст от лишних пробелов
+            clean_text = _clean_text(full_text)
             
-            for i, part in enumerate(text_parts):
-                if i == 0:
-                    bot.send_message(c.message.chat.id, part, parse_mode="HTML")
-                else:
-                    bot.send_message(
-                        c.message.chat.id,
-                        f"<i>Продолжение ({i+1}/{len(text_parts)}):</i>\n\n{part}",
-                        parse_mode="HTML"
-                    )
+            # Разбиваем на части если текст длинный
+            if len(clean_text) <= 4000:
+                bot.send_message(c.message.chat.id, clean_text, parse_mode="HTML")
+            else:
+                # Разбиваем по абзацам
+                paragraphs = clean_text.split('\n\n')
+                current_chunk = ""
+                chunks = []
+                
+                for p in paragraphs:
+                    if len(current_chunk) + len(p) + 2 < 4000:
+                        if current_chunk:
+                            current_chunk += "\n\n" + p
+                        else:
+                            current_chunk = p
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk)
+                        current_chunk = p
+                
+                if current_chunk:
+                    chunks.append(current_chunk)
+                
+                for i, chunk in enumerate(chunks):
+                    if i == 0:
+                        bot.send_message(c.message.chat.id, chunk, parse_mode="HTML")
+                    else:
+                        bot.send_message(
+                            c.message.chat.id,
+                            f"<i>Продолжение ({i+1}/{len(chunks)}):</i>\n\n{chunk}",
+                            parse_mode="HTML"
+                        )
+        else:
+            bot.send_message(c.message.chat.id, "❌ Текст статьи не найден")
         
         bot.answer_callback_query(c.id, "✅ Готово")
+        
+    except Exception as e:
+        logger.error(f"Error sending full news: {e}")
+        bot.answer_callback_query(c.id, "Ошибка при загрузке", show_alert=True)
         
     except Exception as e:
         logger.error(f"Error sending full news: {e}")
