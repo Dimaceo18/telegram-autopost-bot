@@ -1497,6 +1497,7 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
 def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: str) -> BytesIO:
     """
     Шаблон "Пост ФДР" - как ЧП ВМ, но с выделением слов в заголовке фиолетовой плашкой
+    Плашка нижним слоем, весь текст поверх нее
     """
     ensure_fonts()
 
@@ -1519,8 +1520,8 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     highlight_phrase_upper = highlight_phrase.strip().upper()
     
     # Разбиваем фразу для выделения на отдельные слова
-    highlight_words = highlight_phrase_upper.split()
-    logger.info(f"Highlight words: {highlight_words}")
+    highlight_words = set(highlight_phrase_upper.split())
+    logger.info(f"Words to highlight: {highlight_words}")
     
     # Используем ту же логику что и в ЧП ВМ для размера шрифта
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
@@ -1539,44 +1540,30 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     )
     
     # Размещаем текст внизу как в ЧП ВМ
-    y = img.height - margin_bottom - total_h
+    base_y = img.height - margin_bottom - total_h
     
-    # Для каждой строки
+    # Сначала собираем информацию о позициях всех слов
+    word_positions = []
+    
+    y = base_y
     for line_idx, line in enumerate(lines):
-        # Разбиваем строку на слова с сохранением оригинального написания
         line_words = line.split()
-        
-        # Начинаем рисовать с левого отступа
         current_x = margin_x
         
-        # Для каждого слова в строке
         for word in line_words:
             # Получаем точную ширину слова
             word_bbox = draw.textbbox((0, 0), word, font=font)
             word_width = word_bbox[2] - word_bbox[0]
             
-            # Проверяем, нужно ли выделить это слово
-            should_highlight = False
-            for highlight_word in highlight_words:
-                if word == highlight_word or highlight_word in word:
-                    should_highlight = True
-                    logger.info(f"Highlighting word: '{word}' matches '{highlight_word}'")
-                    break
-            
-            if should_highlight:
-                # Рисуем фиолетовую плашку точно под слово
-                plate_padding = 8
-                plate_height = heights[line_idx] + 12
-                
-                # Плашка точно по ширине слова
-                draw.rectangle(
-                    [current_x - plate_padding, y - 4, 
-                     current_x + word_width + plate_padding, y + plate_height],
-                    fill=FDR_POST_PURPLE_COLOR
-                )
-            
-            # Рисуем слово белым
-            draw.text((current_x, y), word, font=font, fill="white")
+            # Сохраняем позицию слова
+            word_positions.append({
+                'word': word,
+                'x': current_x,
+                'y': y,
+                'width': word_width,
+                'height': heights[line_idx],
+                'should_highlight': word in highlight_words
+            })
             
             # Добавляем пробел после слова (кроме последнего)
             if word != line_words[-1]:
@@ -1585,7 +1572,39 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
             else:
                 current_x += word_width
         
-        # Переходим к следующей строке
+        y += heights[line_idx] + spacing
+    
+    # Рисуем плашки (нижний слой)
+    for word_info in word_positions:
+        if word_info['should_highlight']:
+            # Рисуем фиолетовую плашку точно под слово
+            plate_padding = 10
+            plate_height = word_info['height'] + 16
+            
+            # Плашка точно по ширине слова
+            draw.rectangle(
+                [word_info['x'] - plate_padding, word_info['y'] - 5, 
+                 word_info['x'] + word_info['width'] + plate_padding, word_info['y'] + plate_height],
+                fill=FDR_POST_PURPLE_COLOR
+            )
+    
+    # Рисуем ВЕСЬ текст поверх плашек (верхний слой)
+    y = base_y
+    for line_idx, line in enumerate(lines):
+        line_words = line.split()
+        current_x = margin_x
+        
+        for word in line_words:
+            # Рисуем слово белым
+            draw.text((current_x, y), word, font=font, fill="white")
+            
+            # Добавляем пробел после слова (кроме последнего)
+            if word != line_words[-1]:
+                space_width = text_width(draw, " ", font)
+                current_x += text_width(draw, word, font) + space_width
+            else:
+                current_x += text_width(draw, word, font)
+        
         y += heights[line_idx] + spacing
     
     out = BytesIO()
