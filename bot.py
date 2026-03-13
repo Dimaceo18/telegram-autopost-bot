@@ -9,6 +9,8 @@ import logging
 import signal
 import sys
 import functools
+import fcntl
+import atexit
 from io import BytesIO
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta, timezone
@@ -34,6 +36,29 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
+
+
+# Проверка на единственный экземпляр
+lock_file = '/tmp/bot_instance.lock'
+
+def check_single_instance():
+    try:
+        fd = open(lock_file, 'w')
+        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        
+        def unlock():
+            fcntl.lockf(fd, fcntl.LOCK_UN)
+            fd.close()
+            os.unlink(lock_file)
+        
+        atexit.register(unlock)
+        return True
+    except IOError:
+        return False
+
+if not check_single_instance():
+    print("Another instance is already running. Exiting.")
+    sys.exit(1)
 
 
 # =========================
@@ -249,7 +274,16 @@ user_state: Dict[int, Dict] = {}
 # =========================
 def signal_handler(sig, frame):
     logger.info("Shutting down gracefully...")
+    # Останавливаем планировщик
+    if AUTO_NEWS_CHAT_ID and 'news_publisher' in globals():
+        news_publisher.stop()
+    # Останавливаем бота
     bot.stop_polling()
+    # Удаляем lock-файл
+    try:
+        os.unlink(lock_file)
+    except:
+        pass
     sys.exit(0)
 
 
@@ -1123,9 +1157,10 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
         title_y = margin_top
         footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
     else:  # TEXT_POSITION_BOTTOM
-        # Заголовок снизу, MINSK NEWS сверху
+        # Заголовок снизу
         title_y = img.height - margin_bottom - total_text_height - 10
-        footer_y = margin_top
+        # MINSK NEWS вверху с минимальным отступом (10 пикселей)
+        footer_y = 10
 
     # Рисуем заголовок
     y = title_y
@@ -1505,6 +1540,7 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     
     # Рассчитываем размеры
     margin_x = int(img.width * 0.06)
+    margin_top = int(img.height * 0.06)  # Добавляем эту переменную
     margin_bottom = int(img.height * 0.08)
     safe_w = img.width - 2 * margin_x
     
@@ -2960,18 +2996,25 @@ news_publisher = NewsAutoPublisher(bot, AUTO_NEWS_CHAT_ID)
 # =========================
 if __name__ == "__main__":
     logger.info("Starting bot...")
-    ensure_fonts()
-    logger.info("Fonts loaded successfully")
-    
-    # Запускаем планировщик новостей
-    if AUTO_NEWS_CHAT_ID:
-        news_publisher.start()
-    
     try:
-        bot.infinity_polling(timeout=60, long_polling_timeout=60)
+        ensure_fonts()
+        logger.info("Fonts loaded successfully")
+        
+        # Запускаем планировщик новостей
+        if AUTO_NEWS_CHAT_ID:
+            news_publisher.start()
+        
+        # Запускаем бота
+        logger.info("Bot started polling...")
+        bot.infinity_polling(timeout=60, long_polling_timeout=60, logger_level=logging.ERROR)
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
         # Останавливаем планировщик при падении бота
-        if AUTO_NEWS_CHAT_ID:
+        if AUTO_NEWS_CHAT_ID and 'news_publisher' in globals():
             news_publisher.stop()
+        # Удаляем lock-файл
+        try:
+            os.unlink(lock_file)
+        except:
+            pass
         raise
