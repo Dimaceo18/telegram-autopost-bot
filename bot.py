@@ -469,9 +469,6 @@ def is_last_24h(dt_utc: Optional[datetime]) -> bool:
 
 
 # =========================
-=
-
-# =========================
 # News parsers
 # =========================
 def extract_og_meta(page_html: str) -> Dict[str, str]:
@@ -729,7 +726,7 @@ def _extract_article_text_from_soup(soup: BeautifulSoup) -> str:
     # Удаляем пустые строки в начале и конце
     clean_text = clean_text.strip()
     
-    return clean_text
+    return clean_text.strip()
 
 
 def _extract_text_from_soup(soup: BeautifulSoup) -> str:
@@ -964,6 +961,10 @@ def fetch_article_full_text_generic(url: str) -> str:
             logger.warning(f"Extracted text too short ({len(clean_text)} chars) from {url}")
         
         return clean_text
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch article text from {url}: {e}")
+        return ""
         
     except Exception as e:
         logger.error(f"Failed to fetch article text from {url}: {e}")
@@ -1290,36 +1291,61 @@ def enhance_image_quality_pro(image_bytes: bytes) -> BytesIO:
 
 
 # =========================
-# Функции для создания градиента
+# Wrapping + drawing
 # =========================
-def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 110) -> Image.Image:
-    """
-    Применяет градиент сверху вниз (для текста внизу)
-    """
+def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) -> int:
+    bb = draw.textbbox((0, 0), s, font=font)
+    return bb[2] - bb[0]
+
+
+def wrap_no_truncate(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
+                     max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
+    words = [w for w in (text or "").split() if w.strip()]
+    if not words:
+        return [""], True
+
+    lines: List[str] = []
+    cur = ""
+    i = 0
+
+    while i < len(words):
+        w = words[i]
+        test = (cur + " " + w).strip()
+        if text_width(draw, test, font) <= max_width:
+            cur = test
+            i += 1
+        else:
+            if not cur:
+                return [words[i]], False
+            lines.append(cur)
+            cur = ""
+            if len(lines) >= max_lines:
+                return lines, False
+
+    if cur:
+        lines.append(cur)
+
+    if len(lines) > max_lines:
+        return lines[:max_lines], False
+
+    return lines, True
+
+
+def crop_to_4x5(img: Image.Image) -> Image.Image:
     w, h = img.size
-    gh = int(h * height_pct)
-    if gh <= 0:
-        return img
-
-    overlay_alpha = Image.new("L", (w, h), 0)
-    grad = Image.new("L", (1, gh), 0)
-    for y in range(gh):
-        a = int(max_alpha * (1 - y / max(1, gh - 1)))  # Инвертируем для градиента сверху
-        grad.putpixel((0, y), a)
-    grad = grad.resize((w, gh))
-    overlay_alpha.paste(grad, (0, 0))
-
-    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-    base = img.convert("RGBA")
-    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
-    out = Image.alpha_composite(base, overlay)
-    return out.convert("RGB")
+    target_ratio = 4 / 5
+    cur_ratio = w / h
+    if cur_ratio > target_ratio:
+        new_w = int(h * target_ratio)
+        left = (w - new_w) // 2
+        return img.crop((left, 0, left + new_w, h))
+    else:
+        new_h = int(w / target_ratio)
+        top = (h - new_h) // 2
+        return img.crop((0, top, w, top + new_h))
 
 
-def apply_bottom_gradient_soft(img: Image.Image, height_pct: float, max_alpha: int = 110) -> Image.Image:
-    """
-    Применяет мягкий градиент снизу вверх (50% от обычного)
-    """
+def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
     w, h = img.size
     gh = int(h * height_pct)
     if gh <= 0:
@@ -1340,6 +1366,58 @@ def apply_bottom_gradient_soft(img: Image.Image, height_pct: float, max_alpha: i
     return out.convert("RGB")
 
 
+def fit_text_block(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font_path: str,
+    safe_w: int,
+    max_block_h: int,
+    max_lines: int = 6,
+    start_size: int = 90,
+    min_size: int = 16,
+    line_spacing_ratio: float = 0.22,
+) -> Tuple[ImageFont.FreeTypeFont, List[str], List[int], int, int]:
+    text = (text or "").strip()
+    if not text:
+        text = " "
+
+    size = start_size
+    while size >= min_size:
+        font = ImageFont.truetype(font_path, size)
+        lines, ok = wrap_no_truncate(draw, text, font, safe_w, max_lines=max_lines)
+        spacing = int(size * line_spacing_ratio)
+
+        heights = []
+        total_h = 0
+        max_w = 0
+        for ln in lines:
+            bb = draw.textbbox((0, 0), ln, font=font)
+            lw = bb[2] - bb[0]
+            lh = bb[3] - bb[1]
+            heights.append(lh)
+            total_h += lh
+            max_w = max(max_w, lw)
+        total_h += spacing * (len(lines) - 1)
+
+        if ok and max_w <= safe_w and total_h <= max_block_h:
+            return font, lines, heights, spacing, total_h
+
+        size -= 2
+
+    font = ImageFont.truetype(font_path, min_size)
+    lines, _ = wrap_no_truncate(draw, text, font, safe_w, max_lines=max_lines)
+    spacing = int(min_size * line_spacing_ratio)
+    heights = []
+    total_h = 0
+    for ln in lines:
+        bb = draw.textbbox((0, 0), ln, font=font)
+        lh = bb[3] - bb[1]
+        heights.append(lh)
+        total_h += lh
+    total_h += spacing * (len(lines) - 1)
+    return font, lines, heights, spacing, total_h
+
+
 # =========================
 # Cards
 # =========================
@@ -1351,82 +1429,6 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
 
     img = ImageEnhance.Brightness(img).enhance(0.55)
-    draw = ImageDraw.Draw(img)
-
-    margin_x = int(img.width * 0.06)
-    margin_top = int(img.height * 0.06)
-    margin_bottom = int(img.height * 0.07)
-
-    safe_w = img.width - 2 * margin_x
-
-    footer_size = max(24, int(img.height * 0.034))
-    footer_font = ImageFont.truetype(FONT_MN, footer_size)
-    fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
-    footer_w = fb[2] - fb[0]
-    footer_h = fb[3] - fb[1]
-    
-    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
-    text = (title_text or "").strip().upper()
-
-    font, lines, heights, spacing, total_text_height = fit_text_block(
-        draw=draw,
-        text=text,
-        font_path=FONT_MN,
-        safe_w=safe_w,
-        max_block_h=title_max_h,
-        max_lines=6,
-        start_size=int(img.height * 0.11),
-        min_size=16,
-        line_spacing_ratio=0.22
-    )
-
-    block_w = 0
-    for ln in lines:
-        block_w = max(block_w, text_width(draw, ln, font))
-    block_x = (img.width - block_w) // 2
-    block_x = max(margin_x, block_x)
-
-    if text_position == TEXT_POSITION_TOP:
-        title_y = margin_top
-        footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
-    else:
-        title_y = img.height - margin_bottom - total_text_height - 10
-        footer_y = 10
-
-    y = title_y
-    for i, ln in enumerate(lines):
-        draw.text((block_x, y), ln, font=font, fill="white")
-        y += heights[i] + spacing
-
-    footer_x = (img.width - footer_w) // 2
-    draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
-
-    out = BytesIO()
-    img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
-    out.seek(0)
-    return out
-
-
-def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
-    """
-    Шаблон МН 2 - как МН, но с мягким градиентом (50% от ЧП ВМ)
-    """
-    ensure_fonts()
-
-    img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-    img = crop_to_4x5(img)
-    img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-
-    img = ImageEnhance.Brightness(img).enhance(0.55)
-    
-    # Применяем градиент в зависимости от позиции текста
-    if text_position == TEXT_POSITION_TOP:
-        # Текст сверху - градиент сверху вниз (для лучшей читаемости текста вверху)
-        img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.5, max_alpha=110)
-    else:
-        # Текст снизу - градиент снизу вверх (как в ЧП ВМ, но слабее)
-        img = apply_bottom_gradient_soft(img, height_pct=CHP_GRADIENT_PCT * 0.5, max_alpha=110)
-    
     draw = ImageDraw.Draw(img)
 
     margin_x = int(img.width * 0.06)
@@ -2001,8 +2003,6 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
         return make_card_fdr_post(photo_bytes, title_text, highlight_phrase)
     if template == "MN_TG":
         return make_card_mn_tg(photo_bytes, title_text)
-    if template == "MN2":
-        return make_card_mn2(photo_bytes, title_text, text_position)
     return make_card_mn(photo_bytes, title_text, text_position)
 
 
@@ -2022,9 +2022,6 @@ def template_kb():
     kb.row(
         InlineKeyboardButton("💜 Пост ФДР", callback_data="tpl:FDR_POST"),
         InlineKeyboardButton("📱 МН ТГ", callback_data="tpl:MN_TG"),
-    )
-    kb.row(
-        InlineKeyboardButton("🆕 МН 2", callback_data="tpl:MN2"),
     )
     return kb
 
@@ -2275,6 +2272,7 @@ class NewsAutoPublisher:
 # Обработчики для новостей
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("read_full:"))
+@bot.callback_query_handler(func=lambda c: c.data.startswith("read_full:"))
 def on_read_full_news(c):
     uid = c.from_user.id
     key = c.data.split(":", 1)[1]
@@ -2378,6 +2376,10 @@ def on_read_full_news(c):
     except Exception as e:
         logger.error(f"Error sending full news: {e}")
         bot.answer_callback_query(c.id, "Ошибка при загрузке", show_alert=True)
+        
+    except Exception as e:
+        logger.error(f"Error sending full news: {e}")
+        bot.answer_callback_query(c.id, "Ошибка при загрузке", show_alert=True)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("load_more:"))
@@ -2439,28 +2441,6 @@ def cmd_enhance(message):
 
 
 # =========================
-# Команда /stop для сброса состояния
-# =========================
-@bot.message_handler(commands=["stop"])
-def cmd_stop(message):
-    """Сбрасывает состояние бота и останавливает текущие операции"""
-    uid = message.from_user.id
-    
-    # Очищаем состояние пользователя
-    if uid in user_state:
-        template = user_state[uid].get("template", "MN")
-        user_state[uid] = {"template": template, "step": "idle"}
-        logger.info(f"Reset state for user {uid}")
-    
-    bot.send_message(
-        message.chat.id,
-        "🛑 Бот сброшен в исходное состояние.\n"
-        "Можно начинать новую команду.",
-        reply_markup=main_menu_kb()
-    )
-
-
-# =========================
 # Обработчик выбора источников новостей
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("src:"))
@@ -2474,15 +2454,11 @@ def on_source_select(c):
         st.pop("news_step", None)
         st.pop("selected_sources", None)
         user_state[uid] = st
-        try:
-            bot.edit_message_text(
-                "❌ Выбор отменен",
-                c.message.chat.id,
-                c.message.message_id
-            )
-        except Exception as e:
-            logger.warning(f"Could not edit message: {e}")
-            bot.send_message(c.message.chat.id, "❌ Выбор отменен")
+        bot.edit_message_text(
+            "❌ Выбор отменен",
+            c.message.chat.id,
+            c.message.message_id
+        )
         bot.answer_callback_query(c.id, "Отменено")
         return
     
@@ -2493,10 +2469,7 @@ def on_source_select(c):
             bot.answer_callback_query(c.id, "❌ Выбери хотя бы один источник", show_alert=True)
             return
         
-        try:
-            bot.delete_message(c.message.chat.id, c.message.message_id)
-        except Exception as e:
-            logger.warning(f"Could not delete message: {e}")
+        bot.delete_message(c.message.chat.id, c.message.message_id)
         
         bot.send_message(
             c.message.chat.id,
@@ -2521,22 +2494,13 @@ def on_source_select(c):
     if action == "reset":
         st["selected_sources"] = []
         user_state[uid] = st
-        try:
-            bot.edit_message_text(
-                "📰 Выбери источники новостей (можно несколько):\n\n"
-                "После выбора нажми 'Сохранить выбор'",
-                c.message.chat.id,
-                c.message.message_id,
-                reply_markup=news_sources_kb()
-            )
-        except Exception as e:
-            logger.warning(f"Could not edit message: {e}")
-            bot.send_message(
-                c.message.chat.id,
-                "📰 Выбери источники новостей (можно несколько):\n\n"
-                "После выбора нажми 'Сохранить выбор'",
-                reply_markup=news_sources_kb()
-            )
+        bot.edit_message_text(
+            "📰 Выбери источники новостей (можно несколько):\n\n"
+            "После выбора нажми 'Сохранить выбор'",
+            c.message.chat.id,
+            c.message.message_id,
+            reply_markup=news_sources_kb()
+        )
         bot.answer_callback_query(c.id, "Выбор сброшен")
         return
     
@@ -2545,22 +2509,13 @@ def on_source_select(c):
         user_state[uid] = st
         
         selected_text = "✅ " + "\n✅ ".join([f"{SOURCE_NAMES[s]}" for s in st["selected_sources"]])
-        try:
-            bot.edit_message_text(
-                f"📰 Выбраны все источники:\n\n{selected_text}\n\n"
-                f"Нажми 'Сохранить выбор' для продолжения",
-                c.message.chat.id,
-                c.message.message_id,
-                reply_markup=save_sources_kb()
-            )
-        except Exception as e:
-            logger.warning(f"Could not edit message: {e}")
-            bot.send_message(
-                c.message.chat.id,
-                f"📰 Выбраны все источники:\n\n{selected_text}\n\n"
-                f"Нажми 'Сохранить выбор' для продолжения",
-                reply_markup=save_sources_kb()
-            )
+        bot.edit_message_text(
+            f"📰 Выбраны все источники:\n\n{selected_text}\n\n"
+            f"Нажми 'Сохранить выбор' для продолжения",
+            c.message.chat.id,
+            c.message.message_id,
+            reply_markup=save_sources_kb()
+        )
         bot.answer_callback_query(c.id, f"✅ Выбрано {len(st['selected_sources'])} источников")
         return
     
@@ -2588,22 +2543,13 @@ def on_source_select(c):
     else:
         selected_text = "Пока ничего не выбрано"
     
-    try:
-        bot.edit_message_text(
-            f"📰 {SOURCE_NAMES.get(source_id, source_id)} {status}\n\n{selected_text}\n"
-            f"Продолжай выбирать или нажми 'Сохранить выбор'",
-            c.message.chat.id,
-            c.message.message_id,
-            reply_markup=news_sources_kb()
-        )
-    except Exception as e:
-        logger.warning(f"Could not edit message: {e}")
-        bot.send_message(
-            c.message.chat.id,
-            f"📰 {SOURCE_NAMES.get(source_id, source_id)} {status}\n\n{selected_text}\n"
-            f"Продолжай выбирать или нажми 'Сохранить выбор'",
-            reply_markup=news_sources_kb()
-        )
+    bot.edit_message_text(
+        f"📰 {SOURCE_NAMES.get(source_id, source_id)} {status}\n\n{selected_text}\n"
+        f"Продолжай выбирать или нажми 'Сохранить выбор'",
+        c.message.chat.id,
+        c.message.message_id,
+        reply_markup=news_sources_kb()
+    )
     
     bot.answer_callback_query(c.id, f"{status}: {SOURCE_NAMES.get(source_id, source_id)}")
 
@@ -2618,14 +2564,13 @@ def on_tpl(c):
     st = user_state.get(uid) or {}
     st["template"] = tpl
     
-    if tpl in ["MN", "MN2"]:
+    if tpl == "MN":
         st["step"] = "waiting_text_position"
         user_state[uid] = st
-        bot.answer_callback_query(c.id, f"Шаблон {tpl} выбран ✅")
-        template_name = "МН 2" if tpl == "MN2" else "МН"
+        bot.answer_callback_query(c.id, "Шаблон МН выбран ✅")
         bot.send_message(
             c.message.chat.id,
-            f"📰 Выбран шаблон <b>{template_name}</b>\n\n"
+            "📰 Выбран шаблон <b>МН</b>\n\n"
             "Где разместить текст?",
             parse_mode="HTML",
             reply_markup=text_position_kb()
@@ -2708,8 +2653,7 @@ def cmd_start(message):
         "Команды:\n"
         "• /post — оформить пост\n"
         "• /news — получить новости за 24 часа\n"
-        "• /template — выбрать шаблон (МН / ЧП ВМ / АМ / Сторис ФДР / Пост ФДР / МН ТГ / МН 2)\n"
-        "• /stop — сбросить состояние бота\n",
+        "• /template — выбрать шаблон (МН / ЧП ВМ / АМ / Сторис ФДР / Пост ФДР)\n",
         reply_markup=main_menu_kb()
     )
 
@@ -2913,7 +2857,7 @@ def on_news_item_action(c):
             return
 
     try:
-        if st["template"] in ["MN", "MN2"]:
+        if st["template"] == "MN":
             card = make_card(photo_bytes, title, st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP))
         else:
             card = make_card(photo_bytes, title, st["template"])
@@ -3105,7 +3049,7 @@ def on_photo(message):
                         bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
                         return
 
-                if st["template"] in ["MN", "MN2"]:
+                if st["template"] == "MN":
                     card = make_card(st["photo_bytes"], st["title"], st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP))
                 else:
                     card = make_card(st["photo_bytes"], st["title"], st["template"])
@@ -3420,7 +3364,7 @@ def on_text(message):
     if step == "waiting_title":
         st["title"] = text
         try:
-            if st.get("template") in ["MN", "MN2"]:
+            if st.get("template") == "MN":
                 card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), text_position=st.get("text_position", TEXT_POSITION_TOP))
             elif st.get("template") == "MN_TG":
                 card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN_TG"))
