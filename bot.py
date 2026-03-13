@@ -924,7 +924,7 @@ def build_caption_tg(title: str, body: str) -> str:
     links = (
         "\n\n"
         "🔗 <a href='https://t.me/vestiminska'>Все новости Минска</a>\n"
-        "📝 <a href='https://t.me/prishlinews'>Прислать новость</a>"
+        "📝 <a href='https://t.me/prishlinews_bot'>Прислать новость</a>"
     )
     
     return f"<b>{title_safe}</b>\n\n{body_safe}{links}"
@@ -1705,7 +1705,7 @@ def build_caption_tg(full_text: str) -> str:
     links = (
         "\n\n"
         "🔗 <a href='https://t.me/vestiminska'>Все новости Минска</a>\n"
-        "📝 <a href='https://t.me/prishlinews'>Прислать новость</a>"
+        "📝 <a href='https://t.me/prishlinews_bot'>Прислать новость</a>"
     )
     
     if body_text:
