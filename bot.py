@@ -1496,7 +1496,8 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
 # ============================================
 def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: str) -> BytesIO:
     """
-    Шаблон "Пост ФДР" - как ЧП ВМ, но с фиолетовой плашкой для указанной фразы
+    Шаблон "Пост ФДР" - как ЧП ВМ, но с фиолетовой плашкой под текстом заголовка
+    Плашка точно по размеру выделенных слов
     """
     ensure_fonts()
 
@@ -1509,59 +1510,21 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     
     draw = ImageDraw.Draw(img)
     
-    # Рассчитываем размеры
+    # Рассчитываем размеры как в ЧП ВМ
     margin_x = int(img.width * 0.06)
-    margin_top = int(img.height * 0.06)
     margin_bottom = int(img.height * 0.08)
     safe_w = img.width - 2 * margin_x
     
-    # Получаем выделенную фразу
+    # Получаем выделенную фразу для плашки
     highlight_text = (highlight_phrase or "").strip().upper()
     if not highlight_text and title_text:
         # Если фраза не указана, берем первую строку заголовка
         highlight_text = title_text.strip().upper().split('\n')[0]
     
-    # Рисуем фиолетовую плашку только для выделенной фразы
-    plate_height = int(img.height * FDR_POST_PLATE_HEIGHT_PCT)
-    plate_y = img.height - margin_bottom - plate_height
-    
-    # Подбираем шрифт для текста на плашке
-    plate_font_size = min(58, int(plate_height * 0.6))
-    plate_font = ImageFont.truetype(FONT_CHP, plate_font_size)
-    
-    # Проверяем, помещается ли текст в одну строку
-    text_bbox = draw.textbbox((0, 0), highlight_text, font=plate_font)
-    text_width_val = text_bbox[2] - text_bbox[0]
-    text_height_val = text_bbox[3] - text_bbox[1]
-    
-    # Если не помещается в одну строку, пробуем уменьшить шрифт
-    if text_width_val > safe_w:
-        while text_width_val > safe_w and plate_font_size > 24:
-            plate_font_size -= 2
-            plate_font = ImageFont.truetype(FONT_CHP, plate_font_size)
-            text_bbox = draw.textbbox((0, 0), highlight_text, font=plate_font)
-            text_width_val = text_bbox[2] - text_bbox[0]
-            text_height_val = text_bbox[3] - text_bbox[1]
-    
-    # Рисуем фиолетовую плашку (только под текст)
-    plate_width = text_width_val + 40  # Добавляем отступы по бокам
-    plate_x = (img.width - plate_width) // 2
-    
-    # Рисуем прямоугольник с фиолетовым цветом (только под текст)
-    draw.rectangle(
-        [plate_x - 20, plate_y, plate_x + plate_width + 20, plate_y + plate_height],
-        fill=FDR_POST_PURPLE_COLOR
-    )
-    
-    # Рисуем текст на плашке (просто белый, без тени)
-    text_x = (img.width - text_width_val) // 2
-    text_y = plate_y + (plate_height - text_height_val) // 2
-    draw.text((text_x, text_y), highlight_text, font=plate_font, fill="white")
-    
-    # Если есть заголовок, добавляем его сверху (как в ЧП ВМ)
+    # Сначала размещаем заголовок как в ЧП ВМ (слева)
     if title_text:
         title_text_upper = title_text.strip().upper()
-        title_max_h = int(img.height * MN_TITLE_ZONE_PCT) // 2
+        title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
         
         title_font, title_lines, title_heights, title_spacing, title_total_h = fit_text_block(
             draw=draw,
@@ -1569,24 +1532,65 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
             font_path=FONT_CHP,
             safe_w=safe_w,
             max_block_h=title_max_h,
-            max_lines=3,
-            start_size=int(img.height * 0.08),
+            max_lines=6,
+            start_size=int(img.height * 0.11),
             min_size=16,
-            line_spacing_ratio=0.18
+            line_spacing_ratio=0.22
         )
         
-        # Размещаем заголовок вверху
-        title_y = margin_top
+        # Размещаем заголовок внизу как в ЧП ВМ
+        title_y = img.height - margin_bottom - title_total_h
         for i, ln in enumerate(title_lines):
-            # Рисуем текст по центру
-            lw = text_width(draw, ln, title_font)
-            x = (img.width - lw) // 2
-            draw.text((x, title_y), ln, font=title_font, fill="white")
+            draw.text((margin_x, title_y), ln, font=title_font, fill="white")
             title_y += title_heights[i] + title_spacing
+        
+        # Запоминаем позицию для плашки (под последней строкой заголовка)
+        last_line_y = title_y - title_spacing  # Y координата после последней строки
+        last_line_height = title_heights[-1] if title_heights else 0
+        
+        # Плашка будет под последней строкой заголовка
+        plate_y = last_line_y + 5  # Небольшой отступ после текста
+        
+        # Подбираем шрифт для текста на плашке
+        plate_font_size = min(48, int(last_line_height * 0.9))
+        plate_font = ImageFont.truetype(FONT_CHP, plate_font_size)
+        
+        # Получаем размеры выделенного текста
+        text_bbox = draw.textbbox((0, 0), highlight_text, font=plate_font)
+        text_width_val = text_bbox[2] - text_bbox[0]
+        text_height_val = text_bbox[3] - text_bbox[1]
+        
+        # Если текст слишком широкий, уменьшаем шрифт
+        if text_width_val > safe_w:
+            while text_width_val > safe_w and plate_font_size > 24:
+                plate_font_size -= 2
+                plate_font = ImageFont.truetype(FONT_CHP, plate_font_size)
+                text_bbox = draw.textbbox((0, 0), highlight_text, font=plate_font)
+                text_width_val = text_bbox[2] - text_bbox[0]
+                text_height_val = text_bbox[3] - text_bbox[1]
+        
+        # Высота плашки = высота текста + отступы сверху/снизу
+        plate_height = text_height_val + 20  # 10 пикселей сверху и снизу
+        
+        # Рисуем фиолетовую плашку точно под размер текста
+        # Плашка начинается от левого края (как текст в ЧП ВМ)
+        plate_x = margin_x - 10  # Небольшой отступ слева
+        
+        # Рисуем прямоугольник с фиолетовым цветом
+        draw.rectangle(
+            [plate_x - 5, plate_y, plate_x + text_width_val + 15, plate_y + plate_height],
+            fill=FDR_POST_PURPLE_COLOR
+        )
+        
+        # Рисуем текст на плашке (белый)
+        text_x = margin_x  # Текст начинается от того же отступа что и заголовок
+        text_y = plate_y + (plate_height - text_height_val) // 2
+        draw.text((text_x, text_y), highlight_text, font=plate_font, fill="white")
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
     out.seek(0)
+    return out
     return out
 
 
