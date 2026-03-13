@@ -30,9 +30,6 @@ from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
 # Новые импорты для автоматической выгрузки
-import threading
-import time
-from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -47,9 +44,13 @@ def check_single_instance():
         fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         
         def unlock():
-            fcntl.lockf(fd, fcntl.LOCK_UN)
-            fd.close()
-            os.unlink(lock_file)
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_UN)
+                fd.close()
+                if os.path.exists(lock_file):
+                    os.unlink(lock_file)
+            except:
+                pass
         
         atexit.register(unlock)
         return True
@@ -84,10 +85,10 @@ BOT_USERNAME = (os.getenv("BOT_USERNAME") or "").strip().lstrip("@")
 SUGGEST_URL = (os.getenv("SUGGEST_URL") or "").strip()
 
 # Настройки автоматической выгрузки
-AUTO_NEWS_CHAT_ID = os.getenv("AUTO_NEWS_CHAT_ID")  # ID чата для авто-выгрузки
+AUTO_NEWS_CHAT_ID = os.getenv("AUTO_NEWS_CHAT_ID")
 AUTO_NEWS_TIMEZONE = os.getenv("AUTO_NEWS_TIMEZONE", "Europe/Minsk")
-NEWS_BATCH_SIZE = 20  # Количество новостей в одной выгрузке
-NEWS_MORE_SIZE = 10   # Сколько еще подгружать
+NEWS_BATCH_SIZE = 20
+NEWS_MORE_SIZE = 10
 
 if CHANNEL and not CHANNEL.startswith("@"):
     CHANNEL = "@" + CHANNEL
@@ -103,16 +104,14 @@ if not SUGGEST_URL and BOT_USERNAME:
     SUGGEST_URL = f"https://t.me/{BOT_USERNAME}?start=suggest"
 
 # Constants
-MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
-CACHE_TTL = 3600  # 1 hour
+MAX_FILE_SIZE = 20 * 1024 * 1024
+CACHE_TTL = 3600
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
 
-# Новый шаблон FDR_POST
-FDR_POST_PURPLE_COLOR = (122, 58, 240)  # Фиолетовый цвет как в сторис
-FDR_POST_PLATE_HEIGHT_PCT = 0.15  # Высота фиолетовой плашки
+FDR_POST_PURPLE_COLOR = (122, 58, 240)
+FDR_POST_PLATE_HEIGHT_PCT = 0.15
 
-# Позиции текста для шаблона МН
 TEXT_POSITION_TOP = "top"
 TEXT_POSITION_BOTTOM = "bottom"
 
@@ -274,14 +273,12 @@ user_state: Dict[int, Dict] = {}
 # =========================
 def signal_handler(sig, frame):
     logger.info("Shutting down gracefully...")
-    # Останавливаем планировщик
     if AUTO_NEWS_CHAT_ID and 'news_publisher' in globals():
         news_publisher.stop()
-    # Останавливаем бота
     bot.stop_polling()
-    # Удаляем lock-файл
     try:
-        os.unlink(lock_file)
+        if os.path.exists(lock_file):
+            os.unlink(lock_file)
     except:
         pass
     sys.exit(0)
@@ -560,56 +557,47 @@ def _extract_dt_from_soup(soup: BeautifulSoup) -> Optional[datetime]:
 def _extract_article_text_from_soup(soup: BeautifulSoup) -> str:
     """Извлекает только текст статьи, исключая меню, сайдбары, футеры и т.д."""
     
-    # Удаляем ненужные элементы
     for tag in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside']):
         tag.decompose()
     
     for tag in soup.find_all(class_=re.compile(r'(menu|sidebar|footer|header|comment|widget|banner|ad|social)', re.I)):
         tag.decompose()
     
-    # Ищем основной контент статьи
     article = None
     
-    # Поиск по тегам
     for tag in ['article', 'main']:
         article = soup.find(tag)
         if article:
             break
     
-    # Поиск по классам
     if not article:
         for class_name in ['post-content', 'entry-content', 'article-content', 'story-content', 'news-text', 'article-text']:
             article = soup.find(class_=re.compile(class_name, re.I))
             if article:
                 break
     
-    # Если ничего не нашли, используем body
     if not article:
         article = soup.body
     
     if not article:
         return ""
     
-    # Собираем текст из параграфов
     paragraphs = []
     for p in article.find_all(['p', 'div'], recursive=True):
-        # Проверяем, что элемент не внутри нежелательных блоков
         if p.find_parent(['aside', 'footer', 'header', 'nav']):
             continue
             
         text = p.get_text(strip=True)
-        if not text or len(text) < 40:  # Пропускаем слишком короткие тексты
+        if not text or len(text) < 40:
             continue
             
-        # Проверяем на типичные не-статейные фрагменты
         low_text = text.lower()
         if any(x in low_text for x in ['читайте также', 'смотрите также', 'подпишись', 'реклама', 'источник:', 'фото:']):
             continue
             
-        # Проверяем соотношение текста и ссылок
         links = p.find_all('a')
         link_text = ''.join(a.get_text(strip=True) for a in links)
-        if len(link_text) > len(text) * 0.5:  # Если больше половины текста - ссылки, пропускаем
+        if len(link_text) > len(text) * 0.5:
             continue
             
         paragraphs.append(text)
@@ -618,7 +606,6 @@ def _extract_article_text_from_soup(soup: BeautifulSoup) -> str:
 
 
 def _extract_text_from_soup(soup: BeautifulSoup) -> str:
-    """Старая функция для обратной совместимости"""
     return _extract_article_text_from_soup(soup)
 
 
@@ -771,7 +758,6 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
 
 
 def fetch_article_full_text_generic(url: str) -> str:
-    """Получает только текст статьи со страницы"""
     try:
         page_html = http_get(url, timeout=REQUEST_TIMEOUT)
         try:
@@ -779,7 +765,6 @@ def fetch_article_full_text_generic(url: str) -> str:
         except Exception:
             soup = BeautifulSoup(page_html, "html.parser")
         
-        # Используем новую функцию для извлечения текста статьи
         return _extract_article_text_from_soup(soup)
     except Exception as e:
         logger.error(f"Failed to fetch article text from {url}: {e}")
@@ -944,29 +929,18 @@ def tg_file_bytes(file_id: str) -> bytes:
 # Image enhancement
 # =========================
 def enhance_image_quality(image_bytes: bytes) -> BytesIO:
-    """
-    Улучшает качество изображения:
-    - Увеличивает резкость на 15%
-    - Увеличивает насыщенность на 10%
-    - Увеличивает контрастность на 10%
-    """
     try:
-        # Открываем изображение
         img = Image.open(BytesIO(image_bytes)).convert("RGB")
         
-        # Увеличиваем резкость
         enhancer_sharpness = ImageEnhance.Sharpness(img)
-        img = enhancer_sharpness.enhance(1.15)  # +15% резкости
+        img = enhancer_sharpness.enhance(1.15)
         
-        # Увеличиваем насыщенность
         enhancer_color = ImageEnhance.Color(img)
-        img = enhancer_color.enhance(1.10)  # +10% насыщенности
+        img = enhancer_color.enhance(1.10)
         
-        # Увеличиваем контрастность
         enhancer_contrast = ImageEnhance.Contrast(img)
-        img = enhancer_contrast.enhance(1.10)  # +10% контрастности
+        img = enhancer_contrast.enhance(1.10)
         
-        # Сохраняем результат
         output = BytesIO()
         img.save(output, format="JPEG", quality=95, optimize=True)
         output.seek(0)
@@ -1124,7 +1098,6 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
 
     safe_w = img.width - 2 * margin_x
 
-    # Настройки для MINSK NEWS
     footer_size = max(24, int(img.height * 0.034))
     footer_font = ImageFont.truetype(FONT_MN, footer_size)
     fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
@@ -1153,22 +1126,17 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     block_x = max(margin_x, block_x)
 
     if text_position == TEXT_POSITION_TOP:
-        # Заголовок сверху, MINSK NEWS снизу
         title_y = margin_top
         footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
-    else:  # TEXT_POSITION_BOTTOM
-        # Заголовок снизу
+    else:
         title_y = img.height - margin_bottom - total_text_height - 10
-        # MINSK NEWS вверху с минимальным отступом (10 пикселей)
         footer_y = 10
 
-    # Рисуем заголовок
     y = title_y
     for i, ln in enumerate(lines):
         draw.text((block_x, y), ln, font=font, fill="white")
         y += heights[i] + spacing
 
-    # Рисуем MINSK NEWS
     footer_x = (img.width - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
 
@@ -1442,9 +1410,90 @@ def _fit_story_text(
     return selected_font, selected_gap, selected_paragraph_gap
 
 
-make_card_fdr_post
+def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> BytesIO:
+    ensure_fonts()
+
+    canvas = Image.new("RGB", (STORY_W, STORY_H), (0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+
+    photo_h = 410
+    header_h = 220
+
+    photo = Image.open(BytesIO(photo_bytes)).convert("RGB")
+    story_photo = fit_cover(photo, STORY_W, photo_h)
+    canvas.paste(story_photo, (0, 0))
+
+    purple_color = (122, 58, 240)
+    canvas.paste(Image.new("RGB", (STORY_W, header_h), purple_color), (0, photo_h))
+
+    draw.rectangle([0, photo_h + header_h, STORY_W, STORY_H], fill=(0, 0, 0))
+
+    padding = 34
+
+    header_box = (
+        padding,
+        photo_h + padding,
+        STORY_W - padding,
+        photo_h + header_h - padding
+    )
+
+    body_box = (
+        padding,
+        photo_h + header_h + padding,
+        STORY_W - padding,
+        STORY_H - padding
+    )
+
+    title_font, title_gap, title_paragraph_gap = _fit_story_text(
+        draw,
+        title,
+        header_box,
+        min_size=28,
+        max_size=54,
+        line_gap_ratio=0.08,
+        paragraph_gap_ratio=0.18
+    )
+
+    _draw_story_text(
+        draw,
+        title,
+        header_box,
+        title_font,
+        fill=(255, 255, 255),
+        align="center",
+        valign="center",
+        line_gap=title_gap,
+        paragraph_gap_extra=title_paragraph_gap
+    )
+
+    body_font, body_gap, body_paragraph_gap = _fit_story_text(
+        draw,
+        body_text,
+        body_box,
+        min_size=14,
+        max_size=30,
+        line_gap_ratio=0.10,
+        paragraph_gap_ratio=0.32
+    )
+
+    _draw_story_text(
+        draw,
+        body_text,
+        body_box,
+        body_font,
+        fill=(255, 255, 255),
+        align="left",
+        valign="top",
+        line_gap=body_gap,
+        paragraph_gap_extra=body_paragraph_gap
+    )
+
+    return save_jpeg_to_bytes(canvas)
 
 
+# ============================================
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ make_card_fdr_post
+# ============================================
 def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: str) -> BytesIO:
     """
     Шаблон "Пост ФДР" - как ЧП ВМ, но с фиолетовой плашкой для указанной фразы
@@ -1462,7 +1511,7 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     
     # Рассчитываем размеры
     margin_x = int(img.width * 0.06)
-    margin_top = int(img.height * 0.06)  # Добавляем эту переменную
+    margin_top = int(img.height * 0.06)
     margin_bottom = int(img.height * 0.08)
     safe_w = img.width - 2 * margin_x
     
@@ -1482,20 +1531,20 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     
     # Проверяем, помещается ли текст в одну строку
     text_bbox = draw.textbbox((0, 0), highlight_text, font=plate_font)
-    text_width = text_bbox[2] - text_bbox[0]
-    text_height = text_bbox[3] - text_bbox[1]
+    text_width_val = text_bbox[2] - text_bbox[0]
+    text_height_val = text_bbox[3] - text_bbox[1]
     
     # Если не помещается в одну строку, пробуем уменьшить шрифт
-    if text_width > safe_w:
-        while text_width > safe_w and plate_font_size > 24:
+    if text_width_val > safe_w:
+        while text_width_val > safe_w and plate_font_size > 24:
             plate_font_size -= 2
             plate_font = ImageFont.truetype(FONT_CHP, plate_font_size)
             text_bbox = draw.textbbox((0, 0), highlight_text, font=plate_font)
-            text_width = text_bbox[2] - text_bbox[0]
-            text_height = text_bbox[3] - text_bbox[1]
+            text_width_val = text_bbox[2] - text_bbox[0]
+            text_height_val = text_bbox[3] - text_bbox[1]
     
     # Рисуем фиолетовую плашку (только под текст)
-    plate_width = text_width + 40  # Добавляем отступы по бокам
+    plate_width = text_width_val + 40  # Добавляем отступы по бокам
     plate_x = (img.width - plate_width) // 2
     
     # Рисуем прямоугольник с фиолетовым цветом (только под текст)
@@ -1505,8 +1554,8 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     )
     
     # Рисуем текст на плашке (просто белый, без тени)
-    text_x = (img.width - text_width) // 2
-    text_y = plate_y + (plate_height - text_height) // 2
+    text_x = (img.width - text_width_val) // 2
+    text_y = plate_y + (plate_height - text_height_val) // 2
     draw.text((text_x, text_y), highlight_text, font=plate_font, fill="white")
     
     # Если есть заголовок, добавляем его сверху (как в ЧП ВМ)
@@ -1550,7 +1599,6 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
         return make_card_fdr_story(photo_bytes, title_text, body_text)
     if template == "FDR_POST":
         return make_card_fdr_post(photo_bytes, title_text, highlight_phrase)
-    # Для MN передаем позицию текста
     return make_card_mn(photo_bytes, title_text, text_position)
 
 
@@ -1657,13 +1705,11 @@ class NewsAutoPublisher:
         self.setup_schedule()
         
     def setup_schedule(self):
-        """Настройка расписания выгрузок"""
-        # Выгрузка в 09:00, 13:00, 16:00, 20:00
         schedule_times = [
-            (9, 0),   # 09:00
-            (13, 0),  # 13:00
-            (16, 0),  # 16:00
-            (20, 0),  # 20:00
+            (9, 0),
+            (13, 0),
+            (16, 0),
+            (20, 0),
         ]
         
         for hour, minute in schedule_times:
@@ -1676,11 +1722,9 @@ class NewsAutoPublisher:
             logger.info(f"Scheduled news digest at {hour:02d}:{minute:02d}")
             
     def start(self):
-        """Запуск планировщика"""
         if self.chat_id:
             self.scheduler.start()
             logger.info(f"News auto-publisher started for chat {self.chat_id}")
-            # Отправляем сообщение о запуске
             try:
                 self.bot.send_message(
                     self.chat_id,
@@ -1695,16 +1739,13 @@ class NewsAutoPublisher:
             logger.warning("AUTO_NEWS_CHAT_ID not set, auto-news disabled")
             
     def stop(self):
-        """Остановка планировщика"""
         self.scheduler.shutdown()
         logger.info("News auto-publisher stopped")
         
     def publish_news_digest(self, manual=False):
-        """Публикация дайджеста новостей"""
         try:
             logger.info(f"Starting news digest publication (manual={manual})")
             
-            # Собираем новости
             items = fetch_all_news_last24h()
             
             if not items:
@@ -1715,7 +1756,6 @@ class NewsAutoPublisher:
                     self.bot.send_message(self.chat_id, msg)
                 return
             
-            # Отправляем заголовок дайджеста
             current_time = datetime.now(pytz.timezone(AUTO_NEWS_TIMEZONE))
             digest_type = "🔄 Ручная выгрузка" if manual else "⏰ Автоматическая выгрузка"
             
@@ -1737,7 +1777,6 @@ class NewsAutoPublisher:
             else:
                 self.bot.send_message(self.chat_id, header, parse_mode="HTML")
             
-            # Сохраняем все новости в кэш для этого чата
             cache_key = f"news_cache_{self.chat_id}"
             user_state[cache_key] = {
                 "items": items,
@@ -1745,7 +1784,6 @@ class NewsAutoPublisher:
                 "by_key": {}
             }
             
-            # Отправляем первую порцию новостей
             self._send_news_batch(self.chat_id, 0, NEWS_BATCH_SIZE, manual)
             
             logger.info(f"News digest published successfully, total items: {len(items)}")
@@ -1759,7 +1797,6 @@ class NewsAutoPublisher:
                 pass
     
     def _send_news_batch(self, chat_id, start_idx, count, manual=False):
-        """Отправка порции новостей"""
         cache_key = f"news_cache_{chat_id}"
         cache = user_state.get(cache_key)
         
@@ -1776,25 +1813,21 @@ class NewsAutoPublisher:
             url = item.get("url", "#")
             source = item.get("source", "")
             
-            # Создаем ключ для новости
             key = item_key(title, url)
             by_key[key] = item
             
-            # Формируем сообщение с заголовком и ссылкой
             msg = (
                 f"<b>{html.escape(title)}</b>\n"
                 f"📰 {html.escape(source)}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
             )
             
-            # Создаем клавиатуру с кнопками
             kb = InlineKeyboardMarkup()
             kb.row(
                 InlineKeyboardButton("📖 Читать полностью", callback_data=f"read_full:{key}"),
                 InlineKeyboardButton("🔗 Источник", url=url)
             )
             
-            # Отправляем сообщение
             self.bot.send_message(
                 chat_id,
                 msg,
@@ -1803,15 +1836,12 @@ class NewsAutoPublisher:
                 disable_web_page_preview=True
             )
             
-            # Небольшая задержка между сообщениями
             time.sleep(0.3)
         
-        # Обновляем кэш
         cache["current_index"] = end_idx
         cache["by_key"] = by_key
         user_state[cache_key] = cache
         
-        # Если есть еще новости, показываем кнопку "Загрузить еще"
         if end_idx < len(items):
             more_kb = InlineKeyboardMarkup()
             more_kb.row(
@@ -1838,11 +1868,9 @@ class NewsAutoPublisher:
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("read_full:"))
 def on_read_full_news(c):
-    """Обработчик кнопки 'Читать полностью'"""
     uid = c.from_user.id
     key = c.data.split(":", 1)[1]
     
-    # Ищем новость в кэше
     cache_key = f"news_cache_{c.message.chat.id}"
     cache = user_state.get(cache_key)
     
@@ -1856,17 +1884,13 @@ def on_read_full_news(c):
         return
     
     try:
-        # Получаем полный текст и изображение
         title = item.get("title", "")
         full_text = item.get("full_text", "")
         
-        # Если нет полного текста, пробуем загрузить (используем обновленную функцию)
         if not full_text:
             full_text = fetch_article_full_text_generic(item.get("url", ""))
-            # Сохраняем в кэш для будущих запросов
             item["full_text"] = full_text
         
-        # Получаем изображение
         image_url = item.get("image", "")
         photo_bytes = None
         
@@ -1876,13 +1900,10 @@ def on_read_full_news(c):
             except Exception as e:
                 logger.error(f"Failed to fetch image: {e}")
         
-        # Очищаем текст
         clean_text = _clean_text(full_text) if full_text else "Полный текст не найден"
         
-        # Отправляем уведомление о начале загрузки
         bot.send_message(c.message.chat.id, "⏳ Загружаю полный текст и фото...")
         
-        # Отправляем фото, если есть
         if photo_bytes and check_file_size(photo_bytes):
             try:
                 bot.send_photo(
@@ -1905,12 +1926,9 @@ def on_read_full_news(c):
                 parse_mode="HTML"
             )
         
-        # Отправляем полный текст
-        # Разбиваем на части если текст очень длинный
         if len(clean_text) <= 4000:
             bot.send_message(c.message.chat.id, clean_text, parse_mode="HTML")
         else:
-            # Разбиваем на части по 4000 символов
             text_parts = []
             remaining = clean_text
             while remaining:
@@ -1918,7 +1936,6 @@ def on_read_full_news(c):
                     text_parts.append(remaining)
                     break
                 else:
-                    # Ищем место для разрыва
                     split_point = remaining[:4000].rfind('\n\n')
                     if split_point == -1:
                         split_point = remaining[:4000].rfind('. ')
@@ -1928,7 +1945,6 @@ def on_read_full_news(c):
                     text_parts.append(remaining[:split_point])
                     remaining = remaining[split_point:].lstrip()
             
-            # Отправляем все части
             for i, part in enumerate(text_parts):
                 if i == 0:
                     bot.send_message(c.message.chat.id, part, parse_mode="HTML")
@@ -1948,7 +1964,6 @@ def on_read_full_news(c):
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("load_more:"))
 def on_load_more(c):
-    """Обработчик кнопки 'Загрузить еще'"""
     chat_id = int(c.data.split(":", 1)[1])
     
     cache_key = f"news_cache_{chat_id}"
@@ -1960,23 +1975,16 @@ def on_load_more(c):
     
     current_idx = cache.get("current_index", 0)
     
-    # Отправляем следующую порцию
     news_publisher._send_news_batch(chat_id, current_idx, NEWS_MORE_SIZE, manual=True)
     
     bot.answer_callback_query(c.id, f"Загружаю еще {NEWS_MORE_SIZE} новостей...")
 
 
-# =========================
-# Обработчик ручной выгрузки
-# =========================
 @bot.message_handler(func=lambda message: message.text == BTN_GET_NEWS_MANUAL)
 def cmd_manual_news(message):
-    """Ручной запуск выгрузки новостей"""
     uid = message.from_user.id
     
-    # Проверяем, есть ли авто-выгрузка для этого чата
     if str(uid) != str(AUTO_NEWS_CHAT_ID):
-        # Если это не тот чат, просто запускаем обычную выгрузку
         cmd_news(message)
         return
     
@@ -1986,20 +1994,14 @@ def cmd_manual_news(message):
         reply_markup=main_menu_kb()
     )
     
-    # Запускаем выгрузку
     news_publisher.publish_news_digest(manual=True)
 
 
-# =========================
-# Обработчик улучшения качества
-# =========================
 @bot.message_handler(func=lambda message: message.text == BTN_ENHANCE)
 def cmd_enhance(message):
-    """Обработчик команды улучшения качества фото"""
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     
-    # Устанавливаем состояние ожидания фото для улучшения
     st["step"] = "waiting_enhance_photo"
     st["template"] = st.get("template", "MN")
     user_state[uid] = st
@@ -2015,9 +2017,6 @@ def cmd_enhance(message):
     )
 
 
-# =========================
-# Template selection handler
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:"))
 def on_tpl(c):
     uid = c.from_user.id
@@ -2026,7 +2025,6 @@ def on_tpl(c):
     st["template"] = tpl
     
     if tpl == "MN":
-        # Для шаблона МН спрашиваем позицию текста
         st["step"] = "waiting_text_position"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Шаблон МН выбран ✅")
@@ -2086,9 +2084,6 @@ def on_text_position(c):
     )
 
 
-# =========================
-# Commands
-# =========================
 @bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
     uid = message.from_user.id
@@ -2129,15 +2124,12 @@ def cmd_post(message):
 
 @bot.message_handler(commands=["news"])
 def cmd_news(message):
-    """Обычная команда получения новостей"""
     uid = message.from_user.id
     
-    # Если это чат с авто-выгрузкой, используем расширенную версию
     if str(uid) == str(AUTO_NEWS_CHAT_ID):
         cmd_manual_news(message)
         return
     
-    # Старая логика для остальных пользователей
     bot.send_message(message.chat.id, "Собираю новости за 24 часа… 🧲", reply_markup=main_menu_kb())
     items = fetch_all_news_last24h()
     set_news_cache(uid, items)
@@ -2300,7 +2292,6 @@ def on_news_item_action(c):
             return
 
     try:
-        # Для MN передаем позицию текста
         if st["template"] == "MN":
             card = make_card(photo_bytes, title, st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP))
         else:
@@ -2334,16 +2325,12 @@ def on_news_item_action(c):
         bot.send_message(c.message.chat.id, f"Ошибка при создании карточки: {e}", reply_markup=main_menu_kb())
 
 
-# =========================
-# Post flow
-# =========================
 @bot.message_handler(content_types=["photo"])
 def on_photo(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     st.setdefault("template", "MN")
 
-    # Проверяем, не в режиме ли улучшения фото
     if st.get("step") == "waiting_enhance_photo":
         try:
             file_id = message.photo[-1].file_id
@@ -2353,13 +2340,10 @@ def on_photo(message):
                 bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
                 return
 
-            # Отправляем сообщение о начале обработки
             processing_msg = bot.reply_to(message, "⏳ Улучшаю качество фото...")
             
-            # Улучшаем качество
             enhanced = enhance_image_quality(photo_bytes)
             
-            # Отправляем улучшенное фото
             bot.send_photo(
                 message.chat.id,
                 photo=enhanced,
@@ -2370,10 +2354,8 @@ def on_photo(message):
                 reply_markup=main_menu_kb()
             )
             
-            # Удаляем сообщение о обработке
             bot.delete_message(message.chat.id, processing_msg.message_id)
             
-            # Сбрасываем состояние
             st["step"] = "idle"
             user_state[uid] = st
             
@@ -2386,7 +2368,6 @@ def on_photo(message):
         bot.send_message(message.chat.id, "Сначала выбери шаблон:", reply_markup=template_kb())
         return
 
-    # НОВЫЙ БЛОК: обработка для FDR_POST
     if st.get("step") == "waiting_photo_fdr_post":
         try:
             file_id = message.photo[-1].file_id
@@ -2460,7 +2441,6 @@ def on_photo(message):
                         bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
                         return
 
-                # Для MN передаем позицию текста
                 if st["template"] == "MN":
                     card = make_card(st["photo_bytes"], st["title"], st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP))
                 else:
@@ -2523,7 +2503,6 @@ def on_document(message):
         bot.reply_to(message, "Пришли картинку (JPG/PNG).")
         return
 
-    # Проверяем, не в режиме ли улучшения фото
     if st.get("step") == "waiting_enhance_photo":
         try:
             photo_bytes = tg_file_bytes(doc.file_id)
@@ -2532,13 +2511,10 @@ def on_document(message):
                 bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
                 return
 
-            # Отправляем сообщение о начале обработки
             processing_msg = bot.reply_to(message, "⏳ Улучшаю качество фото...")
             
-            # Улучшаем качество
             enhanced = enhance_image_quality(photo_bytes)
             
-            # Отправляем улучшенное фото
             bot.send_photo(
                 message.chat.id,
                 photo=enhanced,
@@ -2549,10 +2525,8 @@ def on_document(message):
                 reply_markup=main_menu_kb()
             )
             
-            # Удаляем сообщение о обработке
             bot.delete_message(message.chat.id, processing_msg.message_id)
             
-            # Сбрасываем состояние
             st["step"] = "idle"
             user_state[uid] = st
             
@@ -2607,7 +2581,6 @@ def on_text(message):
 
     step = st.get("step")
 
-    # НОВЫЙ БЛОК: получение заголовка для FDR_POST
     if step == "waiting_title_fdr_post":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым. Отправь текст:")
@@ -2627,7 +2600,6 @@ def on_text(message):
         )
         return
 
-    # НОВЫЙ БЛОК: получение выделяемой фразы для FDR_POST
     if step == "waiting_highlight_fdr_post":
         if not text:
             bot.reply_to(message, "❌ Фраза не может быть пустой. Отправь текст:")
@@ -2637,7 +2609,6 @@ def on_text(message):
         st["step"] = "waiting_body_fdr_post"
         user_state[uid] = st
         
-        # Сразу показываем превью с выделенной фразой
         try:
             card = make_card(
                 st["photo_bytes"],
@@ -2647,7 +2618,6 @@ def on_text(message):
             )
             st["card_bytes"] = card.getvalue()
             
-            # Отправляем превью
             bot.send_photo(
                 message.chat.id,
                 photo=BytesIO(st["card_bytes"]),
@@ -2666,16 +2636,13 @@ def on_text(message):
                 f"❌ Ошибка при создании превью: {e}\n\n"
                 f"Попробуй отправить фразу ещё раз или начни заново с /post"
             )
-            # Возвращаем на шаг выбора фразы
             st["step"] = "waiting_highlight_fdr_post"
             user_state[uid] = st
         return
 
-    # НОВЫЙ БЛОК: получение основного текста для FDR_POST
     if step == "waiting_body_fdr_post":
         st["body_raw"] = text
         
-        # Извлекаем ссылку из текста если есть
         body_src = extract_source_url(text)
         if body_src:
             st["source_url"] = body_src
@@ -2683,7 +2650,6 @@ def on_text(message):
         st["step"] = "waiting_action"
         user_state[uid] = st
         
-        # Создаем финальную карточку
         try:
             card = make_card(
                 st["photo_bytes"],
@@ -2759,7 +2725,6 @@ def on_text(message):
     if step == "waiting_title":
         st["title"] = text
         try:
-            # Для MN передаем позицию текста
             if st.get("template") == "MN":
                 card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), text_position=st.get("text_position", TEXT_POSITION_TOP))
             else:
@@ -2818,7 +2783,6 @@ def on_action(call):
 
     if call.data == "publish":
         try:
-            # Для FDR_POST используем full_title, для остальных title
             title_to_use = st["full_title"] if st.get("template") == "FDR_POST" and "full_title" in st else st.get("title", "")
             caption = build_caption_html(title_to_use, st["body_raw"])
             bot.send_photo(
@@ -2878,9 +2842,6 @@ def on_action(call):
         bot.send_message(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
 
 
-# =========================
-# Additional commands
-# =========================
 @bot.message_handler(commands=["stats"])
 def cmd_stats(message):
     stats = {
@@ -2922,21 +2883,18 @@ if __name__ == "__main__":
         ensure_fonts()
         logger.info("Fonts loaded successfully")
         
-        # Запускаем планировщик новостей
         if AUTO_NEWS_CHAT_ID:
             news_publisher.start()
         
-        # Запускаем бота
         logger.info("Bot started polling...")
         bot.infinity_polling(timeout=60, long_polling_timeout=60, logger_level=logging.ERROR)
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
-        # Останавливаем планировщик при падении бота
         if AUTO_NEWS_CHAT_ID and 'news_publisher' in globals():
             news_publisher.stop()
-        # Удаляем lock-файл
         try:
-            os.unlink(lock_file)
+            if os.path.exists(lock_file):
+                os.unlink(lock_file)
         except:
             pass
         raise
