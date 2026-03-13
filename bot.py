@@ -98,11 +98,12 @@ TEXT_POSITION_BOTTOM = "bottom"
 BTN_POST = "📝 Оформить пост"
 BTN_NEWS = "📰 Получить новости"
 BTN_GET_NEWS_MANUAL = "📰 Выгрузить новости сейчас"
+BTN_ENHANCE = "✨ Улучшить качество"
 
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_NEWS))
-    kb.row(KeyboardButton(BTN_GET_NEWS_MANUAL))
+    kb.row(KeyboardButton(BTN_GET_NEWS_MANUAL), KeyboardButton(BTN_ENHANCE))
     return kb
 
 
@@ -522,33 +523,69 @@ def _extract_dt_from_soup(soup: BeautifulSoup) -> Optional[datetime]:
     return None
 
 
-def _extract_text_from_soup(soup: BeautifulSoup) -> str:
-    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        raw = (tag.get_text() or "").strip()
-        if not raw:
+def _extract_article_text_from_soup(soup: BeautifulSoup) -> str:
+    """Извлекает только текст статьи, исключая меню, сайдбары, футеры и т.д."""
+    
+    # Удаляем ненужные элементы
+    for tag in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+        tag.decompose()
+    
+    for tag in soup.find_all(class_=re.compile(r'(menu|sidebar|footer|header|comment|widget|banner|ad|social)', re.I)):
+        tag.decompose()
+    
+    # Ищем основной контент статьи
+    article = None
+    
+    # Поиск по тегам
+    for tag in ['article', 'main']:
+        article = soup.find(tag)
+        if article:
+            break
+    
+    # Поиск по классам
+    if not article:
+        for class_name in ['post-content', 'entry-content', 'article-content', 'story-content', 'news-text', 'article-text']:
+            article = soup.find(class_=re.compile(class_name, re.I))
+            if article:
+                break
+    
+    # Если ничего не нашли, используем body
+    if not article:
+        article = soup.body
+    
+    if not article:
+        return ""
+    
+    # Собираем текст из параграфов
+    paragraphs = []
+    for p in article.find_all(['p', 'div'], recursive=True):
+        # Проверяем, что элемент не внутри нежелательных блоков
+        if p.find_parent(['aside', 'footer', 'header', 'nav']):
             continue
-        try:
-            obj = json.loads(raw)
-        except Exception:
+            
+        text = p.get_text(strip=True)
+        if not text or len(text) < 40:  # Пропускаем слишком короткие тексты
             continue
-        items = obj if isinstance(obj, list) else [obj]
-        for it in items:
-            if isinstance(it, dict):
-                body = it.get("articleBody")
-                if isinstance(body, str) and body.strip():
-                    return _clean_text(body)
+            
+        # Проверяем на типичные не-статейные фрагменты
+        low_text = text.lower()
+        if any(x in low_text for x in ['читайте также', 'смотрите также', 'подпишись', 'реклама', 'источник:', 'фото:']):
+            continue
+            
+        # Проверяем соотношение текста и ссылок
+        links = p.find_all('a')
+        link_text = ''.join(a.get_text(strip=True) for a in links)
+        if len(link_text) > len(text) * 0.5:  # Если больше половины текста - ссылки, пропускаем
+            continue
+            
+        paragraphs.append(text)
+    
+    return '\n\n'.join(paragraphs)
 
-    root = soup.find("article") or soup.find("main") or soup.body or soup
-    parts = []
-    for el in root.find_all(["p", "li", "blockquote"], recursive=True):
-        t = el.get_text(" ", strip=True)
-        if not t:
-            continue
-        low = t.lower()
-        if len(t) < 35 and re.search(r"(подпис|реклама|читайте|смотрите|источник)", low):
-            continue
-        parts.append(t)
-    return _clean_text("\n\n".join(parts))
+
+def _extract_text_from_soup(soup: BeautifulSoup) -> str:
+    """Старая функция для обратной совместимости"""
+    return _extract_article_text_from_soup(soup)
 
 
 def _valid_same_domain(url: str, domain: str) -> bool:
@@ -700,13 +737,16 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
 
 
 def fetch_article_full_text_generic(url: str) -> str:
+    """Получает только текст статьи со страницы"""
     try:
         page_html = http_get(url, timeout=REQUEST_TIMEOUT)
         try:
             soup = BeautifulSoup(page_html, "lxml")
         except Exception:
             soup = BeautifulSoup(page_html, "html.parser")
-        return _extract_text_from_soup(soup)
+        
+        # Используем новую функцию для извлечения текста статьи
+        return _extract_article_text_from_soup(soup)
     except Exception as e:
         logger.error(f"Failed to fetch article text from {url}: {e}")
         return ""
@@ -867,6 +907,43 @@ def tg_file_bytes(file_id: str) -> bytes:
 
 
 # =========================
+# Image enhancement
+# =========================
+def enhance_image_quality(image_bytes: bytes) -> BytesIO:
+    """
+    Улучшает качество изображения:
+    - Увеличивает резкость на 15%
+    - Увеличивает насыщенность на 10%
+    - Увеличивает контрастность на 10%
+    """
+    try:
+        # Открываем изображение
+        img = Image.open(BytesIO(image_bytes)).convert("RGB")
+        
+        # Увеличиваем резкость
+        enhancer_sharpness = ImageEnhance.Sharpness(img)
+        img = enhancer_sharpness.enhance(1.15)  # +15% резкости
+        
+        # Увеличиваем насыщенность
+        enhancer_color = ImageEnhance.Color(img)
+        img = enhancer_color.enhance(1.10)  # +10% насыщенности
+        
+        # Увеличиваем контрастность
+        enhancer_contrast = ImageEnhance.Contrast(img)
+        img = enhancer_contrast.enhance(1.10)  # +10% контрастности
+        
+        # Сохраняем результат
+        output = BytesIO()
+        img.save(output, format="JPEG", quality=95, optimize=True)
+        output.seek(0)
+        
+        return output
+    except Exception as e:
+        logger.error(f"Error enhancing image: {e}")
+        raise
+
+
+# =========================
 # Wrapping + drawing
 # =========================
 def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) -> int:
@@ -1013,18 +1090,17 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
 
     safe_w = img.width - 2 * margin_x
 
+    # Настройки для MINSK NEWS
     footer_size = max(24, int(img.height * 0.034))
     footer_font = ImageFont.truetype(FONT_MN, footer_size)
     fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
     footer_w = fb[2] - fb[0]
     footer_h = fb[3] - fb[1]
-    footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
-    footer_x = (img.width - footer_w) // 2
-
+    
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     text = (title_text or "").strip().upper()
 
-    font, lines, heights, spacing, _total_h = fit_text_block(
+    font, lines, heights, spacing, total_text_height = fit_text_block(
         draw=draw,
         text=text,
         font_path=FONT_MN,
@@ -1042,18 +1118,23 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     block_x = (img.width - block_w) // 2
     block_x = max(margin_x, block_x)
 
-    # Определяем позицию текста
     if text_position == TEXT_POSITION_TOP:
-        y = margin_top
+        # Заголовок сверху, MINSK NEWS снизу
+        title_y = margin_top
+        footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
     else:  # TEXT_POSITION_BOTTOM
-        # Рассчитываем общую высоту текстового блока
-        total_text_height = sum(heights) + spacing * (len(lines) - 1)
-        y = img.height - margin_bottom - total_text_height - footer_h - 10
+        # Заголовок снизу, MINSK NEWS сверху
+        title_y = img.height - margin_bottom - total_text_height - 10
+        footer_y = margin_top
 
+    # Рисуем заголовок
+    y = title_y
     for i, ln in enumerate(lines):
         draw.text((block_x, y), ln, font=font, fill="white")
         y += heights[i] + spacing
 
+    # Рисуем MINSK NEWS
+    footer_x = (img.width - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
 
     out = BytesIO()
@@ -1425,27 +1506,19 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     # Рассчитываем размеры
     margin_x = int(img.width * 0.06)
     margin_bottom = int(img.height * 0.08)
+    safe_w = img.width - 2 * margin_x
     
-    # Рисуем фиолетовую плашку
+    # Получаем выделенную фразу
+    highlight_text = (highlight_phrase or "").strip().upper()
+    if not highlight_text and title_text:
+        # Если фраза не указана, берем первую строку заголовка
+        highlight_text = title_text.strip().upper().split('\n')[0]
+    
+    # Рисуем фиолетовую плашку только для выделенной фразы
     plate_height = int(img.height * FDR_POST_PLATE_HEIGHT_PCT)
     plate_y = img.height - margin_bottom - plate_height
     
-    # Рисуем прямоугольник с фиолетовым цветом
-    draw.rectangle(
-        [0, plate_y, img.width, plate_y + plate_height],
-        fill=FDR_POST_PURPLE_COLOR
-    )
-    
-    # Подготавливаем выделенную фразу
-    highlight_text = (highlight_phrase or "").strip().upper()
-    if not highlight_text:
-        # Если фраза не указана, берем первую строку заголовка
-        highlight_text = (title_text or "").strip().upper().split('\n')[0]
-    
     # Подбираем шрифт для текста на плашке
-    plate_safe_w = img.width - 2 * margin_x
-    
-    # Пробуем разные размеры шрифта
     plate_font_size = min(58, int(plate_height * 0.6))
     plate_font = ImageFont.truetype(FONT_CHP, plate_font_size)
     
@@ -1455,24 +1528,54 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     text_height = text_bbox[3] - text_bbox[1]
     
     # Если не помещается в одну строку, пробуем уменьшить шрифт
-    if text_width > plate_safe_w:
-        # Уменьшаем шрифт пока не поместится
-        while text_width > plate_safe_w and plate_font_size > 24:
+    if text_width > safe_w:
+        while text_width > safe_w and plate_font_size > 24:
             plate_font_size -= 2
             plate_font = ImageFont.truetype(FONT_CHP, plate_font_size)
             text_bbox = draw.textbbox((0, 0), highlight_text, font=plate_font)
             text_width = text_bbox[2] - text_bbox[0]
             text_height = text_bbox[3] - text_bbox[1]
     
-    # Рисуем текст на плашке по центру
+    # Рисуем фиолетовую плашку (только под текст)
+    plate_width = text_width + 40  # Добавляем отступы по бокам
+    plate_x = (img.width - plate_width) // 2
+    
+    # Рисуем прямоугольник с фиолетовым цветом (только под текст)
+    draw.rectangle(
+        [plate_x - 20, plate_y, plate_x + plate_width + 20, plate_y + plate_height],
+        fill=FDR_POST_PURPLE_COLOR
+    )
+    
+    # Рисуем текст на плашке (просто белый, без тени)
     text_x = (img.width - text_width) // 2
     text_y = plate_y + (plate_height - text_height) // 2
-    
-    # Добавляем небольшую тень для лучшей читаемости
-    shadow_offset = 2
-    draw.text((text_x + shadow_offset, text_y + shadow_offset), 
-              highlight_text, font=plate_font, fill=(0, 0, 0, 128))
     draw.text((text_x, text_y), highlight_text, font=plate_font, fill="white")
+    
+    # Если есть заголовок, добавляем его сверху (как в ЧП ВМ)
+    if title_text:
+        title_text_upper = title_text.strip().upper()
+        title_max_h = int(img.height * MN_TITLE_ZONE_PCT) // 2
+        
+        title_font, title_lines, title_heights, title_spacing, title_total_h = fit_text_block(
+            draw=draw,
+            text=title_text_upper,
+            font_path=FONT_CHP,
+            safe_w=safe_w,
+            max_block_h=title_max_h,
+            max_lines=3,
+            start_size=int(img.height * 0.08),
+            min_size=16,
+            line_spacing_ratio=0.18
+        )
+        
+        # Размещаем заголовок вверху
+        title_y = margin_top
+        for i, ln in enumerate(title_lines):
+            # Рисуем текст по центру
+            lw = text_width(draw, ln, title_font)
+            x = (img.width - lw) // 2
+            draw.text((x, title_y), ln, font=title_font, fill="white")
+            title_y += title_heights[i] + title_spacing
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
@@ -1799,9 +1902,11 @@ def on_read_full_news(c):
         title = item.get("title", "")
         full_text = item.get("full_text", "")
         
-        # Если нет полного текста, пробуем загрузить
+        # Если нет полного текста, пробуем загрузить (используем обновленную функцию)
         if not full_text:
             full_text = fetch_article_full_text_generic(item.get("url", ""))
+            # Сохраняем в кэш для будущих запросов
+            item["full_text"] = full_text
         
         # Получаем изображение
         image_url = item.get("image", "")
@@ -1925,6 +2030,31 @@ def cmd_manual_news(message):
     
     # Запускаем выгрузку
     news_publisher.publish_news_digest(manual=True)
+
+
+# =========================
+# Обработчик улучшения качества
+# =========================
+@bot.message_handler(func=lambda message: message.text == BTN_ENHANCE)
+def cmd_enhance(message):
+    """Обработчик команды улучшения качества фото"""
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    
+    # Устанавливаем состояние ожидания фото для улучшения
+    st["step"] = "waiting_enhance_photo"
+    st["template"] = st.get("template", "MN")
+    user_state[uid] = st
+    
+    bot.send_message(
+        message.chat.id,
+        "✨ Отправь фото, которое нужно улучшить.\n\n"
+        "Я добавлю:\n"
+        "• 🔍 +15% резкости\n"
+        "• 🎨 +10% насыщенности\n"
+        "• 🌓 +10% контрастности",
+        reply_markup=main_menu_kb()
+    )
 
 
 # =========================
@@ -2255,6 +2385,45 @@ def on_photo(message):
     st = user_state.get(uid) or {}
     st.setdefault("template", "MN")
 
+    # Проверяем, не в режиме ли улучшения фото
+    if st.get("step") == "waiting_enhance_photo":
+        try:
+            file_id = message.photo[-1].file_id
+            photo_bytes = tg_file_bytes(file_id)
+
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                return
+
+            # Отправляем сообщение о начале обработки
+            processing_msg = bot.reply_to(message, "⏳ Улучшаю качество фото...")
+            
+            # Улучшаем качество
+            enhanced = enhance_image_quality(photo_bytes)
+            
+            # Отправляем улучшенное фото
+            bot.send_photo(
+                message.chat.id,
+                photo=enhanced,
+                caption="✨ Фото улучшено!\n\n"
+                       "✓ +15% резкости\n"
+                       "✓ +10% насыщенности\n"
+                       "✓ +10% контрастности",
+                reply_markup=main_menu_kb()
+            )
+            
+            # Удаляем сообщение о обработке
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+            
+            # Сбрасываем состояние
+            st["step"] = "idle"
+            user_state[uid] = st
+            
+        except Exception as e:
+            logger.error(f"Error enhancing photo: {e}")
+            bot.reply_to(message, f"❌ Ошибка при улучшении фото: {e}")
+        return
+
     if st.get("step") == "waiting_template":
         bot.send_message(message.chat.id, "Сначала выбери шаблон:", reply_markup=template_kb())
         return
@@ -2396,6 +2565,44 @@ def on_document(message):
         bot.reply_to(message, "Пришли картинку (JPG/PNG).")
         return
 
+    # Проверяем, не в режиме ли улучшения фото
+    if st.get("step") == "waiting_enhance_photo":
+        try:
+            photo_bytes = tg_file_bytes(doc.file_id)
+
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                return
+
+            # Отправляем сообщение о начале обработки
+            processing_msg = bot.reply_to(message, "⏳ Улучшаю качество фото...")
+            
+            # Улучшаем качество
+            enhanced = enhance_image_quality(photo_bytes)
+            
+            # Отправляем улучшенное фото
+            bot.send_photo(
+                message.chat.id,
+                photo=enhanced,
+                caption="✨ Фото улучшено!\n\n"
+                       "✓ +15% резкости\n"
+                       "✓ +10% насыщенности\n"
+                       "✓ +10% контрастности",
+                reply_markup=main_menu_kb()
+            )
+            
+            # Удаляем сообщение о обработке
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+            
+            # Сбрасываем состояние
+            st["step"] = "idle"
+            user_state[uid] = st
+            
+        except Exception as e:
+            logger.error(f"Error enhancing document: {e}")
+            bot.reply_to(message, f"❌ Ошибка при улучшении фото: {e}")
+        return
+
     try:
         photo_bytes = tg_file_bytes(doc.file_id)
 
@@ -2434,6 +2641,10 @@ def on_text(message):
 
     if text == BTN_GET_NEWS_MANUAL:
         cmd_manual_news(message)
+        return
+
+    if text == BTN_ENHANCE or text.lower() in {"улучшить качество", "улучшить фото", "улучшить"}:
+        cmd_enhance(message)
         return
 
     step = st.get("step")
