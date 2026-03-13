@@ -924,7 +924,7 @@ def build_caption_tg(title: str, body: str) -> str:
     links = (
         "\n\n"
         "🔗 <a href='https://t.me/vestiminska'>Все новости Минска</a>\n"
-        "📝 <a href='https://t.me/prishlinews_bot'>Прислать новость</a>"
+        "📝 <a href='https://t.me/prishlinews'>Прислать новость</a>"
     )
     
     return f"<b>{title_safe}</b>\n\n{body_safe}{links}"
@@ -948,97 +948,27 @@ def tg_file_bytes(file_id: str) -> bytes:
 # =========================
 # Image enhancement
 # =========================
-# =========================
-# Улучшенная функция для повышения качества изображения
-# =========================
 def enhance_image_quality(image_bytes: bytes) -> BytesIO:
-    """
-    Улучшает качество изображения с расширенными параметрами:
-    - Увеличивает резкость на 30% (было 15%)
-    - Увеличивает насыщенность на 20% (было 10%)
-    - Увеличивает контрастность на 20% (было 10%)
-    - Добавляет легкое сглаживание шумов
-    - Оптимизирует яркость и цветовой баланс
-    """
     try:
-        # Открываем изображение
         img = Image.open(BytesIO(image_bytes)).convert("RGB")
         
-        # Шаг 1: Легкое сглаживание для уменьшения шумов
-        img = img.filter(ImageFilter.SMOOTH_MORE)
-        
-        # Шаг 2: Увеличиваем резкость (более агрессивно)
         enhancer_sharpness = ImageEnhance.Sharpness(img)
-        img = enhancer_sharpness.enhance(1.30)  # +30% резкости
+        img = enhancer_sharpness.enhance(1.15)
         
-        # Шаг 3: Увеличиваем насыщенность
         enhancer_color = ImageEnhance.Color(img)
-        img = enhancer_color.enhance(1.20)  # +20% насыщенности
+        img = enhancer_color.enhance(1.10)
         
-        # Шаг 4: Увеличиваем контрастность
         enhancer_contrast = ImageEnhance.Contrast(img)
-        img = enhancer_contrast.enhance(1.20)  # +20% контрастности
+        img = enhancer_contrast.enhance(1.10)
         
-        # Шаг 5: Легкая коррекция яркости (если фото темное)
-        enhancer_brightness = ImageEnhance.Brightness(img)
-        img = enhancer_brightness.enhance(1.05)  # +5% яркости
-        
-        # Сохраняем результат с максимальным качеством
         output = BytesIO()
-        img.save(output, format="JPEG", quality=98, optimize=True, subsampling=0)
+        img.save(output, format="JPEG", quality=95, optimize=True)
         output.seek(0)
         
         return output
     except Exception as e:
         logger.error(f"Error enhancing image: {e}")
         raise
-
-# =========================
-# Альтернативная функция с еще более агрессивными настройками
-# =========================
-def enhance_image_quality_pro(image_bytes: bytes) -> BytesIO:
-    """
-    Профессиональное улучшение качества изображения:
-    - Увеличивает резкость на 40%
-    - Увеличивает насыщенность на 25%
-    - Увеличивает контрастность на 25%
-    - Добавляет HDR-эффект
-    - Убирает шумы
-    """
-    try:
-        # Открываем изображение
-        img = Image.open(BytesIO(image_bytes)).convert("RGB")
-        
-        # Шаг 1: Убираем шумы
-        img = img.filter(ImageFilter.MedianFilter(size=3))
-        
-        # Шаг 2: Увеличиваем резкость (профессионально)
-        for _ in range(2):  # Двойное применение резкости
-            enhancer_sharpness = ImageEnhance.Sharpness(img)
-            img = enhancer_sharpness.enhance(1.20)  # +20% дважды = ~40%
-        
-        # Шаг 3: Увеличиваем насыщенность
-        enhancer_color = ImageEnhance.Color(img)
-        img = enhancer_color.enhance(1.25)  # +25% насыщенности
-        
-        # Шаг 4: Увеличиваем контрастность
-        enhancer_contrast = ImageEnhance.Contrast(img)
-        img = enhancer_contrast.enhance(1.25)  # +25% контрастности
-        
-        # Шаг 5: HDR-эффект (улучшение теней и светов)
-        enhancer_brightness = ImageEnhance.Brightness(img)
-        img = enhancer_brightness.enhance(1.03)  # +3% яркости
-        
-        # Сохраняем результат с максимальным качеством
-        output = BytesIO()
-        img.save(output, format="JPEG", quality=98, optimize=True, subsampling=0)
-        output.seek(0)
-        
-        return output
-    except Exception as e:
-        logger.error(f"Error enhancing image pro: {e}")
-        # Если профессиональная обработка не удалась, пробуем обычную
-        return enhance_image_quality(image_bytes)
 
 
 # =========================
@@ -1700,13 +1630,9 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     return out
 
 
-# =========================
-# Функция для создания шаблона МН ТГ (с полупрозрачным водяным знаком)
-# =========================
 def make_card_mn_tg(photo_bytes: bytes, title_text: str) -> BytesIO:
     """
     Шаблон "МН ТГ" - фото с полупрозрачной надписью MINSK NEWS
-    Водяной знак уменьшен на 20% (было 10% от ширины, стало 8%)
     """
     ensure_fonts()
 
@@ -1717,8 +1643,8 @@ def make_card_mn_tg(photo_bytes: bytes, title_text: str) -> BytesIO:
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     
-    # Рассчитываем размер шрифта (8% от ширины изображения - уменьшили с 10% до 8%)
-    font_size = int(img.width * 0.08)
+    # Рассчитываем размер шрифта (10% от ширины изображения)
+    font_size = int(img.width * 0.1)
     font = ImageFont.truetype(FONT_MN, font_size)
     
     # Получаем размеры текста
@@ -1744,883 +1670,6 @@ def make_card_mn_tg(photo_bytes: bytes, title_text: str) -> BytesIO:
     result.save(out, format="JPEG", quality=95, optimize=True)
     out.seek(0)
     return out
-
-
-# =========================
-# Функция для формирования подписи с автоматическим выделением первого абзаца
-# =========================
-def build_caption_tg(full_text: str) -> str:
-    """
-    Формирует подпись для Telegram, где первый абзац становится жирным заголовком
-    """
-    # Разбиваем текст на абзацы
-    paragraphs = full_text.strip().split('\n\n')
-    
-    if not paragraphs:
-        return ""
-    
-    # Первый абзац - заголовок
-    title = paragraphs[0].strip()
-    title_safe = html.escape(title)
-    
-    # Остальной текст
-    body_parts = []
-    for p in paragraphs[1:]:
-        if p.strip():
-            body_parts.append(html.escape(p.strip()))
-    
-    body_text = '\n\n'.join(body_parts) if body_parts else ""
-    
-    # Ссылки в конце
-    links = (
-        "\n\n"
-        "🔗 <a href='https://t.me/vestiminska'>Все новости Минска</a>\n"
-        "📝 <a href='https://t.me/prishlinews_bot'>Прислать новость</a>"
-    )
-    
-    if body_text:
-        return f"<b>{title_safe}</b>\n\n{body_text}{links}"
-    else:
-        return f"<b>{title_safe}</b>{links}"
-
-
-# =========================
-# Обновленная функция make_card для поддержки всех шаблонов
-# =========================
-def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", text_position: str = TEXT_POSITION_TOP) -> BytesIO:
-    if template == "CHP":
-        return make_card_chp(photo_bytes, title_text)
-    if template == "AM":
-        return make_card_am(photo_bytes, title_text)
-    if template == "FDR_STORY":
-        return make_card_fdr_story(photo_bytes, title_text, body_text)
-    if template == "FDR_POST":
-        return make_card_fdr_post(photo_bytes, title_text, highlight_phrase)
-    if template == "MN_TG":
-        return make_card_mn_tg(photo_bytes, title_text)
-    return make_card_mn(photo_bytes, title_text, text_position)
-
-
-# =========================
-# Обновленная клавиатура выбора шаблонов с новой кнопкой
-# =========================
-def template_kb():
-    kb = InlineKeyboardMarkup()
-    kb.row(
-        InlineKeyboardButton("📰 МН", callback_data="tpl:MN"),
-        InlineKeyboardButton("🚨 ЧП ВМ", callback_data="tpl:CHP"),
-    )
-    kb.row(
-        InlineKeyboardButton("✨ АМ", callback_data="tpl:AM"),
-        InlineKeyboardButton("📱 Сторис ФДР", callback_data="tpl:FDR_STORY"),
-    )
-    kb.row(
-        InlineKeyboardButton("💜 Пост ФДР", callback_data="tpl:FDR_POST"),
-        InlineKeyboardButton("📱 МН ТГ", callback_data="tpl:MN_TG"),
-    )
-    return kb
-
-
-# =========================
-# Обновленный обработчик выбора шаблона
-# =========================
-@bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:"))
-def on_tpl(c):
-    uid = c.from_user.id
-    tpl = c.data.split(":", 1)[1]
-    st = user_state.get(uid) or {}
-    st["template"] = tpl
-    
-    if tpl == "MN":
-        st["step"] = "waiting_text_position"
-        user_state[uid] = st
-        bot.answer_callback_query(c.id, "Шаблон МН выбран ✅")
-        bot.send_message(
-            c.message.chat.id,
-            "📰 Выбран шаблон <b>МН</b>\n\n"
-            "Где разместить текст?",
-            parse_mode="HTML",
-            reply_markup=text_position_kb()
-        )
-    elif tpl == "FDR_POST":
-        st["step"] = "waiting_photo_fdr_post"
-        user_state[uid] = st
-        bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
-        bot.send_message(
-            c.message.chat.id,
-            "💜 Выбран шаблон <b>Пост ФДР</b>\n\n"
-            "📸 Пришли фото для поста.\n\n"
-            "<i>Дальше нужно будет:</i>\n"
-            "1️⃣ Отправить полный заголовок\n"
-            "2️⃣ Отправить фразу для фиолетовой плашки\n"
-            "3️⃣ Отправить основной текст",
-            parse_mode="HTML"
-        )
-    elif tpl == "MN_TG":
-        st["step"] = "waiting_photo_mn_tg"
-        user_state[uid] = st
-        bot.answer_callback_query(c.id, "Шаблон 'МН ТГ' выбран ✅")
-        bot.send_message(
-            c.message.chat.id,
-            "📱 Выбран шаблон <b>МН ТГ</b>\n\n"
-            "📸 Сначала пришли фото для поста.\n\n"
-            "<i>После фото нужно будет отправить текст целиком.</i>\n"
-            "Первый абзац автоматически станет жирным заголовком, остальное - основным текстом.\n\n"
-            "🔹 <b>Важно:</b> Разделяй абзацы пустой строкой (два раза Enter)",
-            parse_mode="HTML"
-        )
-    else:
-        if st.get("step") in {"waiting_template", None}:
-            st["step"] = "waiting_photo"
-        user_state[uid] = st
-        bot.answer_callback_query(c.id, "Ок ✅")
-        
-        tpl_names = {
-            'CHP': 'ЧП ВМ',
-            'AM': 'АМ',
-            'FDR_STORY': 'Сторис ФДР'
-        }
-        tpl_name = tpl_names.get(tpl, tpl)
-        bot.send_message(c.message.chat.id, f"Шаблон выбран: {tpl_name}. Пришли фото 📷")
-
-
-# =========================
-# ПОЛНАЯ ЗАМЕНА ВСЕХ ФУНКЦИЙ УЛУЧШЕНИЯ КАЧЕСТВА
-# ВСТАВЬТЕ ЭТОТ КОД В ФАЙЛ bot.py, УДАЛИВ СТАРЫЕ ВЕРСИИ
-# =========================
-
-# Улучшенная функция для повышения качества изображения
-def enhance_image_quality(image_bytes: bytes) -> BytesIO:
-    """
-    Улучшает качество изображения с расширенными параметрами:
-    - Увеличивает резкость на 30%
-    - Увеличивает насыщенность на 20%
-    - Увеличивает контрастность на 20%
-    - Добавляет легкое сглаживание шумов
-    - Оптимизирует яркость и цветовой баланс
-    """
-    try:
-        img = Image.open(BytesIO(image_bytes)).convert("RGB")
-        img = img.filter(ImageFilter.SMOOTH_MORE)
-        enhancer_sharpness = ImageEnhance.Sharpness(img)
-        img = enhancer_sharpness.enhance(1.30)
-        enhancer_color = ImageEnhance.Color(img)
-        img = enhancer_color.enhance(1.20)
-        enhancer_contrast = ImageEnhance.Contrast(img)
-        img = enhancer_contrast.enhance(1.20)
-        enhancer_brightness = ImageEnhance.Brightness(img)
-        img = enhancer_brightness.enhance(1.05)
-        output = BytesIO()
-        img.save(output, format="JPEG", quality=98, optimize=True, subsampling=0)
-        output.seek(0)
-        return output
-    except Exception as e:
-        logger.error(f"Error enhancing image: {e}")
-        raise
-
-# Профессиональная функция улучшения качества
-def enhance_image_quality_pro(image_bytes: bytes) -> BytesIO:
-    """
-    Профессиональное улучшение качества изображения:
-    - Увеличивает резкость на 40%
-    - Увеличивает насыщенность на 25%
-    - Увеличивает контрастность на 25%
-    - Добавляет HDR-эффект
-    - Убирает шумы
-    """
-    try:
-        img = Image.open(BytesIO(image_bytes)).convert("RGB")
-        img = img.filter(ImageFilter.MedianFilter(size=3))
-        for _ in range(2):
-            enhancer_sharpness = ImageEnhance.Sharpness(img)
-            img = enhancer_sharpness.enhance(1.20)
-        enhancer_color = ImageEnhance.Color(img)
-        img = enhancer_color.enhance(1.25)
-        enhancer_contrast = ImageEnhance.Contrast(img)
-        img = enhancer_contrast.enhance(1.25)
-        enhancer_brightness = ImageEnhance.Brightness(img)
-        img = enhancer_brightness.enhance(1.03)
-        output = BytesIO()
-        img.save(output, format="JPEG", quality=98, optimize=True, subsampling=0)
-        output.seek(0)
-        return output
-    except Exception as e:
-        logger.error(f"Error enhancing image pro: {e}")
-        return enhance_image_quality(image_bytes)
-
-# Обработчик команды улучшения
-@bot.message_handler(func=lambda message: message.text == BTN_ENHANCE)
-def cmd_enhance(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    st["step"] = "waiting_enhance_photo"
-    st["template"] = st.get("template", "MN")
-    user_state[uid] = st
-    bot.send_message(
-        message.chat.id,
-        "✨ Отправь фото, которое нужно улучшить.\n\n"
-        "Я профессионально обработаю изображение:\n"
-        "• 🔍 +30-40% резкости\n"
-        "• 🎨 +20-25% насыщенности\n"
-        "• 🌓 +20-25% контрастности\n"
-        "• 🧹 Удаление шумов\n"
-        "• 💡 HDR-эффект",
-        reply_markup=main_menu_kb()
-    )
-
-# ПОЛНОСТЬЮ ОБНОВЛЕННАЯ ФУНКЦИЯ on_photo
-@bot.message_handler(content_types=["photo"])
-def on_photo(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    st.setdefault("template", "MN")
-
-    # Блок улучшения качества
-    if st.get("step") == "waiting_enhance_photo":
-        try:
-            file_id = message.photo[-1].file_id
-            photo_bytes = tg_file_bytes(file_id)
-
-            if not check_file_size(photo_bytes):
-                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
-                return
-
-            processing_msg = bot.reply_to(message, "⏳ Профессиональная обработка фото... (это может занять несколько секунд)")
-            
-            try:
-                enhanced = enhance_image_quality_pro(photo_bytes)
-                quality_text = "профессионально обработано"
-            except:
-                enhanced = enhance_image_quality(photo_bytes)
-                quality_text = "улучшено"
-            
-            bot.send_photo(
-                message.chat.id,
-                photo=enhanced,
-                caption=f"✨ Фото {quality_text}!\n\n"
-                       "✓ +30-40% резкости\n"
-                       "✓ +20-25% насыщенности\n"
-                       "✓ +20-25% контрастности\n"
-                       "✓ Удалены шумы\n"
-                       "✓ HDR-эффект",
-                reply_markup=main_menu_kb()
-            )
-            
-            bot.delete_message(message.chat.id, processing_msg.message_id)
-            st["step"] = "idle"
-            user_state[uid] = st
-            return
-        except Exception as e:
-            logger.error(f"Error enhancing photo: {e}")
-            bot.reply_to(message, f"❌ Ошибка при улучшении фото: {e}")
-            return
-
-    # Блок выбора шаблона
-    if st.get("step") == "waiting_template":
-        bot.send_message(message.chat.id, "Сначала выбери шаблон:", reply_markup=template_kb())
-        return
-
-    # Блок FDR_POST
-    if st.get("step") == "waiting_photo_fdr_post":
-        try:
-            file_id = message.photo[-1].file_id
-            photo_bytes = tg_file_bytes(file_id)
-
-            if not check_file_size(photo_bytes):
-                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
-                return
-
-            warn_if_too_small(message.chat.id, photo_bytes)
-
-            st["photo_bytes"] = photo_bytes
-            st["step"] = "waiting_title_fdr_post"
-            user_state[uid] = st
-
-            bot.reply_to(
-                message,
-                "📸 Фото сохранено!\n\n"
-                "Теперь отправь <b>ПОЛНЫЙ ЗАГОЛОВОК</b> поста:",
-                parse_mode="HTML"
-            )
-            return
-        except Exception as e:
-            logger.error(f"Error processing photo for FDR_POST: {e}")
-            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
-            return
-
-    # Блок MN_TG
-    if st.get("step") == "waiting_photo_mn_tg":
-        try:
-            file_id = message.photo[-1].file_id
-            photo_bytes = tg_file_bytes(file_id)
-
-            if not check_file_size(photo_bytes):
-                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
-                return
-
-            warn_if_too_small(message.chat.id, photo_bytes)
-
-            card = make_card_mn_tg(photo_bytes, "")
-            st["photo_bytes"] = photo_bytes
-            st["card_bytes"] = card.getvalue()
-            st["step"] = "waiting_text_mn_tg"
-            user_state[uid] = st
-
-            bot.reply_to(
-                message,
-                "📸 Фото сохранено!\n\n"
-                "Теперь отправь <b>ВЕСЬ ТЕКСТ</b> поста одним сообщением.\n"
-                "Первый абзац станет жирным заголовком, остальное - основным текстом.",
-                parse_mode="HTML"
-            )
-            return
-        except Exception as e:
-            logger.error(f"Error processing photo for MN_TG: {e}")
-            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
-            return
-
-    # Основной блок обработки фото
-    try:
-        file_id = message.photo[-1].file_id
-        photo_bytes = tg_file_bytes(file_id)
-
-        if not check_file_size(photo_bytes):
-            bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
-            return
-
-        warn_if_too_small(message.chat.id, photo_bytes)
-        st["photo_bytes"] = photo_bytes
-
-        # Обработка с предзаполненными данными
-        if st.get("prefill_title"):
-            st["title"] = st["prefill_title"]
-            st["source_url"] = st.get("prefill_source", "") or ""
-
-            try:
-                if st["template"] == "FDR_STORY":
-                    if st.get("prefill_body"):
-                        card = make_card(st["photo_bytes"], st["title"], st["template"], st["prefill_body"])
-                        st["card_bytes"] = card.getvalue()
-                        st["body_raw"] = st["prefill_body"]
-                        st.pop("prefill_body", None)
-                        st.pop("prefill_title", None)
-                        st.pop("prefill_source", None)
-                        st["step"] = "waiting_action"
-                        user_state[uid] = st
-
-                        caption = build_caption_html(st["title"], st["body_raw"])
-                        bot.send_photo(
-                            chat_id=message.chat.id,
-                            photo=BytesIO(st["card_bytes"]),
-                            caption=caption,
-                            parse_mode="HTML",
-                            reply_markup=preview_kb(st.get("source_url", "")),
-                        )
-                        bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-                        return
-                    else:
-                        st["step"] = "waiting_body_fdr"
-                        st.pop("prefill_title", None)
-                        st.pop("prefill_source", None)
-                        user_state[uid] = st
-                        bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
-                        return
-
-                if st["template"] == "MN":
-                    card = make_card(st["photo_bytes"], st["title"], st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP))
-                else:
-                    card = make_card(st["photo_bytes"], st["title"], st["template"])
-                
-                st["card_bytes"] = card.getvalue()
-
-                if st.get("prefill_body"):
-                    st["body_raw"] = st["prefill_body"]
-                    st.pop("prefill_body", None)
-                    st.pop("prefill_title", None)
-                    st.pop("prefill_source", None)
-                    st["step"] = "waiting_action"
-                    user_state[uid] = st
-
-                    caption = build_caption_html(st["title"], st["body_raw"])
-                    bot.send_photo(
-                        chat_id=message.chat.id,
-                        photo=BytesIO(st["card_bytes"]),
-                        caption=caption,
-                        parse_mode="HTML",
-                        reply_markup=preview_kb(st.get("source_url", "")),
-                    )
-                    bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-                    return
-
-                st["step"] = "waiting_body"
-                st.pop("prefill_title", None)
-                st.pop("prefill_source", None)
-                user_state[uid] = st
-                bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ поста.")
-            except Exception as e:
-                logger.error(f"Error creating card: {e}")
-                st["step"] = "waiting_photo"
-                user_state[uid] = st
-                bot.reply_to(message, f"Ошибка при создании карточки: {e}")
-            return
-
-        # Обычная обработка
-        if st["template"] == "FDR_STORY":
-            st["step"] = "waiting_title_fdr"
-        else:
-            st["step"] = "waiting_title"
-
-        user_state[uid] = st
-        bot.reply_to(message, "Фото получено ✅ Теперь отправь ЗАГОЛОВОК.")
-
-    except Exception as e:
-        logger.error(f"Error processing photo: {e}")
-        bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
-            return
-
-    # Остальной код обработки фото для других шаблонов
-    try:
-        file_id = message.photo[-1].file_id
-        photo_bytes = tg_file_bytes(file_id)
-
-        if not check_file_size(photo_bytes):
-            bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
-            return
-
-        warn_if_too_small(message.chat.id, photo_bytes)
-
-        st["photo_bytes"] = photo_bytes
-
-        if st.get("prefill_title"):
-            st["title"] = st["prefill_title"]
-            st["source_url"] = st.get("prefill_source", "") or ""
-
-            try:
-                if st["template"] == "FDR_STORY":
-                    if st.get("prefill_body"):
-                        card = make_card(st["photo_bytes"], st["title"], st["template"], st["prefill_body"])
-                        st["card_bytes"] = card.getvalue()
-                        st["body_raw"] = st["prefill_body"]
-                        st.pop("prefill_body", None)
-                        st.pop("prefill_title", None)
-                        st.pop("prefill_source", None)
-                        st["step"] = "waiting_action"
-                        user_state[uid] = st
-
-                        caption = build_caption_html(st["title"], st["body_raw"])
-                        bot.send_photo(
-                            chat_id=message.chat.id,
-                            photo=BytesIO(st["card_bytes"]),
-                            caption=caption,
-                            parse_mode="HTML",
-                            reply_markup=preview_kb(st.get("source_url", "")),
-                        )
-                        bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-                        return
-                    else:
-                        st["step"] = "waiting_body_fdr"
-                        st.pop("prefill_title", None)
-                        st.pop("prefill_source", None)
-                        user_state[uid] = st
-                        bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
-                        return
-
-                if st["template"] == "MN":
-                    card = make_card(st["photo_bytes"], st["title"], st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP))
-                else:
-                    card = make_card(st["photo_bytes"], st["title"], st["template"])
-                
-                st["card_bytes"] = card.getvalue()
-
-                if st.get("prefill_body"):
-                    st["body_raw"] = st["prefill_body"]
-                    st.pop("prefill_body", None)
-                    st.pop("prefill_title", None)
-                    st.pop("prefill_source", None)
-                    st["step"] = "waiting_action"
-                    user_state[uid] = st
-
-                    caption = build_caption_html(st["title"], st["body_raw"])
-                    bot.send_photo(
-                        chat_id=message.chat.id,
-                        photo=BytesIO(st["card_bytes"]),
-                        caption=caption,
-                        parse_mode="HTML",
-                        reply_markup=preview_kb(st.get("source_url", "")),
-                    )
-                    bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-                    return
-
-                st["step"] = "waiting_body"
-                st.pop("prefill_title", None)
-                st.pop("prefill_source", None)
-                user_state[uid] = st
-                bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ поста.")
-            except Exception as e:
-                logger.error(f"Error creating card: {e}")
-                st["step"] = "waiting_photo"
-                user_state[uid] = st
-                bot.reply_to(message, f"Ошибка при создании карточки: {e}")
-            return
-
-        if st["template"] == "FDR_STORY":
-            st["step"] = "waiting_title_fdr"
-        else:
-            st["step"] = "waiting_title"
-
-        user_state[uid] = st
-        bot.reply_to(message, "Фото получено ✅ Теперь отправь ЗАГОЛОВОК.")
-
-    except Exception as e:
-        logger.error(f"Error processing photo: {e}")
-        bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
-
-
-# =========================
-# Обновленный текстовый обработчик для поддержки MN_TG
-# =========================
-@bot.message_handler(content_types=["text"])
-def on_text(message):
-    uid = message.from_user.id
-    text = (message.text or "").strip()
-    st = user_state.get(uid) or {"template": "MN", "step": "idle"}
-
-    if text == BTN_POST or text.lower() in {"оформить пост", "оформление поста"}:
-        cmd_post(message)
-        return
-
-    if text == BTN_NEWS or text.lower() in {"получить новости", "новости", "дай новости"}:
-        cmd_news(message)
-        return
-
-    if text == BTN_GET_NEWS_MANUAL:
-        cmd_manual_news(message)
-        return
-
-    if text == BTN_ENHANCE or text.lower() in {"улучшить качество", "улучшить фото", "улучшить"}:
-        cmd_enhance(message)
-        return
-
-    step = st.get("step")
-
-    # НОВЫЙ БЛОК: получение текста для MN_TG
-    if step == "waiting_text_mn_tg":
-        if not text:
-            bot.reply_to(message, "❌ Текст не может быть пустым. Отправь текст:")
-            return
-        
-        # Сохраняем весь текст
-        st["full_text"] = text
-        st["step"] = "waiting_action"
-        user_state[uid] = st
-        
-        # Формируем подпись автоматически
-        caption = build_caption_tg(text)
-        
-        # Отправляем превью
-        bot.send_photo(
-            chat_id=message.chat.id,
-            photo=BytesIO(st["card_bytes"]),
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=preview_kb(st.get("source_url", "")),
-        )
-        bot.reply_to(
-            message, 
-            "✅ Пост готов! Нажми кнопку под превью для публикации.",
-            reply_markup=main_menu_kb()
-        )
-        return
-
-    # НОВЫЙ БЛОК: получение заголовка для FDR_POST
-    if step == "waiting_title_fdr_post":
-        if not text:
-            bot.reply_to(message, "❌ Заголовок не может быть пустым. Отправь текст:")
-            return
-        
-        st["full_title"] = text
-        st["step"] = "waiting_highlight_fdr_post"
-        user_state[uid] = st
-        
-        bot.reply_to(
-            message,
-            f"✅ Заголовок сохранён!\n\n"
-            f"<b>{html.escape(text)}</b>\n\n"
-            f"🎯 Теперь отправь <b>ФРАЗУ</b>, которую нужно выделить фиолетовой плашкой:\n\n"
-            f"<i>(можно скопировать часть заголовка или написать свою)</i>",
-            parse_mode="HTML"
-        )
-        return
-
-    # НОВЫЙ БЛОК: получение выделяемой фразы для FDR_POST
-    if step == "waiting_highlight_fdr_post":
-        if not text:
-            bot.reply_to(message, "❌ Фраза не может быть пустой. Отправь текст:")
-            return
-        
-        st["highlight_phrase"] = text
-        st["step"] = "waiting_body_fdr_post"
-        user_state[uid] = st
-        
-        try:
-            card = make_card(
-                st["photo_bytes"],
-                st["full_title"],
-                st["template"],
-                highlight_phrase=st["highlight_phrase"]
-            )
-            st["card_bytes"] = card.getvalue()
-            
-            bot.send_photo(
-                message.chat.id,
-                photo=BytesIO(st["card_bytes"]),
-                caption=(
-                    f"💜 <b>Предпросмотр</b>\n\n"
-                    f"Выделенная фраза: <b>{html.escape(text)}</b>\n\n"
-                    f"Теперь отправь <b>ОСНОВНОЙ ТЕКСТ</b> поста:"
-                ),
-                parse_mode="HTML"
-            )
-            
-        except Exception as e:
-            logger.error(f"Error creating FDR_POST preview: {e}")
-            bot.reply_to(
-                message, 
-                f"❌ Ошибка при создании превью: {e}\n\n"
-                f"Попробуй отправить фразу ещё раз или начни заново с /post"
-            )
-            st["step"] = "waiting_highlight_fdr_post"
-            user_state[uid] = st
-        return
-
-    # НОВЫЙ БЛОК: получение основного текста для FDR_POST
-    if step == "waiting_body_fdr_post":
-        st["body_raw"] = text
-        
-        body_src = extract_source_url(text)
-        if body_src:
-            st["source_url"] = body_src
-        
-        st["step"] = "waiting_action"
-        user_state[uid] = st
-        
-        try:
-            card = make_card(
-                st["photo_bytes"],
-                st["full_title"],
-                st["template"],
-                body_text=st["body_raw"],
-                highlight_phrase=st["highlight_phrase"]
-            )
-            
-            caption = build_caption_html(st["full_title"], st["body_raw"])
-            bot.send_photo(
-                chat_id=message.chat.id,
-                photo=BytesIO(card.getvalue()),
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=preview_kb(st.get("source_url", "")),
-            )
-            bot.reply_to(
-                message, 
-                "✅ Пост готов! Нажми кнопку под превью для публикации.",
-                reply_markup=main_menu_kb()
-            )
-        except Exception as e:
-            logger.error(f"Error creating final FDR_POST card: {e}")
-            bot.reply_to(message, f"❌ Ошибка при создании финальной карточки: {e}")
-        return
-
-    if step == "waiting_title_fdr":
-        st["title"] = text
-        st["step"] = "waiting_body_fdr"
-        user_state[uid] = st
-        bot.reply_to(message, "Заголовок сохранен ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
-        return
-
-    if step == "waiting_body_fdr":
-        if not st.get("photo_bytes"):
-            bot.reply_to(message, "❌ Фото потерялось. Начни заново с /post")
-            clear_state(uid)
-            return
-
-        st["body_raw"] = text
-        body_src = extract_source_url(text)
-        if body_src:
-            st["source_url"] = body_src
-
-        try:
-            card = make_card(
-                st["photo_bytes"],
-                st["title"],
-                st.get("template", "FDR_STORY"),
-                st["body_raw"]
-            )
-            st["card_bytes"] = card.getvalue()
-            st["step"] = "waiting_action"
-            user_state[uid] = st
-
-            caption = build_caption_html(st["title"], st["body_raw"])
-            bot.send_photo(
-                chat_id=message.chat.id,
-                photo=BytesIO(st["card_bytes"]),
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=preview_kb(st.get("source_url", "")),
-            )
-            bot.reply_to(message, "Сторис готова ✅ Нажми кнопку.")
-        except Exception as e:
-            logger.error(f"Error creating story: {e}")
-            bot.reply_to(message, f"❌ Ошибка при создании сторис: {e}")
-            st["step"] = "waiting_photo"
-            user_state[uid] = st
-        return
-
-    if step == "waiting_title":
-        st["title"] = text
-        try:
-            if st.get("template") == "MN":
-                card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), text_position=st.get("text_position", TEXT_POSITION_TOP))
-            elif st.get("template") == "MN_TG":
-                card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN_TG"))
-            else:
-                card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"))
-            
-            st["card_bytes"] = card.getvalue()
-            st["step"] = "waiting_body"
-            user_state[uid] = st
-            bot.reply_to(message, "Карточка готова ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ поста.")
-        except Exception as e:
-            logger.error(f"Error creating card: {e}")
-            st["step"] = "waiting_photo"
-            user_state[uid] = st
-            bot.reply_to(message, f"Ошибка при создании карточки: {e}")
-
-    elif step == "waiting_body":
-        st["body_raw"] = text
-        body_src = extract_source_url(text)
-        if body_src:
-            st["source_url"] = body_src
-
-        st["step"] = "waiting_action"
-        user_state[uid] = st
-        
-        # Для шаблона MN_TG используем специальное формирование подписи
-        if st.get("template") == "MN_TG":
-            caption = build_caption_tg(st["body_raw"])
-        else:
-            caption = build_caption_html(st["title"], st["body_raw"])
-            
-        bot.send_photo(
-            chat_id=message.chat.id,
-            photo=BytesIO(st["card_bytes"]),
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=preview_kb(st.get("source_url", "")),
-        )
-        bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-
-    elif step == "waiting_action":
-        bot.reply_to(message, "Нажми кнопку под превью ✅✏️❌ (или выбери действие в меню снизу).", reply_markup=main_menu_kb())
-
-    elif step == "waiting_template":
-        bot.send_message(message.chat.id, "Выбери шаблон кнопками:", reply_markup=template_kb())
-
-    elif step == "waiting_text_position":
-        bot.send_message(message.chat.id, "Сначала выбери расположение текста:", reply_markup=text_position_kb())
-
-    else:
-        user_state[uid] = st
-        bot.send_message(message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
-
-
-# =========================
-# Обновленный обработчик действий (publish, edit) для поддержки MN_TG
-# =========================
-@bot.callback_query_handler(func=lambda call: call.data in ["publish", "edit_body", "edit_title", "cancel"])
-def on_action(call):
-    uid = call.from_user.id
-    st = user_state.get(uid)
-
-    if not st or st.get("step") != "waiting_action":
-        bot.answer_callback_query(call.id, "Нет активного превью. Начни с «Оформить пост».")
-        return
-
-    if call.data == "publish":
-        try:
-            # Для MN_TG используем сохраненный полный текст
-            if st.get("template") == "MN_TG" and "full_text" in st:
-                caption = build_caption_tg(st["full_text"])
-            else:
-                # Для FDR_POST используем full_title, для остальных title
-                title_to_use = st["full_title"] if st.get("template") == "FDR_POST" and "full_title" in st else st.get("title", "")
-                caption = build_caption_html(title_to_use, st["body_raw"])
-                
-            bot.send_photo(
-                CHANNEL,
-                BytesIO(st["card_bytes"]),
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=channel_kb()
-            )
-            bot.answer_callback_query(call.id, "Опубликовано ✅")
-            bot.send_message(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
-            tpl = st.get("template", "MN")
-            user_state[uid] = {"step": "idle", "template": tpl}
-        except Exception as e:
-            logger.error(f"Error publishing: {e}")
-            bot.answer_callback_query(call.id, "Ошибка публикации")
-            bot.send_message(call.message.chat.id, f"Не смог опубликовать: {e}", reply_markup=main_menu_kb())
-
-    elif call.data == "edit_body":
-        if st.get("template") == "FDR_STORY":
-            st["step"] = "waiting_body_fdr"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ для сторис.", reply_markup=main_menu_kb())
-        elif st.get("template") == "FDR_POST":
-            st["step"] = "waiting_body_fdr_post"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
-        elif st.get("template") == "MN_TG":
-            st["step"] = "waiting_text_mn_tg"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком. Первый абзац станет заголовком.", reply_markup=main_menu_kb())
-        else:
-            st["step"] = "waiting_body"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
-
-    elif call.data == "edit_title":
-        if st.get("template") == "FDR_STORY":
-            st["step"] = "waiting_title_fdr"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК для сторис.", reply_markup=main_menu_kb())
-        elif st.get("template") == "FDR_POST":
-            st["step"] = "waiting_title_fdr_post"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ПОЛНЫЙ ЗАГОЛОВОК.", reply_markup=main_menu_kb())
-        elif st.get("template") == "MN_TG":
-            st["step"] = "waiting_text_mn_tg"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком. Первый абзац станет заголовком.", reply_markup=main_menu_kb())
-        else:
-            st["step"] = "waiting_title"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК.", reply_markup=main_menu_kb())
-
-    elif call.data == "cancel":
-        bot.answer_callback_query(call.id, "Отменено")
-        tpl = st.get("template", "MN")
-        user_state[uid] = {"step": "idle", "template": tpl}
-        bot.send_message(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
 
 
 def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", text_position: str = TEXT_POSITION_TOP) -> BytesIO:
@@ -3035,11 +2084,9 @@ def cmd_manual_news(message):
 
 @bot.message_handler(func=lambda message: message.text == BTN_ENHANCE)
 def cmd_enhance(message):
-    """Обработчик команды улучшения качества фото"""
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     
-    # Устанавливаем состояние ожидания фото для улучшения
     st["step"] = "waiting_enhance_photo"
     st["template"] = st.get("template", "MN")
     user_state[uid] = st
@@ -3047,14 +2094,13 @@ def cmd_enhance(message):
     bot.send_message(
         message.chat.id,
         "✨ Отправь фото, которое нужно улучшить.\n\n"
-        "Я профессионально обработаю изображение:\n"
-        "• 🔍 +30-40% резкости\n"
-        "• 🎨 +20-25% насыщенности\n"
-        "• 🌓 +20-25% контрастности\n"
-        "• 🧹 Удаление шумов\n"
-        "• 💡 HDR-эффект",
+        "Я добавлю:\n"
+        "• 🔍 +15% резкости\n"
+        "• 🎨 +10% насыщенности\n"
+        "• 🌓 +10% контрастности",
         reply_markup=main_menu_kb()
     )
+
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:"))
 def on_tpl(c):
@@ -3394,7 +2440,27 @@ def on_photo(message):
 
             processing_msg = bot.reply_to(message, "⏳ Улучшаю качество фото...")
             
+            enhanced = enhance_image_quality(photo_bytes)
             
+            bot.send_photo(
+                message.chat.id,
+                photo=enhanced,
+                caption="✨ Фото улучшено!\n\n"
+                       "✓ +15% резкости\n"
+                       "✓ +10% насыщенности\n"
+                       "✓ +10% контрастности",
+                reply_markup=main_menu_kb()
+            )
+            
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+            
+            st["step"] = "idle"
+            user_state[uid] = st
+            
+        except Exception as e:
+            logger.error(f"Error enhancing photo: {e}")
+            bot.reply_to(message, f"❌ Ошибка при улучшении фото: {e}")
+        return
 
     if st.get("step") == "waiting_template":
         bot.send_message(message.chat.id, "Сначала выбери шаблон:", reply_markup=template_kb())
@@ -3544,7 +2610,35 @@ def on_document(message):
                 return
 
             processing_msg = bot.reply_to(message, "⏳ Улучшаю качество фото...")
-          
+            
+            enhanced = enhance_image_quality(photo_bytes)
+            
+            bot.send_photo(
+                message.chat.id,
+                photo=enhanced,
+                caption="✨ Фото улучшено!\n\n"
+                       "✓ +15% резкости\n"
+                       "✓ +10% насыщенности\n"
+                       "✓ +10% контрастности",
+                reply_markup=main_menu_kb()
+            )
+            
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+            
+            st["step"] = "idle"
+            user_state[uid] = st
+            
+        except Exception as e:
+            logger.error(f"Error enhancing document: {e}")
+            bot.reply_to(message, f"❌ Ошибка при улучшении фото: {e}")
+        return
+
+    try:
+        photo_bytes = tg_file_bytes(doc.file_id)
+
+        if not check_file_size(photo_bytes):
+            bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+            return
 
         warn_if_too_small(message.chat.id, photo_bytes)
 
