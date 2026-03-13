@@ -910,6 +910,26 @@ def build_caption_html(title: str, body: str) -> str:
     return f"<b>{emoji_} {title_safe}</b>\n\n{body_high}".strip()
 
 
+def build_caption_tg(title: str, body: str) -> str:
+    """
+    Формирует подпись для Telegram с жирным заголовком и ссылками в конце
+    """
+    # Жирный заголовок
+    title_safe = html.escape((title or "").strip())
+    
+    # Основной текст
+    body_safe = html.escape((body or "").strip())
+    
+    # Ссылки в конце
+    links = (
+        "\n\n"
+        "🔗 <a href='https://t.me/vestiminska'>Все новости Минска</a>\n"
+        "📝 <a href='https://t.me/prishlinews'>Прислать новость</a>"
+    )
+    
+    return f"<b>{title_safe}</b>\n\n{body_safe}{links}"
+
+
 # =========================
 # Telegram download
 # =========================
@@ -1491,9 +1511,6 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
     return save_jpeg_to_bytes(canvas)
 
 
-# ============================================
-# ИСПРАВЛЕННАЯ ФУНКЦИЯ make_card_fdr_post
-# ============================================
 def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: str) -> BytesIO:
     """
     Шаблон "Пост ФДР" - как ЧП ВМ, но с выделением слов в заголовке фиолетовой плашкой
@@ -1612,6 +1629,49 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     out.seek(0)
     return out
 
+
+def make_card_mn_tg(photo_bytes: bytes, title_text: str) -> BytesIO:
+    """
+    Шаблон "МН ТГ" - фото с полупрозрачной надписью MINSK NEWS
+    """
+    ensure_fonts()
+
+    # Открываем и обрабатываем фото
+    img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
+    
+    # Создаем копию для наложения
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    # Рассчитываем размер шрифта (10% от ширины изображения)
+    font_size = int(img.width * 0.1)
+    font = ImageFont.truetype(FONT_MN, font_size)
+    
+    # Получаем размеры текста
+    text_bbox = draw.textbbox((0, 0), FOOTER_TEXT, font=font)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
+    
+    # Рассчитываем позицию (20% от верхней границы, по центру)
+    x = (img.width - text_width) // 2
+    y = int(img.height * 0.2) - (text_height // 2)
+    
+    # Рисуем текст белым с прозрачностью 15%
+    # 15% прозрачность = 38 из 255 (255 * 0.15 = 38.25)
+    draw.text((x, y), FOOTER_TEXT, font=font, fill=(255, 255, 255, 38))
+    
+    # Накладываем текст на изображение
+    result = Image.alpha_composite(img, overlay)
+    
+    # Конвертируем обратно в RGB для сохранения в JPEG
+    result = result.convert("RGB")
+    
+    out = BytesIO()
+    result.save(out, format="JPEG", quality=95, optimize=True)
+    out.seek(0)
+    return out
+
+
 def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     if template == "CHP":
         return make_card_chp(photo_bytes, title_text)
@@ -1621,6 +1681,8 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
         return make_card_fdr_story(photo_bytes, title_text, body_text)
     if template == "FDR_POST":
         return make_card_fdr_post(photo_bytes, title_text, highlight_phrase)
+    if template == "MN_TG":
+        return make_card_mn_tg(photo_bytes, title_text)
     return make_card_mn(photo_bytes, title_text, text_position)
 
 
@@ -1638,7 +1700,8 @@ def template_kb():
         InlineKeyboardButton("📱 Сторис ФДР", callback_data="tpl:FDR_STORY"),
     )
     kb.row(
-        InlineKeyboardButton("💜 Пост ФДР", callback_data="tpl:FDR_POST")
+        InlineKeyboardButton("💜 Пост ФДР", callback_data="tpl:FDR_POST"),
+        InlineKeyboardButton("📱 МН ТГ", callback_data="tpl:MN_TG"),
     )
     return kb
 
@@ -2069,6 +2132,19 @@ def on_tpl(c):
             "1️⃣ Отправить полный заголовок\n"
             "2️⃣ Отправить фразу для фиолетовой плашки\n"
             "3️⃣ Отправить основной текст",
+            parse_mode="HTML"
+        )
+    elif tpl == "MN_TG":
+        st["step"] = "waiting_photo"
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, "Шаблон 'МН ТГ' выбран ✅")
+        bot.send_message(
+            c.message.chat.id,
+            "📱 Выбран шаблон <b>МН ТГ</b>\n\n"
+            "📸 Пришли фото для поста.\n\n"
+            "<i>Дальше нужно будет:</i>\n"
+            "1️⃣ Отправить ЗАГОЛОВОК (будет жирным)\n"
+            "2️⃣ Отправить ОСНОВНОЙ ТЕКСТ (в конце автоматически добавятся ссылки)",
             parse_mode="HTML"
         )
     else:
@@ -2749,6 +2825,8 @@ def on_text(message):
         try:
             if st.get("template") == "MN":
                 card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), text_position=st.get("text_position", TEXT_POSITION_TOP))
+            elif st.get("template") == "MN_TG":
+                card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN_TG"))
             else:
                 card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"))
             
@@ -2770,7 +2848,13 @@ def on_text(message):
 
         st["step"] = "waiting_action"
         user_state[uid] = st
-        caption = build_caption_html(st["title"], st["body_raw"])
+        
+        # Для шаблона MN_TG используем специальное формирование подписи
+        if st.get("template") == "MN_TG":
+            caption = build_caption_tg(st["title"], st["body_raw"])
+        else:
+            caption = build_caption_html(st["title"], st["body_raw"])
+            
         bot.send_photo(
             chat_id=message.chat.id,
             photo=BytesIO(st["card_bytes"]),
@@ -2806,7 +2890,13 @@ def on_action(call):
     if call.data == "publish":
         try:
             title_to_use = st["full_title"] if st.get("template") == "FDR_POST" and "full_title" in st else st.get("title", "")
-            caption = build_caption_html(title_to_use, st["body_raw"])
+            
+            # Для шаблона MN_TG используем специальное формирование подписи
+            if st.get("template") == "MN_TG":
+                caption = build_caption_tg(title_to_use, st["body_raw"])
+            else:
+                caption = build_caption_html(title_to_use, st["body_raw"])
+                
             bot.send_photo(
                 CHANNEL,
                 BytesIO(st["card_bytes"]),
