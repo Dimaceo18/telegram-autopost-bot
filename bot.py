@@ -1518,6 +1518,10 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     title_text_upper = title_text.strip().upper()
     highlight_phrase_upper = highlight_phrase.strip().upper()
     
+    # Разбиваем фразу для выделения на отдельные слова
+    highlight_words = highlight_phrase_upper.split()
+    logger.info(f"Highlight words: {highlight_words}")
+    
     # Используем ту же логику что и в ЧП ВМ для размера шрифта
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     
@@ -1525,7 +1529,7 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw,
         text=title_text_upper,
-        font_path=FONT_CHP,  # Тот же шрифт что в ЧП ВМ
+        font_path=FONT_CHP,
         safe_w=safe_w,
         max_block_h=title_max_h,
         max_lines=6,
@@ -1537,42 +1541,52 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     # Размещаем текст внизу как в ЧП ВМ
     y = img.height - margin_bottom - total_h
     
-    # Разбиваем заголовок на отдельные строки из fit_text_block
-    # и для каждой строки определяем, есть ли в ней выделяемые слова
-    for line in lines:
-        # Разбиваем строку на слова
+    # Для каждой строки
+    for line_idx, line in enumerate(lines):
+        # Разбиваем строку на слова с сохранением оригинального написания
         line_words = line.split()
-        line_has_highlight = any(word in highlight_phrase_upper for word in line_words)
         
-        if line_has_highlight:
-            # Если есть выделяемые слова, рисуем каждое слово отдельно
-            current_x = margin_x
+        # Начинаем рисовать с левого отступа
+        current_x = margin_x
+        
+        # Для каждого слова в строке
+        for word in line_words:
+            # Получаем точную ширину слова
+            word_bbox = draw.textbbox((0, 0), word, font=font)
+            word_width = word_bbox[2] - word_bbox[0]
             
-            for word in line_words:
-                word_width = text_width(draw, word, font)
+            # Проверяем, нужно ли выделить это слово
+            should_highlight = False
+            for highlight_word in highlight_words:
+                if word == highlight_word or highlight_word in word:
+                    should_highlight = True
+                    logger.info(f"Highlighting word: '{word}' matches '{highlight_word}'")
+                    break
+            
+            if should_highlight:
+                # Рисуем фиолетовую плашку точно под слово
+                plate_padding = 8
+                plate_height = heights[line_idx] + 12
                 
-                # Проверяем, нужно ли выделить это слово
-                if word in highlight_phrase_upper:
-                    # Рисуем фиолетовую плашку под слово
-                    # Плашка точно по размеру слова
-                    plate_padding = 8
-                    plate_height = heights[lines.index(line)] + 10
-                    
-                    # Рисуем прямоугольник с фиолетовым цветом
-                    draw.rectangle(
-                        [current_x - plate_padding, y - 3, 
-                         current_x + word_width + plate_padding, y + plate_height],
-                        fill=FDR_POST_PURPLE_COLOR
-                    )
-                
-                # Рисуем слово белым
-                draw.text((current_x, y), word, font=font, fill="white")
-                current_x += word_width + text_width(draw, " ", font)
-        else:
-            # Если нет выделяемых слов, рисуем всю строку целиком
-            draw.text((margin_x, y), line, font=font, fill="white")
+                # Плашка точно по ширине слова
+                draw.rectangle(
+                    [current_x - plate_padding, y - 4, 
+                     current_x + word_width + plate_padding, y + plate_height],
+                    fill=FDR_POST_PURPLE_COLOR
+                )
+            
+            # Рисуем слово белым
+            draw.text((current_x, y), word, font=font, fill="white")
+            
+            # Добавляем пробел после слова (кроме последнего)
+            if word != line_words[-1]:
+                space_width = text_width(draw, " ", font)
+                current_x += word_width + space_width
+            else:
+                current_x += word_width
         
-        y += heights[lines.index(line)] + spacing
+        # Переходим к следующей строке
+        y += heights[line_idx] + spacing
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
