@@ -1900,7 +1900,7 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
 # =========================
 # Функции для обработки видео
 # =========================
-def apply_mn_style_to_frame(frame: np.ndarray, text: str, text_position: str = TEXT_POSITION_TOP) -> np.ndarray:
+#def apply_mn_style_to_frame(frame: np.ndarray, text: str, text_position: str = TEXT_POSITION_TOP) -> np.ndarray:
     img = Image.fromarray(frame).convert("RGB")
     img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(0.55)
@@ -1957,7 +1957,7 @@ def apply_mn_style_to_frame(frame: np.ndarray, text: str, text_position: str = T
     return np.array(img)
 
 
-def apply_chp_style_to_frame(frame: np.ndarray, text: str) -> np.ndarray:
+#def apply_chp_style_to_frame(frame: np.ndarray, text: str) -> np.ndarray:
     img = Image.fromarray(frame).convert("RGB")
     img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(0.85)
@@ -1992,7 +1992,7 @@ def apply_chp_style_to_frame(frame: np.ndarray, text: str) -> np.ndarray:
     return np.array(img)
 
 
-def apply_am_style_to_frame(frame: np.ndarray, text: str) -> np.ndarray:
+#def apply_am_style_to_frame(frame: np.ndarray, text: str) -> np.ndarray:
     img = Image.fromarray(frame).convert("RGB")
     img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
     img = apply_top_blur_band(img)
@@ -2030,7 +2030,7 @@ def apply_am_style_to_frame(frame: np.ndarray, text: str) -> np.ndarray:
     return np.array(img)
 
 
-def apply_fdr_post_style_to_frame(frame: np.ndarray, text: str, highlight_phrase: str) -> np.ndarray:
+#def apply_fdr_post_style_to_frame(frame: np.ndarray, text: str, highlight_phrase: str) -> np.ndarray:
     img = Image.fromarray(frame).convert("RGB")
     img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(0.85)
@@ -2107,7 +2107,7 @@ def apply_fdr_post_style_to_frame(frame: np.ndarray, text: str, highlight_phrase
     return np.array(img)
 
 
-def apply_mn_tg_style_to_frame(frame: np.ndarray) -> np.ndarray:
+#def apply_mn_tg_style_to_frame(frame: np.ndarray) -> np.ndarray:
     img = Image.fromarray(frame).convert("RGBA")
     
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
@@ -2129,7 +2129,7 @@ def apply_mn_tg_style_to_frame(frame: np.ndarray) -> np.ndarray:
     return np.array(result.convert("RGB"))
 
 
-def apply_mn2_style_to_frame(frame: np.ndarray, text: str, text_position: str = TEXT_POSITION_TOP, highlight_phrase: str = "") -> np.ndarray:
+#def apply_mn2_style_to_frame(frame: np.ndarray, text: str, text_position: str = TEXT_POSITION_TOP, highlight_phrase: str = "") -> np.ndarray:
     img = Image.fromarray(frame).convert("RGB")
     img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(0.55)
@@ -2210,7 +2210,7 @@ def apply_mn2_style_to_frame(frame: np.ndarray, text: str, text_position: str = 
     return np.array(img)
 
 
-def convert_video_to_gif(video_bytes: bytes, max_duration: int = 10, fps: int = 10) -> BytesIO:
+#def convert_video_to_gif(video_bytes: bytes, max_duration: int = 10, fps: int = 10) -> BytesIO:
     # Проверка доступности MoviePy
     if not MOVIEPY_AVAILABLE:
         raise RuntimeError("MoviePy is not available. Cannot process video.")
@@ -2245,7 +2245,7 @@ def convert_video_to_gif(video_bytes: bytes, max_duration: int = 10, fps: int = 
         raise
 
 
-def process_video_with_template(
+#def process_video_with_template(
     input_video: bytes,
     template: str,
     title: str = "",
