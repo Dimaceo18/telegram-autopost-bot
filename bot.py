@@ -1,18 +1,5 @@
 # -*- coding: utf-8 -*-
-# В начале файла bot.py добавьте:
-try:
-    from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
-    PILLOW_AVAILABLE = True
-except ImportError:
-    PILLOW_AVAILABLE = False
-    logger.warning("Pillow not available - image processing disabled")
 
-# Затем в функциях обработки изображений добавьте проверку:
-def make_card_mn(photo_bytes, title_text, text_position=TEXT_POSITION_TOP):
-    if not PILLOW_AVAILABLE:
-        # Возвращаем оригинальное фото без обработки
-        return BytesIO(photo_bytes)
-    # ... остальной код
 import os
 import re
 import html
