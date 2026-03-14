@@ -2245,16 +2245,16 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
         raise
 
 
-#def process_video_with_template(
-    input_video: bytes,
-    template: str,
-    title: str = "",
-    highlight_phrase: str = "",
-    text_position: str = TEXT_POSITION_TOP
-) -> BytesIO:
-    # Проверка доступности MoviePy
-    if not MOVIEPY_AVAILABLE:
-        raise RuntimeError("MoviePy is not available. Cannot process video.")
+# def process_video_with_template(
+#     input_video: bytes,
+#     template: str,
+#     title: str = "",
+#     highlight_phrase: str = "",
+#     text_position: str = TEXT_POSITION_TOP
+# ) -> BytesIO:
+#     # Проверка доступности MoviePy
+#     if not MOVIEPY_AVAILABLE:
+#         raise RuntimeError("MoviePy is not available. Cannot process video.")
     
     try:
         temp_input = "temp_input.mp4"
