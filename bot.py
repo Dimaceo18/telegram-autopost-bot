@@ -32,17 +32,33 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
-# Импорты для видео - с диагностикой
+# =========================
+# Logging setup
+# =========================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)  # ← logger теперь определён
+
+# =========================
+# Импорты для видео (с диагностикой)
+# =========================
 try:
-    import moviepy
+    import numpy as np
     from moviepy.editor import VideoFileClip
-    logger.info(f"✅ MoviePy imported successfully. Version: {moviepy.__version__}")
-    logger.info(f"   Module path: {moviepy.__file__}")
+    logger.info("✅ MoviePy и NumPy успешно импортированы")
     MOVIEPY_AVAILABLE = True
 except ImportError as e:
-    logger.error(f"❌ Failed to import moviepy: {e}")
-    logger.error("   Video functions will be disabled")
+    logger.error(f"❌ Ошибка импорта moviepy или numpy: {e}")
+    logger.error("   Видео-функции будут отключены")
     MOVIEPY_AVAILABLE = False
+    # Создаём заглушки, чтобы бот мог запуститься
+    np = None
     VideoFileClip = None
 
 
