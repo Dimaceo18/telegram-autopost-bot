@@ -1811,9 +1811,6 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
     return make_card_mn(photo_bytes, title_text, text_position)
 
 
-2. Найдите и закомментируйте ВЕСЬ блок с видео-функциями
-
-
 # =========================
 # Keyboards
 # =========================
