@@ -32,14 +32,18 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
-# Импорты для видео
-import numpy as np
-from moviepy.editor import VideoFileClip
-
-# Импорты для автоматической выгрузки
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-import pytz
+# Импорты для видео - с диагностикой
+try:
+    import moviepy
+    from moviepy.editor import VideoFileClip
+    logger.info(f"✅ MoviePy imported successfully. Version: {moviepy.__version__}")
+    logger.info(f"   Module path: {moviepy.__file__}")
+    MOVIEPY_AVAILABLE = True
+except ImportError as e:
+    logger.error(f"❌ Failed to import moviepy: {e}")
+    logger.error("   Video functions will be disabled")
+    MOVIEPY_AVAILABLE = False
+    VideoFileClip = None
 
 
 # Проверка на единственный экземпляр
@@ -2194,6 +2198,10 @@ def apply_mn2_style_to_frame(frame: np.ndarray, text: str, text_position: str = 
 
 
 def convert_video_to_gif(video_bytes: bytes, max_duration: int = 10, fps: int = 10) -> BytesIO:
+    # Проверка доступности MoviePy
+    if not MOVIEPY_AVAILABLE:
+        raise RuntimeError("MoviePy is not available. Cannot process video.")
+    
     try:
         temp_input = "temp_video.mp4"
         temp_output = "temp_output.gif"
@@ -2231,6 +2239,10 @@ def process_video_with_template(
     highlight_phrase: str = "",
     text_position: str = TEXT_POSITION_TOP
 ) -> BytesIO:
+    # Проверка доступности MoviePy
+    if not MOVIEPY_AVAILABLE:
+        raise RuntimeError("MoviePy is not available. Cannot process video.")
+    
     try:
         temp_input = "temp_input.mp4"
         temp_output = "temp_output.mp4"
@@ -2284,7 +2296,6 @@ def process_video_with_template(
     except Exception as e:
         logger.error(f"Error processing video with template {template}: {e}")
         raise
-
 
 # =========================
 # Keyboards
