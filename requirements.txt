@@ -5,6 +5,3 @@ beautifulsoup4
 lxml
 apscheduler
 pytz
-moviepy
-numpy
-opencv-python-headless
