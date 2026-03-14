@@ -31,8 +31,8 @@ from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
 # Импорты для видео
-import numpy as np
-from moviepy.editor import VideoFileClip
+#import numpy as np
+#from moviepy.editor import VideoFileClip
 
 # Импорты для автоматической выгрузки
 from apscheduler.schedulers.background import BackgroundScheduler
