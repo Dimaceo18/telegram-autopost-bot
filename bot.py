@@ -1837,48 +1837,6 @@ def template_kb():
     return kb
 
 
-#def video_menu_kb():
-    #kb = InlineKeyboardMarkup(row_width=2)
-    #kb.add(
-        InlineKeyboardButton("🎬 Видео в GIF", callback_data="video:gif"),
-        InlineKeyboardButton("📝 Оформить видео", callback_data="video:edit"),
-        InlineKeyboardButton("❌ Отмена", callback_data="video:cancel")
-    )
-    return kb
-
-
-#def video_template_kb():
-    kb = InlineKeyboardMarkup()
-    kb.row(
-        InlineKeyboardButton("📰 МН", callback_data="video_tpl:MN"),
-        InlineKeyboardButton("🚨 ЧП ВМ", callback_data="video_tpl:CHP"),
-    )
-    kb.row(
-        InlineKeyboardButton("✨ АМ", callback_data="video_tpl:AM"),
-        InlineKeyboardButton("💜 Пост ФДР", callback_data="video_tpl:FDR_POST"),
-    )
-    kb.row(
-        InlineKeyboardButton("📱 МН ТГ", callback_data="video_tpl:MN_TG"),
-        InlineKeyboardButton("🆕 МН 2", callback_data="video_tpl:MN2"),
-    )
-    kb.row(
-        InlineKeyboardButton("❌ Отмена", callback_data="video_tpl:cancel")
-    )
-    return kb
-
-
-#def video_text_position_kb():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("⬆️ Сверху", callback_data="video_pos:top"),
-        InlineKeyboardButton("⬇️ Снизу", callback_data="video_pos:bottom")
-    )
-    kb.row(
-        InlineKeyboardButton("❌ Отмена", callback_data="video_pos:cancel")
-    )
-    return kb
-
-
 def text_position_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
