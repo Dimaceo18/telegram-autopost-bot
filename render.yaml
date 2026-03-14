@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: your-bot-name
+    runtime: python
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python bot.py
+    plan: free
+    autoDeploy: true
+    pythonVersion: 3.11.7
