@@ -8,16 +8,6 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     libjpeg-dev \
     zlib1g-dev \
-    ffmpeg \   # <--- Удалите комментарий отсюда
-    && rm -rf /var/lib/apt/lists/*
-
-# Альтернатива - комментарий над строкой
-# Важно: ffmpeg нужен для работы с видео
-RUN apt-get update && apt-get install -y \
-    gcc \
-    python3-dev \
-    libjpeg-dev \
-    zlib1g-dev \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
