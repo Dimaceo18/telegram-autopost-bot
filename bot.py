@@ -1287,6 +1287,78 @@ def enhance_image_quality_pro(image_bytes: bytes) -> BytesIO:
 
 
 # =========================
+# Функции для создания градиента
+# =========================
+def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 165) -> Image.Image:
+    """
+    Применяет градиент сверху вниз (для текста внизу)
+    """
+    w, h = img.size
+    gh = int(h * height_pct)
+    if gh <= 0:
+        return img
+
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (1, gh), 0)
+    for y in range(gh):
+        a = int(max_alpha * (1 - y / max(1, gh - 1)))
+        grad.putpixel((0, y), a)
+    grad = grad.resize((w, gh))
+    overlay_alpha.paste(grad, (0, 0))
+
+    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    out = Image.alpha_composite(base, overlay)
+    return out.convert("RGB")
+
+
+def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
+    w, h = img.size
+    gh = int(h * height_pct)
+    if gh <= 0:
+        return img
+
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (1, gh), 0)
+    for y in range(gh):
+        a = int(max_alpha * (y / max(1, gh - 1)))
+        grad.putpixel((0, y), a)
+    grad = grad.resize((w, gh))
+    overlay_alpha.paste(grad, (0, h - gh))
+
+    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    out = Image.alpha_composite(base, overlay)
+    return out.convert("RGB")
+
+
+def apply_bottom_gradient_soft(img: Image.Image, height_pct: float, max_alpha: int = 165) -> Image.Image:
+    """
+    Применяет мягкий градиент снизу вверх
+    """
+    w, h = img.size
+    gh = int(h * height_pct)
+    if gh <= 0:
+        return img
+
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (1, gh), 0)
+    for y in range(gh):
+        a = int(max_alpha * (y / max(1, gh - 1)))
+        grad.putpixel((0, y), a)
+    grad = grad.resize((w, gh))
+    overlay_alpha.paste(grad, (0, h - gh))
+
+    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    out = Image.alpha_composite(base, overlay)
+    return out.convert("RGB")
+
+
+# =========================
 # Wrapping + drawing
 # =========================
 def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) -> int:
@@ -1339,75 +1411,6 @@ def crop_to_4x5(img: Image.Image) -> Image.Image:
         new_h = int(w / target_ratio)
         top = (h - new_h) // 2
         return img.crop((0, top, w, top + new_h))
-
-
-def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 220) -> Image.Image:
-    w, h = img.size
-    gh = int(h * height_pct)
-    if gh <= 0:
-        return img
-
-    overlay_alpha = Image.new("L", (w, h), 0)
-    grad = Image.new("L", (1, gh), 0)
-    for y in range(gh):
-        a = int(max_alpha * (y / max(1, gh - 1)))
-        grad.putpixel((0, y), a)
-    grad = grad.resize((w, gh))
-    overlay_alpha.paste(grad, (0, h - gh))
-
-    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-    base = img.convert("RGBA")
-    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
-    out = Image.alpha_composite(base, overlay)
-    return out.convert("RGB")
-
-
-def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 110) -> Image.Image:
-    """
-    Применяет градиент сверху вниз (для текста внизу)
-    """
-    w, h = img.size
-    gh = int(h * height_pct)
-    if gh <= 0:
-        return img
-
-    overlay_alpha = Image.new("L", (w, h), 0)
-    grad = Image.new("L", (1, gh), 0)
-    for y in range(gh):
-        a = int(max_alpha * (1 - y / max(1, gh - 1)))  # Инвертируем для градиента сверху
-        grad.putpixel((0, y), a)
-    grad = grad.resize((w, gh))
-    overlay_alpha.paste(grad, (0, 0))
-
-    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-    base = img.convert("RGBA")
-    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
-    out = Image.alpha_composite(base, overlay)
-    return out.convert("RGB")
-
-
-def apply_bottom_gradient_soft(img: Image.Image, height_pct: float, max_alpha: int = 110) -> Image.Image:
-    """
-    Применяет мягкий градиент снизу вверх (50% от обычного)
-    """
-    w, h = img.size
-    gh = int(h * height_pct)
-    if gh <= 0:
-        return img
-
-    overlay_alpha = Image.new("L", (w, h), 0)
-    grad = Image.new("L", (1, gh), 0)
-    for y in range(gh):
-        a = int(max_alpha * (y / max(1, gh - 1)))
-        grad.putpixel((0, y), a)
-    grad = grad.resize((w, gh))
-    overlay_alpha.paste(grad, (0, h - gh))
-
-    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-    base = img.convert("RGBA")
-    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
-    out = Image.alpha_composite(base, overlay)
-    return out.convert("RGB")
 
 
 def fit_text_block(
@@ -1531,7 +1534,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
 
 def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     """
-    Шаблон МН 2 - как МН, но с мягким градиентом (50% от ЧП ВМ)
+    Шаблон МН 2 - как МН, но с мягким градиентом (75% от ЧП ВМ)
     """
     ensure_fonts()
 
@@ -1541,13 +1544,13 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
 
     img = ImageEnhance.Brightness(img).enhance(0.55)
     
-    # Применяем градиент в зависимости от позиции текста
+    # Увеличиваем непрозрачность градиента (было 110, стало 165 - 75% от 220)
     if text_position == TEXT_POSITION_TOP:
-        # Текст сверху - градиент сверху вниз (для лучшей читаемости текста вверху)
-        img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.5, max_alpha=110)
+        # Текст сверху - градиент сверху вниз
+        img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
     else:
-        # Текст снизу - градиент снизу вверх (как в ЧП ВМ, но слабее)
-        img = apply_bottom_gradient_soft(img, height_pct=CHP_GRADIENT_PCT * 0.5, max_alpha=110)
+        # Текст снизу - градиент снизу вверх
+        img = apply_bottom_gradient_soft(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
     
     draw = ImageDraw.Draw(img)
 
@@ -1998,57 +2001,42 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     # Размещаем текст внизу как в ЧП ВМ
     base_y = img.height - margin_bottom - total_h
     
-    # Сначала собираем информацию о позициях всех слов
-    word_positions = []
-    
+    # Сначала рисуем плашки (нижний слой)
     y = base_y
     for line_idx, line in enumerate(lines):
         line_words = line.split()
         current_x = margin_x
         
         for word in line_words:
-            # Получаем точную ширину слова
-            word_bbox = draw.textbbox((0, 0), word, font=font)
-            word_width = word_bbox[2] - word_bbox[0]
-            word_height = word_bbox[3] - word_bbox[1]
+            # Получаем точные границы слова
+            word_bbox = draw.textbbox((current_x, y), word, font=font)
+            word_x1, word_y1, word_x2, word_y2 = word_bbox
             
-            # Сохраняем позицию слова
-            word_positions.append({
-                'word': word,
-                'x': current_x,
-                'y': y,
-                'width': word_width,
-                'height': word_height,
-                'line_height': heights[line_idx],
-                'should_highlight': word in highlight_words
-            })
+            # Проверяем, нужно ли выделить это слово
+            if word in highlight_words:
+                # Отступы со всех сторон (одинаковые)
+                padding = 10
+                
+                # Координаты плашки с равными отступами
+                plate_x1 = word_x1 - padding
+                plate_y1 = word_y1 - padding
+                plate_x2 = word_x2 + padding
+                plate_y2 = word_y2 + padding
+                
+                # Рисуем фиолетовую плашку
+                draw.rectangle(
+                    [plate_x1, plate_y1, plate_x2, plate_y2],
+                    fill=FDR_POST_PURPLE_COLOR
+                )
             
             # Добавляем пробел после слова (кроме последнего)
             if word != line_words[-1]:
                 space_width = text_width(draw, " ", font)
-                current_x += word_width + space_width
+                current_x += text_width(draw, word, font) + space_width
             else:
-                current_x += word_width
+                current_x += text_width(draw, word, font)
         
         y += heights[line_idx] + spacing
-    
-    # Рисуем плашки (нижний слой) с равными отступами
-    for word_info in word_positions:
-        if word_info['should_highlight']:
-            # Отступы со всех сторон (одинаковые)
-            padding = 8
-            
-            # Координаты плашки с равными отступами
-            plate_x1 = word_info['x'] - padding
-            plate_y1 = word_info['y'] - padding
-            plate_x2 = word_info['x'] + word_info['width'] + padding
-            plate_y2 = word_info['y'] + word_info['height'] + padding
-            
-            # Рисуем фиолетовую плашку
-            draw.rectangle(
-                [plate_x1, plate_y1, plate_x2, plate_y2],
-                fill=FDR_POST_PURPLE_COLOR
-            )
     
     # Рисуем ВЕСЬ текст поверх плашек (верхний слой)
     y = base_y
