@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: your-bot-name
-    runtime: python
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: python bot.py
+    name: telegram-autopost-bot
+    runtime: docker  # <-- Это ключевой момент!
+    repo: https://github.com/Dimaceo18/telegram-autopost-bot
+    branch: main
     plan: free
     autoDeploy: true
-    pythonVersion: 3.11.7
+    dockerfilePath: ./Dockerfile
