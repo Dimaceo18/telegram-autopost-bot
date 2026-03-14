@@ -2,6 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Устанавливаем системные зависимости
 RUN apt-get update && apt-get install -y \
     gcc \
     python3-dev \
@@ -9,6 +10,9 @@ RUN apt-get update && apt-get install -y \
     zlib1g-dev \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
+# Сначала обновляем pip
+RUN pip install --upgrade pip
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
