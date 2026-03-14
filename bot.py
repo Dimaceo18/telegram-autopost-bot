@@ -32,11 +32,11 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
-Импорты для видео
+# Импорты для видео
 import numpy as np
 from moviepy.editor import VideoFileClip
 
-Импорты для автоматической выгрузки
+# Импорты для автоматической выгрузки
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -135,12 +135,14 @@ BTN_POST = "📝 Оформить пост"
 BTN_NEWS = "📰 Получить новости"
 BTN_GET_NEWS_MANUAL = "📰 Выгрузить новости сейчас"
 BTN_ENHANCE = "✨ Улучшить качество"
+BTN_WATERMARK = "💧 Водяной знак"
 
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_NEWS))
     kb.row(KeyboardButton(BTN_GET_NEWS_MANUAL), KeyboardButton(BTN_ENHANCE))
     kb.row(KeyboardButton("🎥 Видео"), KeyboardButton("🎬 Видео в GIF"))
+    kb.row(KeyboardButton(BTN_WATERMARK))
     return kb
 
 
@@ -228,6 +230,7 @@ NEWS_SOURCES = [
         "domain": "minsknews.by",
         "exclude_patterns": [r"/page/", r"/category/", r"/tag/", r"/author/"],
         "limit": 40,
+        "timeout": 60,
     },
     {
         "id": "mlyn",
@@ -1114,6 +1117,44 @@ def enhance_image_quality_pro(image_bytes: bytes) -> BytesIO:
 
 
 # =========================
+# Функция для водяного знака
+# =========================
+def apply_watermark(photo_bytes: bytes) -> BytesIO:
+    """
+    Наносит водяной знак MINSK NEWS на фото
+    """
+    ensure_fonts()
+
+    img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
+    
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    # Размер шрифта - 8% от ширины изображения
+    font_size = int(img.width * 0.08)
+    font = ImageFont.truetype(FONT_MN, font_size)
+    
+    text_bbox = draw.textbbox((0, 0), FOOTER_TEXT, font=font)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
+    
+    # По центру
+    x = (img.width - text_width) // 2
+    y = (img.height - text_height) // 2
+    
+    # Прозрачность 15%
+    draw.text((x, y), FOOTER_TEXT, font=font, fill=(255, 255, 255, 38))
+    
+    result = Image.alpha_composite(img, overlay)
+    result = result.convert("RGB")
+    
+    out = BytesIO()
+    result.save(out, format="JPEG", quality=95, optimize=True)
+    out.seek(0)
+    return out
+
+
+# =========================
 # Функции для градиентов
 # =========================
 def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 165) -> Image.Image:
@@ -1351,7 +1392,10 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     return out
 
 
-def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
+def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, highlight_phrase: str = "") -> BytesIO:
+    """
+    Шаблон МН 2 - как МН, но с мягким градиентом и выделением слов жирным
+    """
     ensure_fonts()
 
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -1379,6 +1423,8 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     text = (title_text or "").strip().upper()
+    highlight_upper = highlight_phrase.strip().upper()
+    highlight_words = set(highlight_upper.split())
 
     font, lines, heights, spacing, total_text_height = fit_text_block(
         draw=draw,
@@ -1405,10 +1451,27 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         title_y = img.height - margin_bottom - total_text_height - 10
         footer_y = 10
 
+    # Сначала рисуем обычный текст
     y = title_y
-    for i, ln in enumerate(lines):
-        draw.text((block_x, y), ln, font=font, fill="white")
-        y += heights[i] + spacing
+    for line_idx, line in enumerate(lines):
+        line_words = line.split()
+        current_x = block_x
+        
+        for word in line_words:
+            if word in highlight_words:
+                # Для выделенных слов используем жирный шрифт
+                bold_font = ImageFont.truetype(FONT_MONTSERRAT_BLACK, font.size)
+                draw.text((current_x, y), word, font=bold_font, fill="white")
+            else:
+                draw.text((current_x, y), word, font=font, fill="white")
+            
+            if word != line_words[-1]:
+                space_width = text_width(draw, " ", font)
+                current_x += text_width(draw, word, font) + space_width
+            else:
+                current_x += text_width(draw, word, font)
+        
+        y += heights[line_idx] + spacing
 
     footer_x = (img.width - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
@@ -1769,6 +1832,10 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
 
 
 def make_card_mn_tg(photo_bytes: bytes, title_text: str) -> BytesIO:
+    """
+    Шаблон "МН ТГ" - фото с полупрозрачной надписью MINSK NEWS
+    Водяной знак уменьшен на 20% (8% от ширины)
+    """
     ensure_fonts()
 
     img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
@@ -1809,8 +1876,414 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
     if template == "MN_TG":
         return make_card_mn_tg(photo_bytes, title_text)
     if template == "MN2":
-        return make_card_mn2(photo_bytes, title_text, text_position)
+        return make_card_mn2(photo_bytes, title_text, text_position, highlight_phrase)
     return make_card_mn(photo_bytes, title_text, text_position)
+
+
+# =========================
+# Функции для обработки видео
+# =========================
+def apply_mn_style_to_frame(frame: np.ndarray, text: str, text_position: str = TEXT_POSITION_TOP) -> np.ndarray:
+    img = Image.fromarray(frame).convert("RGB")
+    img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(0.55)
+    
+    draw = ImageDraw.Draw(img)
+    
+    margin_x = int(img.width * 0.06)
+    margin_top = int(img.height * 0.06)
+    margin_bottom = int(img.height * 0.07)
+    safe_w = img.width - 2 * margin_x
+    
+    text_upper = text.strip().upper()
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+    
+    font, lines, heights, spacing, total_text_height = fit_text_block(
+        draw=draw,
+        text=text_upper,
+        font_path=FONT_MN,
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(img.height * 0.11),
+        min_size=16,
+        line_spacing_ratio=0.22
+    )
+    
+    footer_size = max(24, int(img.height * 0.034))
+    footer_font = ImageFont.truetype(FONT_MN, footer_size)
+    fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
+    footer_w = fb[2] - fb[0]
+    footer_h = fb[3] - fb[1]
+    
+    block_w = 0
+    for ln in lines:
+        block_w = max(block_w, text_width(draw, ln, font))
+    block_x = (img.width - block_w) // 2
+    block_x = max(margin_x, block_x)
+    
+    if text_position == TEXT_POSITION_TOP:
+        title_y = margin_top
+        footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
+    else:
+        title_y = img.height - margin_bottom - total_text_height - 10
+        footer_y = 10
+    
+    y = title_y
+    for i, ln in enumerate(lines):
+        draw.text((block_x, y), ln, font=font, fill="white")
+        y += heights[i] + spacing
+    
+    footer_x = (img.width - footer_w) // 2
+    draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
+    
+    return np.array(img)
+
+
+def apply_chp_style_to_frame(frame: np.ndarray, text: str) -> np.ndarray:
+    img = Image.fromarray(frame).convert("RGB")
+    img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(0.85)
+    img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+    
+    draw = ImageDraw.Draw(img)
+    
+    margin_x = int(img.width * 0.06)
+    margin_bottom = int(img.height * 0.08)
+    safe_w = img.width - 2 * margin_x
+    
+    text_upper = text.strip().upper()
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+    
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw,
+        text=text_upper,
+        font_path=FONT_CHP,
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(img.height * 0.11),
+        min_size=16,
+        line_spacing_ratio=0.22
+    )
+    
+    y = img.height - margin_bottom - total_h
+    for i, ln in enumerate(lines):
+        draw.text((margin_x, y), ln, font=font, fill="white")
+        y += heights[i] + spacing
+    
+    return np.array(img)
+
+
+def apply_am_style_to_frame(frame: np.ndarray, text: str) -> np.ndarray:
+    img = Image.fromarray(frame).convert("RGB")
+    img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
+    img = apply_top_blur_band(img)
+    
+    draw = ImageDraw.Draw(img)
+    
+    margin_x = int(img.width * 0.055)
+    band_h = int(img.height * AM_TOP_BLUR_PCT)
+    safe_w = img.width - 2 * margin_x
+    
+    text_upper = text.strip().upper()
+    text_zone_top = int(band_h * 0.12)
+    text_zone_bottom = int(band_h * 0.12)
+    text_zone_h = max(1, band_h - text_zone_top - text_zone_bottom)
+    
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw,
+        text=text_upper,
+        font_path=FONT_AM,
+        safe_w=safe_w,
+        max_block_h=text_zone_h,
+        max_lines=3,
+        start_size=int(img.height * 0.060),
+        min_size=20,
+        line_spacing_ratio=0.16
+    )
+    
+    y = text_zone_top + max(0, (text_zone_h - total_h) // 2)
+    for i, ln in enumerate(lines):
+        lw = text_width(draw, ln, font)
+        x = (img.width - lw) // 2
+        draw.text((x, y), ln, font=font, fill="white")
+        y += heights[i] + spacing
+    
+    return np.array(img)
+
+
+def apply_fdr_post_style_to_frame(frame: np.ndarray, text: str, highlight_phrase: str) -> np.ndarray:
+    img = Image.fromarray(frame).convert("RGB")
+    img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(0.85)
+    img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+    
+    draw = ImageDraw.Draw(img)
+    
+    margin_x = int(img.width * 0.06)
+    margin_bottom = int(img.height * 0.08)
+    safe_w = img.width - 2 * margin_x
+    
+    text_upper = text.strip().upper()
+    highlight_upper = highlight_phrase.strip().upper()
+    highlight_words = set(highlight_upper.split())
+    
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+    
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw,
+        text=text_upper,
+        font_path=FONT_CHP,
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(img.height * 0.11),
+        min_size=16,
+        line_spacing_ratio=0.22
+    )
+    
+    base_y = img.height - margin_bottom - total_h
+    
+    # Рисуем плашки
+    y = base_y
+    for line_idx, line in enumerate(lines):
+        line_words = line.split()
+        current_x = margin_x
+        
+        for word in line_words:
+            word_bbox = draw.textbbox((current_x, y), word, font=font)
+            word_x1, word_y1, word_x2, word_y2 = word_bbox
+            
+            if word in highlight_words:
+                padding = 10
+                draw.rectangle(
+                    [word_x1 - padding, word_y1 - padding,
+                     word_x2 + padding, word_y2 + padding],
+                    fill=FDR_POST_PURPLE_COLOR
+                )
+            
+            if word != line_words[-1]:
+                space_width = text_width(draw, " ", font)
+                current_x += text_width(draw, word, font) + space_width
+            else:
+                current_x += text_width(draw, word, font)
+        
+        y += heights[line_idx] + spacing
+    
+    # Рисуем текст
+    y = base_y
+    for line_idx, line in enumerate(lines):
+        line_words = line.split()
+        current_x = margin_x
+        
+        for word in line_words:
+            draw.text((current_x, y), word, font=font, fill="white")
+            if word != line_words[-1]:
+                space_width = text_width(draw, " ", font)
+                current_x += text_width(draw, word, font) + space_width
+            else:
+                current_x += text_width(draw, word, font)
+        
+        y += heights[line_idx] + spacing
+    
+    return np.array(img)
+
+
+def apply_mn_tg_style_to_frame(frame: np.ndarray) -> np.ndarray:
+    img = Image.fromarray(frame).convert("RGBA")
+    
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    font_size = int(img.width * 0.08)
+    font = ImageFont.truetype(FONT_MN, font_size)
+    
+    text_bbox = draw.textbbox((0, 0), FOOTER_TEXT, font=font)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
+    
+    x = (img.width - text_width) // 2
+    y = int(img.height * 0.2) - (text_height // 2)
+    
+    draw.text((x, y), FOOTER_TEXT, font=font, fill=(255, 255, 255, 38))
+    
+    result = Image.alpha_composite(img, overlay)
+    return np.array(result.convert("RGB"))
+
+
+def apply_mn2_style_to_frame(frame: np.ndarray, text: str, text_position: str = TEXT_POSITION_TOP, highlight_phrase: str = "") -> np.ndarray:
+    img = Image.fromarray(frame).convert("RGB")
+    img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(0.55)
+    
+    if text_position == TEXT_POSITION_TOP:
+        img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
+    else:
+        img = apply_bottom_gradient_soft(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
+    
+    draw = ImageDraw.Draw(img)
+    
+    margin_x = int(img.width * 0.06)
+    margin_top = int(img.height * 0.06)
+    margin_bottom = int(img.height * 0.07)
+    safe_w = img.width - 2 * margin_x
+    
+    text_upper = text.strip().upper()
+    highlight_upper = highlight_phrase.strip().upper()
+    highlight_words = set(highlight_upper.split())
+    
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+    
+    font, lines, heights, spacing, total_text_height = fit_text_block(
+        draw=draw,
+        text=text_upper,
+        font_path=FONT_MN,
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(img.height * 0.11),
+        min_size=16,
+        line_spacing_ratio=0.22
+    )
+    
+    footer_size = max(24, int(img.height * 0.034))
+    footer_font = ImageFont.truetype(FONT_MN, footer_size)
+    fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
+    footer_w = fb[2] - fb[0]
+    footer_h = fb[3] - fb[1]
+    
+    block_w = 0
+    for ln in lines:
+        block_w = max(block_w, text_width(draw, ln, font))
+    block_x = (img.width - block_w) // 2
+    block_x = max(margin_x, block_x)
+
+    if text_position == TEXT_POSITION_TOP:
+        title_y = margin_top
+        footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
+    else:
+        title_y = img.height - margin_bottom - total_text_height - 10
+        footer_y = 10
+
+    # Рисуем текст с выделением жирным
+    y = title_y
+    for line_idx, line in enumerate(lines):
+        line_words = line.split()
+        current_x = block_x
+        
+        for word in line_words:
+            if word in highlight_words:
+                bold_font = ImageFont.truetype(FONT_MONTSERRAT_BLACK, font.size)
+                draw.text((current_x, y), word, font=bold_font, fill="white")
+            else:
+                draw.text((current_x, y), word, font=font, fill="white")
+            
+            if word != line_words[-1]:
+                space_width = text_width(draw, " ", font)
+                current_x += text_width(draw, word, font) + space_width
+            else:
+                current_x += text_width(draw, word, font)
+        
+        y += heights[line_idx] + spacing
+
+    footer_x = (img.width - footer_w) // 2
+    draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
+    
+    return np.array(img)
+
+
+def convert_video_to_gif(video_bytes: bytes, max_duration: int = 10, fps: int = 10) -> BytesIO:
+    try:
+        temp_input = "temp_video.mp4"
+        temp_output = "temp_output.gif"
+        
+        with open(temp_input, 'wb') as f:
+            f.write(video_bytes)
+        
+        clip = VideoFileClip(temp_input)
+        
+        if clip.duration > max_duration:
+            clip = clip.subclip(0, max_duration)
+        
+        clip = clip.resize(height=360)
+        clip.write_gif(temp_output, fps=fps, program='ffmpeg')
+        
+        with open(temp_output, 'rb') as f:
+            gif_bytes = BytesIO(f.read())
+        
+        clip.close()
+        os.remove(temp_input)
+        os.remove(temp_output)
+        
+        gif_bytes.seek(0)
+        return gif_bytes
+        
+    except Exception as e:
+        logger.error(f"Error converting video to GIF: {e}")
+        raise
+
+
+def process_video_with_template(
+    input_video: bytes,
+    template: str,
+    title: str = "",
+    highlight_phrase: str = "",
+    text_position: str = TEXT_POSITION_TOP
+) -> BytesIO:
+    try:
+        temp_input = "temp_input.mp4"
+        temp_output = "temp_output.mp4"
+        
+        with open(temp_input, 'wb') as f:
+            f.write(input_video)
+        
+        clip = VideoFileClip(temp_input)
+        
+        if template == "MN":
+            process_func = lambda f: apply_mn_style_to_frame(f, title, text_position)
+        elif template == "CHP":
+            process_func = lambda f: apply_chp_style_to_frame(f, title)
+        elif template == "AM":
+            process_func = lambda f: apply_am_style_to_frame(f, title)
+        elif template == "FDR_POST":
+            process_func = lambda f: apply_fdr_post_style_to_frame(f, title, highlight_phrase)
+        elif template == "MN_TG":
+            process_func = apply_mn_tg_style_to_frame
+        elif template == "MN2":
+            process_func = lambda f: apply_mn2_style_to_frame(f, title, text_position, highlight_phrase)
+        else:
+            process_func = lambda f: apply_mn_style_to_frame(f, title, text_position)
+        
+        processed_clip = clip.fl_image(process_func)
+        
+        if clip.audio:
+            processed_clip = processed_clip.set_audio(clip.audio)
+        
+        processed_clip.write_videofile(
+            temp_output,
+            codec='libx264',
+            audio_codec='aac',
+            fps=VIDEO_FPS,
+            bitrate=VIDEO_BITRATE,
+            threads=4,
+            preset='medium'
+        )
+        
+        with open(temp_output, 'rb') as f:
+            result = BytesIO(f.read())
+        
+        clip.close()
+        processed_clip.close()
+        os.remove(temp_input)
+        os.remove(temp_output)
+        
+        result.seek(0)
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error processing video with template {template}: {e}")
+        raise
 
 
 # =========================
@@ -1832,6 +2305,48 @@ def template_kb():
     )
     kb.row(
         InlineKeyboardButton("🆕 МН 2", callback_data="tpl:MN2"),
+    )
+    return kb
+
+
+def video_menu_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🎬 Видео в GIF", callback_data="video:gif"),
+        InlineKeyboardButton("📝 Оформить видео", callback_data="video:edit"),
+        InlineKeyboardButton("❌ Отмена", callback_data="video:cancel")
+    )
+    return kb
+
+
+def video_template_kb():
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("📰 МН", callback_data="video_tpl:MN"),
+        InlineKeyboardButton("🚨 ЧП ВМ", callback_data="video_tpl:CHP"),
+    )
+    kb.row(
+        InlineKeyboardButton("✨ АМ", callback_data="video_tpl:AM"),
+        InlineKeyboardButton("💜 Пост ФДР", callback_data="video_tpl:FDR_POST"),
+    )
+    kb.row(
+        InlineKeyboardButton("📱 МН ТГ", callback_data="video_tpl:MN_TG"),
+        InlineKeyboardButton("🆕 МН 2", callback_data="video_tpl:MN2"),
+    )
+    kb.row(
+        InlineKeyboardButton("❌ Отмена", callback_data="video_tpl:cancel")
+    )
+    return kb
+
+
+def video_text_position_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("⬆️ Сверху", callback_data="video_pos:top"),
+        InlineKeyboardButton("⬇️ Снизу", callback_data="video_pos:bottom")
+    )
+    kb.row(
+        InlineKeyboardButton("❌ Отмена", callback_data="video_pos:cancel")
     )
     return kb
 
@@ -2036,6 +2551,7 @@ class NewsAutoPublisher:
         else:
             self.bot.send_message(chat_id, "✅ Все новости загружены!", reply_markup=main_menu_kb())
 
+
 # =========================
 # Простой HTTP-сервер для проверки здоровья
 # =========================
@@ -2044,11 +2560,12 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/html; charset=utf-8')
         self.end_headers()
-        self.wfile.write("Бот запущен! 🤖".encode('utf-8'))  # ← ИСПРАВЛЕНО
+        self.wfile.write("Бот запущен! 🤖".encode('utf-8'))
     
     def log_message(self, format, *args):
         # Подавляем логи от этого сервера
         return
+
 def run_http_server():
     """Запускает простой HTTP-сервер для проверки здоровья"""
     try:
@@ -2059,6 +2576,7 @@ def run_http_server():
         httpd.serve_forever()
     except Exception as e:
         logger.error(f"Failed to start health check server: {e}")
+
 
 # =========================
 # Обработчики для новостей
@@ -2187,29 +2705,44 @@ def cmd_enhance(message):
     )
 
 
-# @bot.message_handler(func=lambda message: message.text == "🎥 Видео")
-# def cmd_video_menu(message):
-#     ...
+@bot.message_handler(func=lambda message: message.text == "🎥 Видео")
+def cmd_video_menu(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    st["step"] = "video_menu"
+    user_state[uid] = st
+    
+    bot.send_message(message.chat.id, "🎥 Режим работы с видео\n\nВыбери действие:", reply_markup=video_menu_kb())
 
-# @bot.message_handler(func=lambda message: message.text == "🎬 Видео в GIF")
-# def cmd_video_to_gif(message):
-#     ...
 
-# @bot.callback_query_handler(func=lambda c: c.data.startswith("video:"))
-# def on_video_menu_callback(c):
-#     ...
+@bot.message_handler(func=lambda message: message.text == "🎬 Видео в GIF")
+def cmd_video_to_gif(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    st["step"] = "waiting_video_for_gif"
+    user_state[uid] = st
+    
+    bot.send_message(
+        message.chat.id,
+        "🎬 Отправь видео (до 50 MB), и я конвертирую его в GIF.\n\n"
+        "Видео будет обрезано до 10 секунд.",
+        reply_markup=main_menu_kb()
+    )
 
-# @bot.callback_query_handler(func=lambda c: c.data.startswith("video_tpl:"))
-# def on_video_template_select(c):
-#     ...
 
-# @bot.callback_query_handler(func=lambda c: c.data.startswith("video_pos:"))
-# def on_video_position_select(c):
-#     ...
-
-# @bot.message_handler(content_types=["video"])
-# def on_video(message):
-#     ...
+@bot.message_handler(func=lambda message: message.text == BTN_WATERMARK)
+def cmd_watermark(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    st["step"] = "waiting_watermark_photo"
+    st["template"] = st.get("template", "MN")
+    user_state[uid] = st
+    
+    bot.send_message(
+        message.chat.id,
+        "💧 Отправь фото, и я нанесу на него водяной знак MINSK NEWS.",
+        reply_markup=main_menu_kb()
+    )
 
 
 # =========================
@@ -2676,7 +3209,7 @@ def on_news_item_action(c):
 
     try:
         if st["template"] in ["MN", "MN2"]:
-            card = make_card(photo_bytes, title, st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP))
+            card = make_card(photo_bytes, title, st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP), highlight_phrase=st.get("highlight_phrase", ""))
         else:
             card = make_card(photo_bytes, title, st["template"])
         st["card_bytes"] = card.getvalue()
@@ -2737,6 +3270,29 @@ def on_photo(message):
         except Exception as e:
             logger.error(f"Error enhancing photo: {e}")
             bot.reply_to(message, f"❌ Ошибка при улучшении фото: {e}")
+            return
+
+    if st.get("step") == "waiting_watermark_photo":
+        try:
+            file_id = message.photo[-1].file_id
+            photo_bytes = tg_file_bytes(file_id)
+
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                return
+
+            processing_msg = bot.reply_to(message, "⏳ Наношу водяной знак...")
+            
+            result = apply_watermark(photo_bytes)
+            
+            bot.send_photo(message.chat.id, photo=result, caption="💧 Водяной знак нанесен!", reply_markup=main_menu_kb())
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+            st["step"] = "idle"
+            user_state[uid] = st
+            return
+        except Exception as e:
+            logger.error(f"Error applying watermark: {e}")
+            bot.reply_to(message, f"❌ Ошибка при нанесении водяного знака: {e}")
             return
 
     if st.get("step") == "waiting_template":
@@ -2829,7 +3385,7 @@ def on_photo(message):
                         return
 
                 if st["template"] in ["MN", "MN2"]:
-                    card = make_card(st["photo_bytes"], st["title"], st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP))
+                    card = make_card(st["photo_bytes"], st["title"], st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP), highlight_phrase=st.get("highlight_phrase", ""))
                 else:
                     card = make_card(st["photo_bytes"], st["title"], st["template"])
                 
@@ -2966,6 +3522,25 @@ def on_document(message):
             bot.reply_to(message, f"❌ Ошибка при улучшении фото: {e}")
         return
 
+    if st.get("step") == "waiting_watermark_photo":
+        try:
+            photo_bytes = tg_file_bytes(doc.file_id)
+
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                return
+
+            processing_msg = bot.reply_to(message, "⏳ Наношу водяной знак...")
+            result = apply_watermark(photo_bytes)
+            bot.send_photo(message.chat.id, photo=result, caption="💧 Водяной знак нанесен!", reply_markup=main_menu_kb())
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+            st["step"] = "idle"
+            user_state[uid] = st
+        except Exception as e:
+            logger.error(f"Error applying watermark: {e}")
+            bot.reply_to(message, f"❌ Ошибка при нанесении водяного знака: {e}")
+        return
+
     try:
         photo_bytes = tg_file_bytes(doc.file_id)
 
@@ -3008,6 +3583,10 @@ def on_text(message):
 
     if text == BTN_ENHANCE or text.lower() in {"улучшить качество", "улучшить фото", "улучшить"}:
         cmd_enhance(message)
+        return
+
+    if text == BTN_WATERMARK or text.lower() in {"водяной знак", "водяной"}:
+        cmd_watermark(message)
         return
 
     step = st.get("step")
@@ -3124,6 +3703,7 @@ def on_text(message):
                 st["video_bytes"],
                 template,
                 title=text,
+                highlight_phrase=st.get("video_highlight", ""),
                 text_position=st.get("video_text_position", TEXT_POSITION_TOP)
             )
             
@@ -3137,6 +3717,7 @@ def on_text(message):
         st.pop("step", None)
         st.pop("video_bytes", None)
         st.pop("video_template", None)
+        st.pop("video_highlight", None)
         st.pop("video_text_position", None)
         user_state[uid] = st
         return
@@ -3157,7 +3738,7 @@ def on_text(message):
         st["title"] = text
         try:
             if st.get("template") in ["MN", "MN2"]:
-                card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), text_position=st.get("text_position", TEXT_POSITION_TOP))
+                card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), text_position=st.get("text_position", TEXT_POSITION_TOP), highlight_phrase=st.get("highlight_phrase", ""))
             elif st.get("template") == "MN_TG":
                 card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN_TG"))
             else:
@@ -3314,9 +3895,6 @@ def cmd_health(message):
 news_publisher = NewsAutoPublisher(bot, AUTO_NEWS_CHAT_ID)
 
 
-# =========================
-# Запуск бота
-# =========================
 # =========================
 # Запуск бота
 # =========================
