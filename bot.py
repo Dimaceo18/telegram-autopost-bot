@@ -159,7 +159,6 @@ def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_NEWS))
     kb.row(KeyboardButton(BTN_GET_NEWS_MANUAL), KeyboardButton(BTN_ENHANCE))
-    kb.row(KeyboardButton("🎥 Видео"), KeyboardButton("🎬 Видео в GIF"))
     kb.row(KeyboardButton(BTN_WATERMARK))
     return kb
 
