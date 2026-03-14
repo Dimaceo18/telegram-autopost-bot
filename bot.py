@@ -12,6 +12,8 @@ import sys
 import functools
 import fcntl
 import atexit
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from io import BytesIO
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta, timezone
@@ -2034,6 +2036,30 @@ class NewsAutoPublisher:
         else:
             self.bot.send_message(chat_id, "✅ Все новости загружены!", reply_markup=main_menu_kb())
 
+# =========================
+# Простой HTTP-сервер для проверки здоровья
+# =========================
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(b"Bot is running! 🤖")
+    
+    def log_message(self, format, *args):
+        # Подавляем логи от этого сервера
+        return
+
+def run_http_server():
+    """Запускает простой HTTP-сервер для проверки здоровья"""
+    try:
+        port = int(os.environ.get('PORT', 10000))
+        server_address = ('0.0.0.0', port)
+        httpd = HTTPServer(server_address, HealthCheckHandler)
+        logger.info(f"🌐 Health check server started on port {port}")
+        httpd.serve_forever()
+    except Exception as e:
+        logger.error(f"Failed to start health check server: {e}")
 
 # =========================
 # Обработчики для новостей
@@ -3292,6 +3318,9 @@ news_publisher = NewsAutoPublisher(bot, AUTO_NEWS_CHAT_ID)
 # =========================
 # Запуск бота
 # =========================
+# =========================
+# Запуск бота
+# =========================
 if __name__ == "__main__":
     logger.info("Starting bot...")
     try:
@@ -3301,10 +3330,15 @@ if __name__ == "__main__":
         if AUTO_NEWS_CHAT_ID:
             news_publisher.start()
         
-        logger.info("Bot started polling...")
+        # Запускаем HTTP-сервер в отдельном потоке
+        http_thread = threading.Thread(target=run_http_server, daemon=True)
+        http_thread.start()
+        logger.info("🌐 Health check server thread started")
+        
+        logger.info("🤖 Bot started polling...")
         bot.infinity_polling(timeout=60, long_polling_timeout=60, logger_level=logging.ERROR)
     except Exception as e:
-        logger.error(f"Bot crashed: {e}")
+        logger.error(f"❌ Bot crashed: {e}")
         if AUTO_NEWS_CHAT_ID and 'news_publisher' in globals():
             news_publisher.stop()
         try:
