@@ -1837,9 +1837,9 @@ def template_kb():
     return kb
 
 
-def video_menu_kb():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
+#def video_menu_kb():
+    #kb = InlineKeyboardMarkup(row_width=2)
+    #kb.add(
         InlineKeyboardButton("🎬 Видео в GIF", callback_data="video:gif"),
         InlineKeyboardButton("📝 Оформить видео", callback_data="video:edit"),
         InlineKeyboardButton("❌ Отмена", callback_data="video:cancel")
@@ -1847,7 +1847,7 @@ def video_menu_kb():
     return kb
 
 
-def video_template_kb():
+#def video_template_kb():
     kb = InlineKeyboardMarkup()
     kb.row(
         InlineKeyboardButton("📰 МН", callback_data="video_tpl:MN"),
@@ -1867,7 +1867,7 @@ def video_template_kb():
     return kb
 
 
-def video_text_position_kb():
+#def video_text_position_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("⬆️ Сверху", callback_data="video_pos:top"),
@@ -2207,29 +2207,29 @@ def cmd_enhance(message):
     )
 
 
-@bot.message_handler(func=lambda message: message.text == "🎥 Видео")
-def cmd_video_menu(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    st["step"] = "video_menu"
-    user_state[uid] = st
-    
-    bot.send_message(message.chat.id, "🎥 Режим работы с видео\n\nВыбери действие:", reply_markup=video_menu_kb())
+# @bot.message_handler(func=lambda message: message.text == "🎥 Видео")
+# def cmd_video_menu(message):
+#     ...
 
+# @bot.message_handler(func=lambda message: message.text == "🎬 Видео в GIF")
+# def cmd_video_to_gif(message):
+#     ...
 
-@bot.message_handler(func=lambda message: message.text == "🎬 Видео в GIF")
-def cmd_video_to_gif(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    st["step"] = "waiting_video_for_gif"
-    user_state[uid] = st
-    
-    bot.send_message(
-        message.chat.id,
-        "🎬 Отправь видео (до 50 MB), и я конвертирую его в GIF.\n\n"
-        "Видео будет обрезано до 10 секунд.",
-        reply_markup=main_menu_kb()
-    )
+# @bot.callback_query_handler(func=lambda c: c.data.startswith("video:"))
+# def on_video_menu_callback(c):
+#     ...
+
+# @bot.callback_query_handler(func=lambda c: c.data.startswith("video_tpl:"))
+# def on_video_template_select(c):
+#     ...
+
+# @bot.callback_query_handler(func=lambda c: c.data.startswith("video_pos:"))
+# def on_video_position_select(c):
+#     ...
+
+# @bot.message_handler(content_types=["video"])
+# def on_video(message):
+#     ...
 
 
 # =========================
