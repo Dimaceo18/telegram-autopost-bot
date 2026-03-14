@@ -32,36 +32,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
-# =========================
-# Logging setup
-# =========================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)  # ← logger теперь определён
-
-# =========================
-# Импорты для видео (с диагностикой)
-# =========================
-try:
-    import numpy as np
-    from moviepy.editor import VideoFileClip
-    logger.info("✅ MoviePy и NumPy успешно импортированы")
-    MOVIEPY_AVAILABLE = True
-except ImportError as e:
-    logger.error(f"❌ Ошибка импорта moviepy или numpy: {e}")
-    logger.error("   Видео-функции будут отключены")
-    MOVIEPY_AVAILABLE = False
-    # Создаём заглушки, чтобы бот мог запуститься
-    np = None
-    VideoFileClip = None
-
-
 # Проверка на единственный экземпляр
 lock_file = '/tmp/bot_instance.lock'
 
@@ -102,6 +72,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# =========================
+# Logging setup
+# =========================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)  # ← logger теперь определён
+
+# =========================
+# Импорты для видео (с диагностикой)
+# =========================
+try:
+    import numpy as np
+    from moviepy.editor import VideoFileClip
+    logger.info("✅ MoviePy и NumPy успешно импортированы")
+    MOVIEPY_AVAILABLE = True
+except ImportError as e:
+    logger.error(f"❌ Ошибка импорта moviepy или numpy: {e}")
+    logger.error("   Видео-функции будут отключены")
+    MOVIEPY_AVAILABLE = False
+    # Создаём заглушки, чтобы бот мог запуститься
+    np = None
+    VideoFileClip = None
 
 # =========================
 # ENV
