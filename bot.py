@@ -2044,12 +2044,11 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/html; charset=utf-8')
         self.end_headers()
-        self.wfile.write(b"Bot is running! 🤖")
+        self.wfile.write("Бот запущен! 🤖".encode('utf-8'))  # ← ИСПРАВЛЕНО
     
     def log_message(self, format, *args):
         # Подавляем логи от этого сервера
         return
-
 def run_http_server():
     """Запускает простой HTTP-сервер для проверки здоровья"""
     try:
