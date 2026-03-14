@@ -13,6 +13,10 @@ import functools
 import fcntl
 import atexit
 import threading
+# Импорты для автоматической выгрузки
+from apscheduler.schedulers.background import BackgroundScheduler  # ← ЭТА СТРОКА ОБЯЗАТЕЛЬНО ДОЛЖНА БЫТЬ!
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from io import BytesIO
 from typing import List, Dict, Optional, Tuple
