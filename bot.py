@@ -29,7 +29,11 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
-# Новые импорты для автоматической выгрузки
+# Импорты для видео
+import numpy as np
+from moviepy.editor import VideoFileClip
+
+# Импорты для автоматической выгрузки
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -105,6 +109,7 @@ if not SUGGEST_URL and BOT_USERNAME:
 
 # Constants
 MAX_FILE_SIZE = 20 * 1024 * 1024
+MAX_VIDEO_SIZE = 50 * 1024 * 1024  # 50 MB
 CACHE_TTL = 3600
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
@@ -114,6 +119,11 @@ FDR_POST_PLATE_HEIGHT_PCT = 0.15
 
 TEXT_POSITION_TOP = "top"
 TEXT_POSITION_BOTTOM = "bottom"
+
+# Константы для видео
+VIDEO_TARGET_SIZE = (750, 938)  # Как у постов
+VIDEO_FPS = 24
+VIDEO_BITRATE = "2000k"
 
 
 # =========================
@@ -128,6 +138,7 @@ def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_NEWS))
     kb.row(KeyboardButton(BTN_GET_NEWS_MANUAL), KeyboardButton(BTN_ENHANCE))
+    kb.row(KeyboardButton("🎥 Видео"), KeyboardButton("🎬 Видео в GIF"))
     return kb
 
 
@@ -207,16 +218,6 @@ NEWS_SOURCES = [
         "exclude_patterns": [r"/about/", r"/projects/", r"/authors?/", r"/news/page/", r"/search/"],
         "limit": 40,
     },
-    # SB.by временно отключен из-за блокировки 403
-    # {
-    #     "id": "sb",
-    #     "name": "SB.by",
-    #     "kind": "html_og",
-    #     "start_urls": ["https://www.sb.by/news/", "https://www.sb.by/articles/"],
-    #     "domain": "www.sb.by",
-    #     "exclude_patterns": [r"/video/", r"/photo/", r"/news/page/", r"/authors?/"],
-    #     "limit": 40,
-    # },
     {
         "id": "minsknews",
         "name": "Minsknews",
@@ -581,152 +582,65 @@ def _extract_dt_from_soup(soup: BeautifulSoup) -> Optional[datetime]:
 
 
 def _extract_article_text_from_soup(soup: BeautifulSoup) -> str:
-    """Извлекает только чистый текст статьи, исключая меню, рекламу, сайдбары, футеры и т.д."""
+    """Извлекает только чистый текст статьи"""
     
     # Удаляем все ненужные элементы
     for tag in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside', 'form', 'button', 'iframe', 'noscript']):
         tag.decompose()
     
-    # Удаляем элементы по классам (реклама, виджеты, комментарии)
+    # Удаляем элементы по классам
     for tag in soup.find_all(class_=re.compile(
-        r'(menu|sidebar|footer|header|comment|widget|banner|ad|social|share|related|popular|tags|copyright|newsletter|subscription|modal|popup|overlay|cookie|recommend|promo|teaser|adv|banner|rating|subscribe)',
+        r'(menu|sidebar|footer|header|comment|widget|banner|ad|social|share|related|popular|tags|copyright|newsletter|subscription|modal|popup|overlay|cookie|recommend|promo|teaser|adv)',
         re.I
     )):
         tag.decompose()
     
-    # Ищем основной контент статьи
+    # Ищем основной контент
     article = None
     
-    # Приоритетные селекторы для разных сайтов
+    # Приоритетные селекторы
     selectors = [
-        # Onliner
-        {'site': 'onliner', 'selector': '.news-text', 'type': 'class'},
-        {'site': 'onliner', 'selector': '.news-description', 'type': 'class'},
-        {'site': 'onliner', 'selector': '.news-header__title', 'type': 'class'},
-        
-        # Mlyn
-        {'site': 'mlyn', 'selector': '.entry-content', 'type': 'class'},
-        {'site': 'mlyn', 'selector': '.post-content', 'type': 'class'},
-        {'site': 'mlyn', 'selector': 'article .entry', 'type': 'class'},
-        
-        # Другие сайты
-        {'site': 'general', 'selector': 'article', 'type': 'tag'},
-        {'site': 'general', 'selector': 'main', 'type': 'tag'},
-        {'site': 'general', 'selector': '.post-content', 'type': 'class'},
-        {'site': 'general', 'selector': '.entry-content', 'type': 'class'},
-        {'site': 'general', 'selector': '.article-content', 'type': 'class'},
-        {'site': 'general', 'selector': '.story-content', 'type': 'class'},
-        {'site': 'general', 'selector': '.news-text', 'type': 'class'},
-        {'site': 'general', 'selector': '.article-text', 'type': 'class'},
-        {'site': 'general', 'selector': '.post-text', 'type': 'class'},
-        {'site': 'general', 'selector': '.entry-text', 'type': 'class'},
-        {'site': 'general', 'selector': '[itemprop="articleBody"]', 'type': 'attr'},
-        {'site': 'general', 'selector': '.article__body', 'type': 'class'},
-        {'site': 'general', 'selector': '.post__body', 'type': 'class'},
-        {'site': 'general', 'selector': '.news__body', 'type': 'class'},
+        {'selector': 'article', 'type': 'tag'},
+        {'selector': 'main', 'type': 'tag'},
+        {'selector': '.post-content', 'type': 'class'},
+        {'selector': '.entry-content', 'type': 'class'},
+        {'selector': '.article-content', 'type': 'class'},
+        {'selector': '.news-text', 'type': 'class'},
+        {'selector': '.article-text', 'type': 'class'},
+        {'selector': '[itemprop="articleBody"]', 'type': 'attr'},
     ]
     
-    # Пробуем найти контент по селекторам
     for sel in selectors:
         if sel['type'] == 'class':
             article = soup.find(class_=re.compile(sel['selector'], re.I))
         elif sel['type'] == 'tag':
             article = soup.find(sel['selector'])
         elif sel['type'] == 'attr':
-            article = soup.find(attrs={sel['selector'].split('=')[0]: sel['selector'].split('=')[1]})
-        
+            article = soup.find(attrs={'itemprop': 'articleBody'})
         if article:
-            logger.info(f"Found article content with selector: {sel['selector']} for site: {sel['site']}")
             break
     
-    # Если ничего не нашли, используем body
     if not article:
         article = soup.body
     
     if not article:
         return ""
     
-    # Специфичная очистка для Onliner
-    if 'onliner' in str(soup).lower():
-        # Удаляем блоки с рекламой и комментариями на Onliner
-        for tag in article.find_all(['div', 'section'], class_=re.compile(r'(banner|ad|comment|social|share)', re.I)):
-            tag.decompose()
-    
-    # Специфичная очистка для Mlyn
-    if 'mlyn' in str(soup).lower():
-        # Удаляем блоки с похожими новостями и тегами
-        for tag in article.find_all(['div', 'section'], class_=re.compile(r'(related|tags|share|social)', re.I)):
-            tag.decompose()
-    
     # Собираем текст из параграфов
     paragraphs = []
-    
-    # Сначала ищем все параграфы
-    for p in article.find_all(['p', 'div'], recursive=True):
-        # Пропускаем элементы, которые явно не являются текстом статьи
-        if p.name == 'div' and not p.find_all(['p']):
-            continue
-            
-        # Получаем текст
+    for p in article.find_all(['p'], recursive=True):
         text = p.get_text(strip=True)
-        if not text:
+        if not text or len(text) < 40:
             continue
         
-        # Фильтруем по длине
-        if len(text) < 40:
-            continue
-        
-        # Проверяем на типичные не-статейные фрагменты
+        # Проверяем на рекламу
         low_text = text.lower()
-        if any(x in low_text for x in [
-            'читайте также', 'смотрите также', 'подпишись', 'подписаться',
-            'реклама', 'источник:', 'фото:', 'видео:', 'смотреть',
-            'поделиться', 'отправить', 'комментировать', 'обсудить',
-            'вконтакте', 'telegram', 'facebook', 'twitter', 'ok.ru',
-            'нажмите', 'перейти', 'узнать больше', 'подробнее',
-            'предложить новость', 'прислать новость', 'подписывайтесь',
-            'следите за новостями', 'все новости по теме',
-            'самое интересное', 'рекомендуем', 'популярное'
-        ]):
+        if any(x in low_text for x in ['читайте также', 'реклама', 'источник:', 'подпишись']):
             continue
-        
-        # Проверяем на наличие множества ссылок (признак навигации)
-        links = p.find_all('a')
-        if links and len(links) > 2:
-            link_text = ''.join(a.get_text(strip=True) for a in links)
-            if len(link_text) > len(text) * 0.3:
-                continue
         
         paragraphs.append(text)
     
-    # Если параграфов мало, пробуем собрать текст из div
-    if len(paragraphs) < 3:
-        for div in article.find_all('div', recursive=True):
-            # Пропускаем div с большим количеством ссылок
-            if len(div.find_all('a')) > 5:
-                continue
-                
-            text = div.get_text(strip=True)
-            if text and len(text) > 200:
-                # Разбиваем на предложения
-                sentences = re.split(r'[.!?]+', text)
-                valid_sentences = [s.strip() for s in sentences if len(s.strip()) > 40]
-                if valid_sentences:
-                    paragraphs = valid_sentences
-                    break
-    
-    # Объединяем параграфы с правильными отступами
-    clean_text = '\n\n'.join(paragraphs)
-    
-    # Финальная очистка
-    # Удаляем множественные переносы строк
-    clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
-    # Удаляем пробелы в начале и конце строк
-    clean_text = re.sub(r'^[ \t]+|[ \t]+$', '', clean_text, flags=re.MULTILINE)
-    # Удаляем пустые строки в начале и конце
-    clean_text = clean_text.strip()
-    
-    return clean_text
+    return '\n\n'.join(paragraphs)
 
 
 def _extract_text_from_soup(soup: BeautifulSoup) -> str:
@@ -905,62 +819,26 @@ def parse_html_og_source(source: Dict, limit: int = 40) -> List[Dict]:
 
 
 def fetch_article_full_text_generic(url: str) -> str:
-    """Получает только чистый текст статьи со страницы"""
+    """Получает только чистый текст статьи"""
     try:
-        # Определяем сайт для специфичной обработки
-        site = None
-        if 'onliner.by' in url:
-            site = 'onliner'
-            timeout = 30
-        elif 'mlyn.by' in url:
-            site = 'mlyn'
-            timeout = 30
-        else:
-            timeout = 45
-        
-        # Добавляем заголовки как у реального браузера
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
             'Referer': 'https://www.google.com/',
-            'DNT': '1',
         }
         
-        # Для Onliner добавляем специфичные заголовки
-        if site == 'onliner':
-            headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        
+        timeout = 45
         r = SESSION.get(url, timeout=timeout, headers=headers)
         r.raise_for_status()
-        
-        # Проверяем кодировку
-        if r.encoding:
-            r.encoding = 'utf-8'
         
         page_html = r.text
         
         if not page_html or len(page_html) < 500:
-            logger.warning(f"Too short content from {url}")
             return ""
         
-        # Пробуем разные парсеры
-        try:
-            soup = BeautifulSoup(page_html, "lxml")
-        except:
-            try:
-                soup = BeautifulSoup(page_html, "html.parser")
-            except:
-                soup = BeautifulSoup(page_html, "html5lib")
-        
-        # Извлекаем текст
-        clean_text = _extract_article_text_from_soup(soup)
-        
-        # Если текст слишком короткий, логируем предупреждение
-        if len(clean_text) < 200:
-            logger.warning(f"Extracted text too short ({len(clean_text)} chars) from {url}")
-        
-        return clean_text
+        soup = BeautifulSoup(page_html, "lxml")
+        return _extract_article_text_from_soup(soup)
         
     except Exception as e:
         logger.error(f"Failed to fetch article text from {url}: {e}")
@@ -977,41 +855,30 @@ def _clean_text(text: str) -> str:
 # Кнопки для выбора источников новостей
 # =========================
 
-# Словарь с названиями источников для отображения
 SOURCE_NAMES = {
     "onliner": "Onliner",
     "sputnik": "Sputnik",
     "telegraf": "Telegraf",
     "tochka": "Tochka",
     "smartpress": "Smartpress",
-    # "sb": "SB.by",  # Временно отключено
     "minsknews": "Minsknews",
     "mlyn": "Mlyn",
     "ont": "ONT"
 }
 
 def news_sources_kb():
-    """Клавиатура для выбора источников новостей"""
     kb = InlineKeyboardMarkup(row_width=2)
-    
-    # Добавляем кнопки для каждого источника
     buttons = []
     for source_id, source_name in SOURCE_NAMES.items():
         buttons.append(InlineKeyboardButton(source_name, callback_data=f"src:{source_id}"))
-    
-    # Добавляем кнопки в клавиатуру (по 2 в ряд)
     kb.add(*buttons)
-    
-    # Добавляем кнопки для всех источников и отмены
     kb.row(
         InlineKeyboardButton("🌐 Собрать везде", callback_data="src:all"),
         InlineKeyboardButton("❌ Отмена", callback_data="src:cancel")
     )
-    
     return kb
 
 def save_sources_kb():
-    """Клавиатура для сохранения выбранных источников"""
     kb = InlineKeyboardMarkup()
     kb.row(
         InlineKeyboardButton("✅ Сохранить выбор", callback_data="src:save"),
@@ -1027,15 +894,12 @@ def save_sources_kb():
 # Функция для сбора новостей из выбранных источников
 # =========================
 def fetch_news_from_sources(source_ids: List[str]) -> List[Dict]:
-    """Собирает новости только из указанных источников"""
     merged: List[Dict] = []
     by_url = set()
     
-    # Фильтруем источники по выбранным ID
     selected_sources = [src for src in NEWS_SOURCES if src["id"] in source_ids]
     
     if not selected_sources:
-        logger.warning("No sources selected, using all sources")
         selected_sources = NEWS_SOURCES
     
     for src in selected_sources:
@@ -1061,7 +925,6 @@ def fetch_news_from_sources(source_ids: List[str]) -> List[Dict]:
             it["_dt"] = dt
             merged.append(it)
 
-    # Фильтруем по времени и сортируем
     last24 = [it for it in merged if is_last_24h(it.get("_dt"))]
     nodt = [it for it in merged if it.get("_dt") is None]
     base = last24 if len(last24) >= 10 else (last24 + nodt)
@@ -1071,7 +934,6 @@ def fetch_news_from_sources(source_ids: List[str]) -> List[Dict]:
         reverse=True
     )
 
-    # Ограничиваем количество с одного источника
     counts = {}
     diversified = []
     for it in base:
@@ -1082,17 +944,10 @@ def fetch_news_from_sources(source_ids: List[str]) -> List[Dict]:
         counts[src_name] += 1
         diversified.append(it)
 
-    if len(diversified) < 80:
-        for it in base:
-            if it in diversified:
-                continue
-            diversified.append(it)
-
     return diversified
 
 
 def fetch_all_news_last24h() -> List[Dict]:
-    """Собирает новости со всех источников"""
     return fetch_news_from_sources(list(SOURCE_NAMES.keys()))
 
 
@@ -1102,19 +957,17 @@ def fetch_all_news_last24h() -> List[Dict]:
 RU_STOP = {
     "и", "в", "во", "на", "но", "а", "что", "это", "как", "к", "по", "из", "за", "для", "с", "со", "у", "от", "до",
     "при", "без", "над", "под", "же", "ли", "то", "не", "ни", "да", "нет", "уже", "еще", "ещё", "там", "тут",
-    "снова", "будет", "начнут", "начал", "началась", "начался", "начали", "может", "могут", "нужно", "надо"
 }
 
 CATEGORY_RULES = [
-    ("🚨", ["дтп", "авар", "пожар", "взрыв", "происшеств", "чп", "полици", "милици", "ранен", "пострад"]),
-    ("✈️", ["белавиа", "рейс", "аэропорт", "самолет", "самолёт", "полет", "полёт", "оаэ", "дуба", "ави"]),
-    ("🚇", ["метро", "станци", "маршрут", "автобус", "троллейбус", "трамвай", "дорог", "пробк"]),
-    ("💳", ["банк", "технобанк", "карта", "налог", "tax free", "global blue", "выплат", "платеж", "платёж"]),
-    ("🏷️", ["скидк", "распрод", "акци", "дешев", "бесплат", "купон", "sale", "%"]),
-    ("🎫", ["концерт", "афиша", "выставк", "фестиваль", "событи", "матч", "театр", "кино"]),
-    ("🌦️", ["погод", "шторм", "ветер", "снег", "дожд", "мороз", "жара"]),
-    ("🏥", ["больниц", "врач", "здоров", "вакцин", "грипп", "ковид", "covid"]),
-    ("🏛️", ["власт", "закон", "указ", "постанов", "министер", "исполком"]),
+    ("🚨", ["дтп", "авар", "пожар", "взрыв", "происшеств", "чп", "полици", "милици"]),
+    ("✈️", ["белавиа", "рейс", "аэропорт", "самолет", "полет"]),
+    ("🚇", ["метро", "станци", "маршрут", "автобус", "троллейбус", "трамвай"]),
+    ("💳", ["банк", "технобанк", "карта", "налог", "выплат"]),
+    ("🏷️", ["скидк", "распрод", "акци", "дешев", "бесплат"]),
+    ("🎫", ["концерт", "афиша", "выставк", "фестиваль"]),
+    ("🌦️", ["погод", "шторм", "ветер", "снег", "дожд"]),
+    ("🏥", ["больниц", "врач", "здоров", "вакцин"]),
 ]
 
 
@@ -1135,10 +988,9 @@ def pick_keywords(title: str, body: str, max_words: int = 6):
     candidates = []
     for w in words:
         wl = w.strip().lower()
-        if wl in RU_STOP:
+        if wl in RU_STOP or len(wl) < 7:
             continue
-        if len(wl) >= 7:
-            candidates.append(wl)
+        candidates.append(wl)
 
     seen, out = set(), []
     for w in nums + candidates:
@@ -1175,20 +1027,13 @@ def build_caption_html(title: str, body: str) -> str:
 
 
 def build_caption_tg(full_text: str) -> str:
-    """
-    Формирует подпись для Telegram, где первый абзац становится жирным заголовком
-    """
-    # Разбиваем текст на абзацы
     paragraphs = full_text.strip().split('\n\n')
-    
     if not paragraphs:
         return ""
     
-    # Первый абзац - заголовок
     title = paragraphs[0].strip()
     title_safe = html.escape(title)
     
-    # Остальной текст
     body_parts = []
     for p in paragraphs[1:]:
         if p.strip():
@@ -1196,17 +1041,13 @@ def build_caption_tg(full_text: str) -> str:
     
     body_text = '\n\n'.join(body_parts) if body_parts else ""
     
-    # Ссылки в конце
     links = (
         "\n\n"
         "🔗 <a href='https://t.me/vestiminska'>Все новости Минска</a>\n"
         "📝 <a href='https://t.me/prishlinews_bot'>Прислать новость</a>"
     )
     
-    if body_text:
-        return f"<b>{title_safe}</b>\n\n{body_text}{links}"
-    else:
-        return f"<b>{title_safe}</b>{links}"
+    return f"<b>{title_safe}</b>\n\n{body_text}{links}"
 
 
 # =========================
@@ -1225,17 +1066,9 @@ def tg_file_bytes(file_id: str) -> bytes:
 
 
 # =========================
-# Улучшенная функция для повышения качества изображения
+# Улучшение качества изображения
 # =========================
 def enhance_image_quality(image_bytes: bytes) -> BytesIO:
-    """
-    Улучшает качество изображения с расширенными параметрами:
-    - Увеличивает резкость на 30%
-    - Увеличивает насыщенность на 20%
-    - Увеличивает контрастность на 20%
-    - Добавляет легкое сглаживание шумов
-    - Оптимизирует яркость и цветовой баланс
-    """
     try:
         img = Image.open(BytesIO(image_bytes)).convert("RGB")
         img = img.filter(ImageFilter.SMOOTH_MORE)
@@ -1248,7 +1081,7 @@ def enhance_image_quality(image_bytes: bytes) -> BytesIO:
         enhancer_brightness = ImageEnhance.Brightness(img)
         img = enhancer_brightness.enhance(1.05)
         output = BytesIO()
-        img.save(output, format="JPEG", quality=98, optimize=True, subsampling=0)
+        img.save(output, format="JPEG", quality=98, optimize=True)
         output.seek(0)
         return output
     except Exception as e:
@@ -1257,14 +1090,6 @@ def enhance_image_quality(image_bytes: bytes) -> BytesIO:
 
 
 def enhance_image_quality_pro(image_bytes: bytes) -> BytesIO:
-    """
-    Профессиональное улучшение качества изображения:
-    - Увеличивает резкость на 40%
-    - Увеличивает насыщенность на 25%
-    - Увеличивает контрастность на 25%
-    - Добавляет HDR-эффект
-    - Убирает шумы
-    """
     try:
         img = Image.open(BytesIO(image_bytes)).convert("RGB")
         img = img.filter(ImageFilter.MedianFilter(size=3))
@@ -1278,7 +1103,7 @@ def enhance_image_quality_pro(image_bytes: bytes) -> BytesIO:
         enhancer_brightness = ImageEnhance.Brightness(img)
         img = enhancer_brightness.enhance(1.03)
         output = BytesIO()
-        img.save(output, format="JPEG", quality=98, optimize=True, subsampling=0)
+        img.save(output, format="JPEG", quality=98, optimize=True)
         output.seek(0)
         return output
     except Exception as e:
@@ -1287,12 +1112,9 @@ def enhance_image_quality_pro(image_bytes: bytes) -> BytesIO:
 
 
 # =========================
-# Функции для создания градиента
+# Функции для градиентов
 # =========================
 def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 165) -> Image.Image:
-    """
-    Применяет градиент сверху вниз (для текста внизу)
-    """
     w, h = img.size
     gh = int(h * height_pct)
     if gh <= 0:
@@ -1335,9 +1157,6 @@ def apply_bottom_gradient(img: Image.Image, height_pct: float, max_alpha: int = 
 
 
 def apply_bottom_gradient_soft(img: Image.Image, height_pct: float, max_alpha: int = 165) -> Image.Image:
-    """
-    Применяет мягкий градиент снизу вверх
-    """
     w, h = img.size
     gh = int(h * height_pct)
     if gh <= 0:
@@ -1474,14 +1293,12 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-
     img = ImageEnhance.Brightness(img).enhance(0.55)
     draw = ImageDraw.Draw(img)
 
     margin_x = int(img.width * 0.06)
     margin_top = int(img.height * 0.06)
     margin_bottom = int(img.height * 0.07)
-
     safe_w = img.width - 2 * margin_x
 
     footer_size = max(24, int(img.height * 0.034))
@@ -1533,23 +1350,16 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
 
 
 def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
-    """
-    Шаблон МН 2 - как МН, но с мягким градиентом (75% от ЧП ВМ)
-    """
     ensure_fonts()
 
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-
     img = ImageEnhance.Brightness(img).enhance(0.55)
     
-    # Увеличиваем непрозрачность градиента (было 110, стало 165 - 75% от 220)
     if text_position == TEXT_POSITION_TOP:
-        # Текст сверху - градиент сверху вниз
         img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
     else:
-        # Текст снизу - градиент снизу вверх
         img = apply_bottom_gradient_soft(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
     
     draw = ImageDraw.Draw(img)
@@ -1557,7 +1367,6 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     margin_x = int(img.width * 0.06)
     margin_top = int(img.height * 0.06)
     margin_bottom = int(img.height * 0.07)
-
     safe_w = img.width - 2 * margin_x
 
     footer_size = max(24, int(img.height * 0.034))
@@ -1614,7 +1423,6 @@ def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-
     img = ImageEnhance.Brightness(img).enhance(0.85)
     img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
     draw = ImageDraw.Draw(img)
@@ -1730,18 +1538,15 @@ def save_jpeg_to_bytes(im: Image.Image, quality: int = 92) -> BytesIO:
 
 def _wrap_text_preserve_paragraphs(draw, text, font, max_w):
     paragraphs = [p.strip() for p in (text or "").replace("\r", "\n").split("\n")]
-
     all_lines = []
-    for i, p in enumerate(paragraphs):
+    for p in paragraphs:
         if not p:
             if all_lines and all_lines[-1] != "":
                 all_lines.append("")
             continue
-
         words = p.split()
         if not words:
             continue
-
         current = words[0]
         for word in words[1:]:
             test = current + " " + word
@@ -1752,27 +1557,14 @@ def _wrap_text_preserve_paragraphs(draw, text, font, max_w):
                 all_lines.append(current)
                 current = word
         all_lines.append(current)
-
-        if i < len(paragraphs) - 1:
-            all_lines.append("")
-
+        all_lines.append("")
     while all_lines and all_lines[-1] == "":
         all_lines.pop()
-
     return all_lines
 
 
-def _draw_story_text(
-    draw,
-    text,
-    box,
-    font,
-    fill=(255, 255, 255),
-    align="center",
-    valign="center",
-    line_gap=10,
-    paragraph_gap_extra=10
-):
+def _draw_story_text(draw, text, box, font, fill=(255, 255, 255), align="center", valign="center",
+                     line_gap=10, paragraph_gap_extra=10):
     x1, y1, x2, y2 = box
     max_w = x2 - x1
     max_h = y2 - y1
@@ -1781,53 +1573,35 @@ def _draw_story_text(
     if not lines:
         return
 
-    bbox = draw.textbbox((0, 0), "Ag", font=font)
-    line_h = bbox[3] - bbox[1]
-
+    line_h = font.getbbox("Ag")[3] - font.getbbox("Ag")[1]
     total_h = 0
-    for idx, line in enumerate(lines):
+    for line in lines:
         if line == "":
-            total_h += line_gap + paragraph_gap_extra
+            total_h += paragraph_gap_extra
         else:
-            total_h += line_h
-            if idx < len(lines) - 1:
-                total_h += line_gap
+            total_h += line_h + line_gap
 
     if valign == "top":
         y = y1
     else:
-        y = y1 + max(0, (max_h - total_h) // 2)
+        y = y1 + (max_h - total_h) // 2
 
-    for idx, line in enumerate(lines):
+    for line in lines:
         if line == "":
             y += paragraph_gap_extra
             continue
-
-        line_bbox = draw.textbbox((0, 0), line, font=font)
-        line_w = line_bbox[2] - line_bbox[0]
-
+        line_w = font.getbbox(line)[2] - font.getbbox(line)[0]
         if align == "center":
             x = x1 + (max_w - line_w) // 2
         elif align == "left":
             x = x1
         else:
             x = x2 - line_w
-
         draw.text((x, y), line, font=font, fill=fill)
-        y += line_h
-        if idx < len(lines) - 1:
-            y += line_gap
+        y += line_h + line_gap
 
 
-def _fit_story_text(
-    draw,
-    text,
-    box,
-    min_size,
-    max_size,
-    line_gap_ratio=0.18,
-    paragraph_gap_ratio=0.35
-):
+def _fit_story_text(draw, text, box, min_size, max_size, line_gap_ratio=0.18, paragraph_gap_ratio=0.35):
     x1, y1, x2, y2 = box
     max_w = x2 - x1
     max_h = y2 - y1
@@ -1842,26 +1616,19 @@ def _fit_story_text(
         if not lines:
             continue
 
-        bbox = draw.textbbox((0, 0), "Ag", font=font)
-        line_h = bbox[3] - bbox[1]
+        line_h = font.getbbox("Ag")[3] - font.getbbox("Ag")[1]
         gap = max(4, int(line_h * line_gap_ratio))
         paragraph_gap = max(gap + 2, int(line_h * paragraph_gap_ratio))
 
         total_h = 0
         max_line_w = 0
-
-        for idx, line in enumerate(lines):
+        for line in lines:
             if line == "":
                 total_h += paragraph_gap
                 continue
-
-            lb = draw.textbbox((0, 0), line, font=font)
-            lw = lb[2] - lb[0]
+            lw = font.getbbox(line)[2] - font.getbbox(line)[0]
             max_line_w = max(max_line_w, lw)
-
-            total_h += line_h
-            if idx < len(lines) - 1:
-                total_h += gap
+            total_h += line_h + gap
 
         if total_h <= max_h and max_line_w <= max_w:
             selected_font = font
@@ -1892,75 +1659,33 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
 
     padding = 34
 
-    header_box = (
-        padding,
-        photo_h + padding,
-        STORY_W - padding,
-        photo_h + header_h - padding
-    )
-
-    body_box = (
-        padding,
-        photo_h + header_h + padding,
-        STORY_W - padding,
-        STORY_H - padding
-    )
+    header_box = (padding, photo_h + padding, STORY_W - padding, photo_h + header_h - padding)
+    body_box = (padding, photo_h + header_h + padding, STORY_W - padding, STORY_H - padding)
 
     title_font, title_gap, title_paragraph_gap = _fit_story_text(
-        draw,
-        title,
-        header_box,
-        min_size=28,
-        max_size=54,
-        line_gap_ratio=0.08,
-        paragraph_gap_ratio=0.18
+        draw, title, header_box, min_size=28, max_size=54,
+        line_gap_ratio=0.08, paragraph_gap_ratio=0.18
     )
 
-    _draw_story_text(
-        draw,
-        title,
-        header_box,
-        title_font,
-        fill=(255, 255, 255),
-        align="center",
-        valign="center",
-        line_gap=title_gap,
-        paragraph_gap_extra=title_paragraph_gap
-    )
+    _draw_story_text(draw, title, header_box, title_font, fill=(255, 255, 255),
+                     align="center", valign="center", line_gap=title_gap,
+                     paragraph_gap_extra=title_paragraph_gap)
 
     body_font, body_gap, body_paragraph_gap = _fit_story_text(
-        draw,
-        body_text,
-        body_box,
-        min_size=14,
-        max_size=30,
-        line_gap_ratio=0.10,
-        paragraph_gap_ratio=0.32
+        draw, body_text, body_box, min_size=14, max_size=30,
+        line_gap_ratio=0.10, paragraph_gap_ratio=0.32
     )
 
-    _draw_story_text(
-        draw,
-        body_text,
-        body_box,
-        body_font,
-        fill=(255, 255, 255),
-        align="left",
-        valign="top",
-        line_gap=body_gap,
-        paragraph_gap_extra=body_paragraph_gap
-    )
+    _draw_story_text(draw, body_text, body_box, body_font, fill=(255, 255, 255),
+                     align="left", valign="top", line_gap=body_gap,
+                     paragraph_gap_extra=body_paragraph_gap)
 
     return save_jpeg_to_bytes(canvas)
 
 
 def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: str) -> BytesIO:
-    """
-    Шаблон "Пост ФДР" - как ЧП ВМ, но с выделением слов в заголовке фиолетовой плашкой
-    Плашка точно под размер текста с равными отступами
-    """
     ensure_fonts()
 
-    # Базовая обработка фото как в ЧП ВМ
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
@@ -1969,23 +1694,16 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     
     draw = ImageDraw.Draw(img)
     
-    # Рассчитываем размеры как в ЧП ВМ
     margin_x = int(img.width * 0.06)
     margin_bottom = int(img.height * 0.08)
     safe_w = img.width - 2 * margin_x
     
-    # Подготавливаем текст
     title_text_upper = title_text.strip().upper()
     highlight_phrase_upper = highlight_phrase.strip().upper()
-    
-    # Разбиваем фразу для выделения на отдельные слова
     highlight_words = set(highlight_phrase_upper.split())
-    logger.info(f"Words to highlight: {highlight_words}")
     
-    # Используем ту же логику что и в ЧП ВМ для размера шрифта
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     
-    # Подбираем шрифт как в ЧП ВМ
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw,
         text=title_text_upper,
@@ -1998,38 +1716,26 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
         line_spacing_ratio=0.22
     )
     
-    # Размещаем текст внизу как в ЧП ВМ
     base_y = img.height - margin_bottom - total_h
     
-    # Сначала рисуем плашки (нижний слой)
+    # Рисуем плашки
     y = base_y
     for line_idx, line in enumerate(lines):
         line_words = line.split()
         current_x = margin_x
         
         for word in line_words:
-            # Получаем точные границы слова
             word_bbox = draw.textbbox((current_x, y), word, font=font)
             word_x1, word_y1, word_x2, word_y2 = word_bbox
             
-            # Проверяем, нужно ли выделить это слово
             if word in highlight_words:
-                # Отступы со всех сторон (одинаковые)
                 padding = 10
-                
-                # Координаты плашки с равными отступами
-                plate_x1 = word_x1 - padding
-                plate_y1 = word_y1 - padding
-                plate_x2 = word_x2 + padding
-                plate_y2 = word_y2 + padding
-                
-                # Рисуем фиолетовую плашку
                 draw.rectangle(
-                    [plate_x1, plate_y1, plate_x2, plate_y2],
+                    [word_x1 - padding, word_y1 - padding,
+                     word_x2 + padding, word_y2 + padding],
                     fill=FDR_POST_PURPLE_COLOR
                 )
             
-            # Добавляем пробел после слова (кроме последнего)
             if word != line_words[-1]:
                 space_width = text_width(draw, " ", font)
                 current_x += text_width(draw, word, font) + space_width
@@ -2038,17 +1744,14 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
         
         y += heights[line_idx] + spacing
     
-    # Рисуем ВЕСЬ текст поверх плашек (верхний слой)
+    # Рисуем текст
     y = base_y
     for line_idx, line in enumerate(lines):
         line_words = line.split()
         current_x = margin_x
         
         for word in line_words:
-            # Рисуем слово белым
             draw.text((current_x, y), word, font=font, fill="white")
-            
-            # Добавляем пробел после слова (кроме последнего)
             if word != line_words[-1]:
                 space_width = text_width(draw, " ", font)
                 current_x += text_width(draw, word, font) + space_width
@@ -2064,40 +1767,26 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
 
 
 def make_card_mn_tg(photo_bytes: bytes, title_text: str) -> BytesIO:
-    """
-    Шаблон "МН ТГ" - фото с полупрозрачной надписью MINSK NEWS
-    Водяной знак уменьшен на 20% (8% от ширины)
-    """
     ensure_fonts()
 
-    # Открываем и обрабатываем фото
     img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
     
-    # Создаем копию для наложения
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     
-    # Рассчитываем размер шрифта (8% от ширины изображения)
     font_size = int(img.width * 0.08)
     font = ImageFont.truetype(FONT_MN, font_size)
     
-    # Получаем размеры текста
     text_bbox = draw.textbbox((0, 0), FOOTER_TEXT, font=font)
     text_width = text_bbox[2] - text_bbox[0]
     text_height = text_bbox[3] - text_bbox[1]
     
-    # Рассчитываем позицию (20% от верхней границы, по центру)
     x = (img.width - text_width) // 2
     y = int(img.height * 0.2) - (text_height // 2)
     
-    # Рисуем текст белым с прозрачностью 15%
-    # 15% прозрачность = 38 из 255
     draw.text((x, y), FOOTER_TEXT, font=font, fill=(255, 255, 255, 38))
     
-    # Накладываем текст на изображение
     result = Image.alpha_composite(img, overlay)
-    
-    # Конвертируем обратно в RGB для сохранения в JPEG
     result = result.convert("RGB")
     
     out = BytesIO()
@@ -2123,6 +1812,393 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
 
 
 # =========================
+# Функции для обработки видео
+# =========================
+def apply_mn_style_to_frame(frame: np.ndarray, text: str, text_position: str = TEXT_POSITION_TOP) -> np.ndarray:
+    img = Image.fromarray(frame).convert("RGB")
+    img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(0.55)
+    
+    draw = ImageDraw.Draw(img)
+    
+    margin_x = int(img.width * 0.06)
+    margin_top = int(img.height * 0.06)
+    margin_bottom = int(img.height * 0.07)
+    safe_w = img.width - 2 * margin_x
+    
+    text_upper = text.strip().upper()
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+    
+    font, lines, heights, spacing, total_text_height = fit_text_block(
+        draw=draw,
+        text=text_upper,
+        font_path=FONT_MN,
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(img.height * 0.11),
+        min_size=16,
+        line_spacing_ratio=0.22
+    )
+    
+    footer_size = max(24, int(img.height * 0.034))
+    footer_font = ImageFont.truetype(FONT_MN, footer_size)
+    fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
+    footer_w = fb[2] - fb[0]
+    footer_h = fb[3] - fb[1]
+    
+    block_w = 0
+    for ln in lines:
+        block_w = max(block_w, text_width(draw, ln, font))
+    block_x = (img.width - block_w) // 2
+    block_x = max(margin_x, block_x)
+    
+    if text_position == TEXT_POSITION_TOP:
+        title_y = margin_top
+        footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
+    else:
+        title_y = img.height - margin_bottom - total_text_height - 10
+        footer_y = 10
+    
+    y = title_y
+    for i, ln in enumerate(lines):
+        draw.text((block_x, y), ln, font=font, fill="white")
+        y += heights[i] + spacing
+    
+    footer_x = (img.width - footer_w) // 2
+    draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
+    
+    return np.array(img)
+
+
+def apply_chp_style_to_frame(frame: np.ndarray, text: str) -> np.ndarray:
+    img = Image.fromarray(frame).convert("RGB")
+    img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(0.85)
+    img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+    
+    draw = ImageDraw.Draw(img)
+    
+    margin_x = int(img.width * 0.06)
+    margin_bottom = int(img.height * 0.08)
+    safe_w = img.width - 2 * margin_x
+    
+    text_upper = text.strip().upper()
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+    
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw,
+        text=text_upper,
+        font_path=FONT_CHP,
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(img.height * 0.11),
+        min_size=16,
+        line_spacing_ratio=0.22
+    )
+    
+    y = img.height - margin_bottom - total_h
+    for i, ln in enumerate(lines):
+        draw.text((margin_x, y), ln, font=font, fill="white")
+        y += heights[i] + spacing
+    
+    return np.array(img)
+
+
+def apply_am_style_to_frame(frame: np.ndarray, text: str) -> np.ndarray:
+    img = Image.fromarray(frame).convert("RGB")
+    img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
+    img = apply_top_blur_band(img)
+    
+    draw = ImageDraw.Draw(img)
+    
+    margin_x = int(img.width * 0.055)
+    band_h = int(img.height * AM_TOP_BLUR_PCT)
+    safe_w = img.width - 2 * margin_x
+    
+    text_upper = text.strip().upper()
+    text_zone_top = int(band_h * 0.12)
+    text_zone_bottom = int(band_h * 0.12)
+    text_zone_h = max(1, band_h - text_zone_top - text_zone_bottom)
+    
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw,
+        text=text_upper,
+        font_path=FONT_AM,
+        safe_w=safe_w,
+        max_block_h=text_zone_h,
+        max_lines=3,
+        start_size=int(img.height * 0.060),
+        min_size=20,
+        line_spacing_ratio=0.16
+    )
+    
+    y = text_zone_top + max(0, (text_zone_h - total_h) // 2)
+    for i, ln in enumerate(lines):
+        lw = text_width(draw, ln, font)
+        x = (img.width - lw) // 2
+        draw.text((x, y), ln, font=font, fill="white")
+        y += heights[i] + spacing
+    
+    return np.array(img)
+
+
+def apply_fdr_post_style_to_frame(frame: np.ndarray, text: str, highlight_phrase: str) -> np.ndarray:
+    img = Image.fromarray(frame).convert("RGB")
+    img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(0.85)
+    img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+    
+    draw = ImageDraw.Draw(img)
+    
+    margin_x = int(img.width * 0.06)
+    margin_bottom = int(img.height * 0.08)
+    safe_w = img.width - 2 * margin_x
+    
+    text_upper = text.strip().upper()
+    highlight_upper = highlight_phrase.strip().upper()
+    highlight_words = set(highlight_upper.split())
+    
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+    
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw,
+        text=text_upper,
+        font_path=FONT_CHP,
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(img.height * 0.11),
+        min_size=16,
+        line_spacing_ratio=0.22
+    )
+    
+    base_y = img.height - margin_bottom - total_h
+    
+    # Рисуем плашки
+    y = base_y
+    for line_idx, line in enumerate(lines):
+        line_words = line.split()
+        current_x = margin_x
+        
+        for word in line_words:
+            word_bbox = draw.textbbox((current_x, y), word, font=font)
+            word_x1, word_y1, word_x2, word_y2 = word_bbox
+            
+            if word in highlight_words:
+                padding = 10
+                draw.rectangle(
+                    [word_x1 - padding, word_y1 - padding,
+                     word_x2 + padding, word_y2 + padding],
+                    fill=FDR_POST_PURPLE_COLOR
+                )
+            
+            if word != line_words[-1]:
+                space_width = text_width(draw, " ", font)
+                current_x += text_width(draw, word, font) + space_width
+            else:
+                current_x += text_width(draw, word, font)
+        
+        y += heights[line_idx] + spacing
+    
+    # Рисуем текст
+    y = base_y
+    for line_idx, line in enumerate(lines):
+        line_words = line.split()
+        current_x = margin_x
+        
+        for word in line_words:
+            draw.text((current_x, y), word, font=font, fill="white")
+            if word != line_words[-1]:
+                space_width = text_width(draw, " ", font)
+                current_x += text_width(draw, word, font) + space_width
+            else:
+                current_x += text_width(draw, word, font)
+        
+        y += heights[line_idx] + spacing
+    
+    return np.array(img)
+
+
+def apply_mn_tg_style_to_frame(frame: np.ndarray) -> np.ndarray:
+    img = Image.fromarray(frame).convert("RGBA")
+    
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    font_size = int(img.width * 0.08)
+    font = ImageFont.truetype(FONT_MN, font_size)
+    
+    text_bbox = draw.textbbox((0, 0), FOOTER_TEXT, font=font)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
+    
+    x = (img.width - text_width) // 2
+    y = int(img.height * 0.2) - (text_height // 2)
+    
+    draw.text((x, y), FOOTER_TEXT, font=font, fill=(255, 255, 255, 38))
+    
+    result = Image.alpha_composite(img, overlay)
+    return np.array(result.convert("RGB"))
+
+
+def apply_mn2_style_to_frame(frame: np.ndarray, text: str, text_position: str = TEXT_POSITION_TOP) -> np.ndarray:
+    img = Image.fromarray(frame).convert("RGB")
+    img = img.resize(VIDEO_TARGET_SIZE, Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(0.55)
+    
+    if text_position == TEXT_POSITION_TOP:
+        img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
+    else:
+        img = apply_bottom_gradient_soft(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
+    
+    draw = ImageDraw.Draw(img)
+    
+    margin_x = int(img.width * 0.06)
+    margin_top = int(img.height * 0.06)
+    margin_bottom = int(img.height * 0.07)
+    safe_w = img.width - 2 * margin_x
+    
+    text_upper = text.strip().upper()
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+    
+    font, lines, heights, spacing, total_text_height = fit_text_block(
+        draw=draw,
+        text=text_upper,
+        font_path=FONT_MN,
+        safe_w=safe_w,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(img.height * 0.11),
+        min_size=16,
+        line_spacing_ratio=0.22
+    )
+    
+    footer_size = max(24, int(img.height * 0.034))
+    footer_font = ImageFont.truetype(FONT_MN, footer_size)
+    fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
+    footer_w = fb[2] - fb[0]
+    footer_h = fb[3] - fb[1]
+    
+    block_w = 0
+    for ln in lines:
+        block_w = max(block_w, text_width(draw, ln, font))
+    block_x = (img.width - block_w) // 2
+    block_x = max(margin_x, block_x)
+    
+    if text_position == TEXT_POSITION_TOP:
+        title_y = margin_top
+        footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
+    else:
+        title_y = img.height - margin_bottom - total_text_height - 10
+        footer_y = 10
+    
+    y = title_y
+    for i, ln in enumerate(lines):
+        draw.text((block_x, y), ln, font=font, fill="white")
+        y += heights[i] + spacing
+    
+    footer_x = (img.width - footer_w) // 2
+    draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
+    
+    return np.array(img)
+
+
+def convert_video_to_gif(video_bytes: bytes, max_duration: int = 10, fps: int = 10) -> BytesIO:
+    try:
+        temp_input = "temp_video.mp4"
+        temp_output = "temp_output.gif"
+        
+        with open(temp_input, 'wb') as f:
+            f.write(video_bytes)
+        
+        clip = VideoFileClip(temp_input)
+        
+        if clip.duration > max_duration:
+            clip = clip.subclip(0, max_duration)
+        
+        clip = clip.resize(height=360)
+        clip.write_gif(temp_output, fps=fps, program='ffmpeg')
+        
+        with open(temp_output, 'rb') as f:
+            gif_bytes = BytesIO(f.read())
+        
+        clip.close()
+        os.remove(temp_input)
+        os.remove(temp_output)
+        
+        gif_bytes.seek(0)
+        return gif_bytes
+        
+    except Exception as e:
+        logger.error(f"Error converting video to GIF: {e}")
+        raise
+
+
+def process_video_with_template(
+    input_video: bytes,
+    template: str,
+    title: str = "",
+    highlight_phrase: str = "",
+    text_position: str = TEXT_POSITION_TOP
+) -> BytesIO:
+    try:
+        temp_input = "temp_input.mp4"
+        temp_output = "temp_output.mp4"
+        
+        with open(temp_input, 'wb') as f:
+            f.write(input_video)
+        
+        clip = VideoFileClip(temp_input)
+        
+        if template == "MN":
+            process_func = lambda f: apply_mn_style_to_frame(f, title, text_position)
+        elif template == "CHP":
+            process_func = lambda f: apply_chp_style_to_frame(f, title)
+        elif template == "AM":
+            process_func = lambda f: apply_am_style_to_frame(f, title)
+        elif template == "FDR_POST":
+            process_func = lambda f: apply_fdr_post_style_to_frame(f, title, highlight_phrase)
+        elif template == "MN_TG":
+            process_func = apply_mn_tg_style_to_frame
+        elif template == "MN2":
+            process_func = lambda f: apply_mn2_style_to_frame(f, title, text_position)
+        else:
+            process_func = lambda f: apply_mn_style_to_frame(f, title, text_position)
+        
+        processed_clip = clip.fl_image(process_func)
+        
+        if clip.audio:
+            processed_clip = processed_clip.set_audio(clip.audio)
+        
+        processed_clip.write_videofile(
+            temp_output,
+            codec='libx264',
+            audio_codec='aac',
+            fps=VIDEO_FPS,
+            bitrate=VIDEO_BITRATE,
+            threads=4,
+            preset='medium'
+        )
+        
+        with open(temp_output, 'rb') as f:
+            result = BytesIO(f.read())
+        
+        clip.close()
+        processed_clip.close()
+        os.remove(temp_input)
+        os.remove(temp_output)
+        
+        result.seek(0)
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error processing video with template {template}: {e}")
+        raise
+
+
+# =========================
 # Keyboards
 # =========================
 def template_kb():
@@ -2141,6 +2217,48 @@ def template_kb():
     )
     kb.row(
         InlineKeyboardButton("🆕 МН 2", callback_data="tpl:MN2"),
+    )
+    return kb
+
+
+def video_menu_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🎬 Видео в GIF", callback_data="video:gif"),
+        InlineKeyboardButton("📝 Оформить видео", callback_data="video:edit"),
+        InlineKeyboardButton("❌ Отмена", callback_data="video:cancel")
+    )
+    return kb
+
+
+def video_template_kb():
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("📰 МН", callback_data="video_tpl:MN"),
+        InlineKeyboardButton("🚨 ЧП ВМ", callback_data="video_tpl:CHP"),
+    )
+    kb.row(
+        InlineKeyboardButton("✨ АМ", callback_data="video_tpl:AM"),
+        InlineKeyboardButton("💜 Пост ФДР", callback_data="video_tpl:FDR_POST"),
+    )
+    kb.row(
+        InlineKeyboardButton("📱 МН ТГ", callback_data="video_tpl:MN_TG"),
+        InlineKeyboardButton("🆕 МН 2", callback_data="video_tpl:MN2"),
+    )
+    kb.row(
+        InlineKeyboardButton("❌ Отмена", callback_data="video_tpl:cancel")
+    )
+    return kb
+
+
+def video_text_position_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("⬆️ Сверху", callback_data="video_pos:top"),
+        InlineKeyboardButton("⬇️ Снизу", callback_data="video_pos:bottom")
+    )
+    kb.row(
+        InlineKeyboardButton("❌ Отмена", callback_data="video_pos:cancel")
     )
     return kb
 
@@ -2229,13 +2347,7 @@ class NewsAutoPublisher:
         self.setup_schedule()
         
     def setup_schedule(self):
-        schedule_times = [
-            (9, 0),
-            (13, 0),
-            (16, 0),
-            (20, 0),
-        ]
-        
+        schedule_times = [(9, 0), (13, 0), (16, 0), (20, 0)]
         for hour, minute in schedule_times:
             self.scheduler.add_job(
                 self.publish_news_digest,
@@ -2269,7 +2381,6 @@ class NewsAutoPublisher:
     def publish_news_digest(self, manual=False):
         try:
             logger.info(f"Starting news digest publication (manual={manual})")
-            
             items = fetch_all_news_last24h()
             
             if not items:
@@ -2292,24 +2403,13 @@ class NewsAutoPublisher:
             )
             
             if manual:
-                self.bot.send_message(
-                    self.chat_id, 
-                    header, 
-                    parse_mode="HTML",
-                    reply_markup=main_menu_kb()
-                )
+                self.bot.send_message(self.chat_id, header, parse_mode="HTML", reply_markup=main_menu_kb())
             else:
                 self.bot.send_message(self.chat_id, header, parse_mode="HTML")
             
             cache_key = f"news_cache_{self.chat_id}"
-            user_state[cache_key] = {
-                "items": items,
-                "current_index": 0,
-                "by_key": {}
-            }
-            
+            user_state[cache_key] = {"items": items, "current_index": 0, "by_key": {}}
             self._send_news_batch(self.chat_id, 0, NEWS_BATCH_SIZE, manual)
-            
             logger.info(f"News digest published successfully, total items: {len(items)}")
             
         except Exception as e:
@@ -2323,7 +2423,6 @@ class NewsAutoPublisher:
     def _send_news_batch(self, chat_id, start_idx, count, manual=False):
         cache_key = f"news_cache_{chat_id}"
         cache = user_state.get(cache_key)
-        
         if not cache:
             return
             
@@ -2340,11 +2439,7 @@ class NewsAutoPublisher:
             key = item_key(title, url)
             by_key[key] = item
             
-            msg = (
-                f"<b>{html.escape(title)}</b>\n"
-                f"📰 {html.escape(source)}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━"
-            )
+            msg = f"<b>{html.escape(title)}</b>\n📰 {html.escape(source)}\n━━━━━━━━━━━━━━━━━━━━━━"
             
             kb = InlineKeyboardMarkup()
             kb.row(
@@ -2352,14 +2447,7 @@ class NewsAutoPublisher:
                 InlineKeyboardButton("🔗 Источник", url=url)
             )
             
-            self.bot.send_message(
-                chat_id,
-                msg,
-                parse_mode="HTML",
-                reply_markup=kb,
-                disable_web_page_preview=True
-            )
-            
+            self.bot.send_message(chat_id, msg, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
             time.sleep(0.3)
         
         cache["current_index"] = end_idx
@@ -2368,23 +2456,12 @@ class NewsAutoPublisher:
         
         if end_idx < len(items):
             more_kb = InlineKeyboardMarkup()
-            more_kb.row(
-                InlineKeyboardButton(
-                    f"📥 Загрузить еще {NEWS_MORE_SIZE}", 
-                    callback_data=f"load_more:{chat_id}"
-                )
-            )
-            
+            more_kb.row(InlineKeyboardButton(f"📥 Загрузить еще {NEWS_MORE_SIZE}", callback_data=f"load_more:{chat_id}"))
             remaining = len(items) - end_idx
             msg = f"📊 Показано {end_idx} из {len(items)} новостей\nОсталось: {remaining}"
-            
             self.bot.send_message(chat_id, msg, reply_markup=more_kb)
         else:
-            self.bot.send_message(
-                chat_id, 
-                "✅ Все новости загружены!",
-                reply_markup=main_menu_kb()
-            )
+            self.bot.send_message(chat_id, "✅ Все новости загружены!", reply_markup=main_menu_kb())
 
 
 # =========================
@@ -2413,56 +2490,33 @@ def on_read_full_news(c):
         image_url = item.get("image", "")
         source_url = item.get("url", "")
         
-        # Если нет полного текста, пробуем загрузить
         if not full_text:
             full_text = fetch_article_full_text_generic(source_url)
             item["full_text"] = full_text
         
-        # Сначала отправляем фото и заголовок
+        bot.send_message(c.message.chat.id, "⏳ Загружаю полный текст и фото...")
+        
         if image_url:
             try:
                 photo_bytes = get_cached_image(image_url)
                 if photo_bytes and check_file_size(photo_bytes):
-                    bot.send_photo(
-                        c.message.chat.id,
-                        photo=photo_bytes,
-                        caption=f"<b>{html.escape(title)}</b>",
-                        parse_mode="HTML"
-                    )
+                    bot.send_photo(c.message.chat.id, photo=photo_bytes, caption=f"<b>{html.escape(title)}</b>", parse_mode="HTML")
                 else:
-                    bot.send_message(
-                        c.message.chat.id,
-                        f"<b>{html.escape(title)}</b>",
-                        parse_mode="HTML"
-                    )
+                    bot.send_message(c.message.chat.id, f"<b>{html.escape(title)}</b>", parse_mode="HTML")
             except Exception as e:
                 logger.error(f"Error sending photo: {e}")
-                bot.send_message(
-                    c.message.chat.id,
-                    f"<b>{html.escape(title)}</b>",
-                    parse_mode="HTML"
-                )
+                bot.send_message(c.message.chat.id, f"<b>{html.escape(title)}</b>", parse_mode="HTML")
         else:
-            bot.send_message(
-                c.message.chat.id,
-                f"<b>{html.escape(title)}</b>",
-                parse_mode="HTML"
-            )
+            bot.send_message(c.message.chat.id, f"<b>{html.escape(title)}</b>", parse_mode="HTML")
         
-        # Затем отправляем текст статьи
         if full_text:
-            # Очищаем текст от лишних пробелов
             clean_text = _clean_text(full_text)
-            
-            # Разбиваем на части если текст длинный
             if len(clean_text) <= 4000:
                 bot.send_message(c.message.chat.id, clean_text, parse_mode="HTML")
             else:
-                # Разбиваем по абзацам
                 paragraphs = clean_text.split('\n\n')
                 current_chunk = ""
                 chunks = []
-                
                 for p in paragraphs:
                     if len(current_chunk) + len(p) + 2 < 4000:
                         if current_chunk:
@@ -2473,19 +2527,13 @@ def on_read_full_news(c):
                         if current_chunk:
                             chunks.append(current_chunk)
                         current_chunk = p
-                
                 if current_chunk:
                     chunks.append(current_chunk)
-                
                 for i, chunk in enumerate(chunks):
                     if i == 0:
                         bot.send_message(c.message.chat.id, chunk, parse_mode="HTML")
                     else:
-                        bot.send_message(
-                            c.message.chat.id,
-                            f"<i>Продолжение ({i+1}/{len(chunks)}):</i>\n\n{chunk}",
-                            parse_mode="HTML"
-                        )
+                        bot.send_message(c.message.chat.id, f"<i>Продолжение ({i+1}/{len(chunks)}):</i>\n\n{chunk}", parse_mode="HTML")
         else:
             bot.send_message(c.message.chat.id, "❌ Текст статьи не найден")
         
@@ -2499,7 +2547,6 @@ def on_read_full_news(c):
 @bot.callback_query_handler(func=lambda c: c.data.startswith("load_more:"))
 def on_load_more(c):
     chat_id = int(c.data.split(":", 1)[1])
-    
     cache_key = f"news_cache_{chat_id}"
     cache = user_state.get(cache_key)
     
@@ -2508,35 +2555,25 @@ def on_load_more(c):
         return
     
     current_idx = cache.get("current_index", 0)
-    
     news_publisher._send_news_batch(chat_id, current_idx, NEWS_MORE_SIZE, manual=True)
-    
     bot.answer_callback_query(c.id, f"Загружаю еще {NEWS_MORE_SIZE} новостей...")
 
 
 @bot.message_handler(func=lambda message: message.text == BTN_GET_NEWS_MANUAL)
 def cmd_manual_news(message):
     uid = message.from_user.id
-    
     if str(uid) != str(AUTO_NEWS_CHAT_ID):
         cmd_news(message)
         return
     
-    bot.send_message(
-        message.chat.id,
-        "🔄 Запускаю ручную выгрузку новостей...",
-        reply_markup=main_menu_kb()
-    )
-    
+    bot.send_message(message.chat.id, "🔄 Запускаю ручную выгрузку новостей...", reply_markup=main_menu_kb())
     news_publisher.publish_news_digest(manual=True)
 
 
 @bot.message_handler(func=lambda message: message.text == BTN_ENHANCE)
 def cmd_enhance(message):
-    """Обработчик команды улучшения качества фото"""
     uid = message.from_user.id
     st = user_state.get(uid) or {}
-    
     st["step"] = "waiting_enhance_photo"
     st["template"] = st.get("template", "MN")
     user_state[uid] = st
@@ -2554,36 +2591,52 @@ def cmd_enhance(message):
     )
 
 
-# =========================
-# Команда /stop для сброса состояния
-# =========================
-@bot.message_handler(commands=["stop"])
-def cmd_stop(message):
-    """Сбрасывает состояние бота и останавливает текущие операции"""
+@bot.message_handler(func=lambda message: message.text == "🎥 Видео")
+def cmd_video_menu(message):
     uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    st["step"] = "video_menu"
+    user_state[uid] = st
     
-    # Очищаем состояние пользователя
-    if uid in user_state:
-        template = user_state[uid].get("template", "MN")
-        user_state[uid] = {"template": template, "step": "idle"}
-        logger.info(f"Reset state for user {uid}")
+    bot.send_message(message.chat.id, "🎥 Режим работы с видео\n\nВыбери действие:", reply_markup=video_menu_kb())
+
+
+@bot.message_handler(func=lambda message: message.text == "🎬 Видео в GIF")
+def cmd_video_to_gif(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    st["step"] = "waiting_video_for_gif"
+    user_state[uid] = st
     
     bot.send_message(
         message.chat.id,
-        "🛑 Бот сброшен в исходное состояние.\n"
-        "Можно начинать новую команду.",
+        "🎬 Отправь видео (до 50 MB), и я конвертирую его в GIF.\n\n"
+        "Видео будет обрезано до 10 секунд.",
         reply_markup=main_menu_kb()
     )
 
 
 # =========================
-# Обработчик выбора источников новостей
+# Команда /stop
+# =========================
+@bot.message_handler(commands=["stop"])
+def cmd_stop(message):
+    uid = message.from_user.id
+    if uid in user_state:
+        template = user_state[uid].get("template", "MN")
+        user_state[uid] = {"template": template, "step": "idle"}
+        logger.info(f"Reset state for user {uid}")
+    
+    bot.send_message(message.chat.id, "🛑 Бот сброшен в исходное состояние.\nМожно начинать новую команду.", reply_markup=main_menu_kb())
+
+
+# =========================
+# Обработчик выбора источников
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("src:"))
 def on_source_select(c):
     uid = c.from_user.id
     action = c.data.split(":", 1)[1]
-    
     st = user_state.get(uid) or {}
     
     if action == "cancel":
@@ -2591,11 +2644,7 @@ def on_source_select(c):
         st.pop("selected_sources", None)
         user_state[uid] = st
         try:
-            bot.edit_message_text(
-                "❌ Выбор отменен",
-                c.message.chat.id,
-                c.message.message_id
-            )
+            bot.edit_message_text("❌ Выбор отменен", c.message.chat.id, c.message.message_id)
         except Exception as e:
             logger.warning(f"Could not edit message: {e}")
             bot.send_message(c.message.chat.id, "❌ Выбор отменен")
@@ -2604,7 +2653,6 @@ def on_source_select(c):
     
     if action == "save":
         selected = st.get("selected_sources", [])
-        
         if not selected:
             bot.answer_callback_query(c.id, "❌ Выбери хотя бы один источник", show_alert=True)
             return
@@ -2614,23 +2662,15 @@ def on_source_select(c):
         except Exception as e:
             logger.warning(f"Could not delete message: {e}")
         
-        bot.send_message(
-            c.message.chat.id,
-            f"🔍 Собираю новости из {len(selected)} источников...\n"
-            f"Источники: {', '.join([SOURCE_NAMES.get(s, s) for s in selected])}",
-            reply_markup=main_menu_kb()
-        )
+        bot.send_message(c.message.chat.id, f"🔍 Собираю новости из {len(selected)} источников...\nИсточники: {', '.join([SOURCE_NAMES.get(s, s) for s in selected])}", reply_markup=main_menu_kb())
         
         items = fetch_news_from_sources(selected)
-        
         set_news_cache(uid, items)
-        
         send_news_batch(c.message.chat.id, uid, NEWS_FIRST_BATCH)
         
         st.pop("news_step", None)
         st.pop("selected_sources", None)
         user_state[uid] = st
-        
         bot.answer_callback_query(c.id, f"✅ Выбрано {len(selected)} источников")
         return
     
@@ -2638,50 +2678,26 @@ def on_source_select(c):
         st["selected_sources"] = []
         user_state[uid] = st
         try:
-            bot.edit_message_text(
-                "📰 Выбери источники новостей (можно несколько):\n\n"
-                "После выбора нажми 'Сохранить выбор'",
-                c.message.chat.id,
-                c.message.message_id,
-                reply_markup=news_sources_kb()
-            )
+            bot.edit_message_text("📰 Выбери источники новостей (можно несколько):\n\nПосле выбора нажми 'Сохранить выбор'", c.message.chat.id, c.message.message_id, reply_markup=news_sources_kb())
         except Exception as e:
             logger.warning(f"Could not edit message: {e}")
-            bot.send_message(
-                c.message.chat.id,
-                "📰 Выбери источники новостей (можно несколько):\n\n"
-                "После выбора нажми 'Сохранить выбор'",
-                reply_markup=news_sources_kb()
-            )
+            bot.send_message(c.message.chat.id, "📰 Выбери источники новостей (можно несколько):\n\nПосле выбора нажми 'Сохранить выбор'", reply_markup=news_sources_kb())
         bot.answer_callback_query(c.id, "Выбор сброшен")
         return
     
     if action == "all":
         st["selected_sources"] = list(SOURCE_NAMES.keys())
         user_state[uid] = st
-        
         selected_text = "✅ " + "\n✅ ".join([f"{SOURCE_NAMES[s]}" for s in st["selected_sources"]])
         try:
-            bot.edit_message_text(
-                f"📰 Выбраны все источники:\n\n{selected_text}\n\n"
-                f"Нажми 'Сохранить выбор' для продолжения",
-                c.message.chat.id,
-                c.message.message_id,
-                reply_markup=save_sources_kb()
-            )
+            bot.edit_message_text(f"📰 Выбраны все источники:\n\n{selected_text}\n\nНажми 'Сохранить выбор' для продолжения", c.message.chat.id, c.message.message_id, reply_markup=save_sources_kb())
         except Exception as e:
             logger.warning(f"Could not edit message: {e}")
-            bot.send_message(
-                c.message.chat.id,
-                f"📰 Выбраны все источники:\n\n{selected_text}\n\n"
-                f"Нажми 'Сохранить выбор' для продолжения",
-                reply_markup=save_sources_kb()
-            )
+            bot.send_message(c.message.chat.id, f"📰 Выбраны все источники:\n\n{selected_text}\n\nНажми 'Сохранить выбор' для продолжения", reply_markup=save_sources_kb())
         bot.answer_callback_query(c.id, f"✅ Выбрано {len(st['selected_sources'])} источников")
         return
     
     source_id = action
-    
     if "selected_sources" not in st:
         st["selected_sources"] = []
     
@@ -2705,23 +2721,111 @@ def on_source_select(c):
         selected_text = "Пока ничего не выбрано"
     
     try:
-        bot.edit_message_text(
-            f"📰 {SOURCE_NAMES.get(source_id, source_id)} {status}\n\n{selected_text}\n"
-            f"Продолжай выбирать или нажми 'Сохранить выбор'",
-            c.message.chat.id,
-            c.message.message_id,
-            reply_markup=news_sources_kb()
-        )
+        bot.edit_message_text(f"📰 {SOURCE_NAMES.get(source_id, source_id)} {status}\n\n{selected_text}\nПродолжай выбирать или нажми 'Сохранить выбор'", c.message.chat.id, c.message.message_id, reply_markup=news_sources_kb())
     except Exception as e:
         logger.warning(f"Could not edit message: {e}")
-        bot.send_message(
-            c.message.chat.id,
-            f"📰 {SOURCE_NAMES.get(source_id, source_id)} {status}\n\n{selected_text}\n"
-            f"Продолжай выбирать или нажми 'Сохранить выбор'",
-            reply_markup=news_sources_kb()
-        )
+        bot.send_message(c.message.chat.id, f"📰 {SOURCE_NAMES.get(source_id, source_id)} {status}\n\n{selected_text}\nПродолжай выбирать или нажми 'Сохранить выбор'", reply_markup=news_sources_kb())
     
     bot.answer_callback_query(c.id, f"{status}: {SOURCE_NAMES.get(source_id, source_id)}")
+
+
+# =========================
+# Обработчики видео
+# =========================
+@bot.callback_query_handler(func=lambda c: c.data.startswith("video:"))
+def on_video_menu_callback(c):
+    uid = c.from_user.id
+    action = c.data.split(":", 1)[1]
+    st = user_state.get(uid) or {}
+    
+    if action == "cancel":
+        st.pop("step", None)
+        user_state[uid] = st
+        bot.edit_message_text("❌ Отменено", c.message.chat.id, c.message.message_id)
+        bot.answer_callback_query(c.id, "Отменено")
+        
+    elif action == "gif":
+        st["step"] = "waiting_video_for_gif"
+        user_state[uid] = st
+        bot.edit_message_text("🎬 Отправь видео, и я конвертирую его в GIF.\n\nВидео будет обрезано до 10 секунд.", c.message.chat.id, c.message.message_id)
+        bot.answer_callback_query(c.id, "Ожидаю видео")
+        
+    elif action == "edit":
+        st["step"] = "waiting_video_for_edit"
+        user_state[uid] = st
+        bot.edit_message_text("📝 Отправь видео для оформления.", c.message.chat.id, c.message.message_id)
+        bot.answer_callback_query(c.id, "Ожидаю видео")
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("video_tpl:"))
+def on_video_template_select(c):
+    uid = c.from_user.id
+    action = c.data.split(":", 1)[1]
+    st = user_state.get(uid) or {}
+    
+    if action == "cancel":
+        st.pop("step", None)
+        st.pop("video_bytes", None)
+        user_state[uid] = st
+        bot.edit_message_text("❌ Оформление видео отменено", c.message.chat.id, c.message.message_id)
+        bot.answer_callback_query(c.id, "Отменено")
+        return
+    
+    st["video_template"] = action
+    user_state[uid] = st
+    
+    if action in ["MN", "MN2"]:
+        bot.edit_message_text("📐 Выбери расположение текста:", c.message.chat.id, c.message.message_id, reply_markup=video_text_position_kb())
+        bot.answer_callback_query(c.id, "Выбери позицию")
+    
+    elif action == "FDR_POST":
+        st["step"] = "waiting_video_highlight"
+        user_state[uid] = st
+        bot.edit_message_text("💜 Отправь фразу, которую нужно выделить фиолетовой плашкой:", c.message.chat.id, c.message.message_id)
+        bot.answer_callback_query(c.id, "Ожидаю фразу")
+    
+    elif action == "MN_TG":
+        processing_msg = bot.edit_message_text("⏳ Обрабатываю видео... Это может занять некоторое время.", c.message.chat.id, c.message.message_id)
+        
+        try:
+            result = process_video_with_template(st["video_bytes"], action, title="")
+            bot.send_video(c.message.chat.id, video=result, caption="📱 Видео в стиле МН ТГ")
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+        except Exception as e:
+            logger.error(f"Error processing video: {e}")
+            bot.edit_message_text(f"❌ Ошибка при обработке видео: {e}", c.message.chat.id, c.message.message_id)
+        
+        st.pop("step", None)
+        st.pop("video_bytes", None)
+        user_state[uid] = st
+    
+    else:
+        st["step"] = "waiting_video_title"
+        user_state[uid] = st
+        bot.edit_message_text("📝 Отправь заголовок для видео:", c.message.chat.id, c.message.message_id)
+        bot.answer_callback_query(c.id, "Ожидаю заголовок")
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("video_pos:"))
+def on_video_position_select(c):
+    uid = c.from_user.id
+    action = c.data.split(":", 1)[1]
+    st = user_state.get(uid) or {}
+    
+    if action == "cancel":
+        st.pop("step", None)
+        st.pop("video_bytes", None)
+        st.pop("video_template", None)
+        user_state[uid] = st
+        bot.edit_message_text("❌ Оформление видео отменено", c.message.chat.id, c.message.message_id)
+        bot.answer_callback_query(c.id, "Отменено")
+        return
+    
+    st["video_text_position"] = action
+    st["step"] = "waiting_video_title"
+    user_state[uid] = st
+    bot.edit_message_text("📝 Отправь заголовок для видео:", c.message.chat.id, c.message.message_id)
+    bot.answer_callback_query(c.id, "Ожидаю заголовок")
 
 
 # =========================
@@ -2739,50 +2843,23 @@ def on_tpl(c):
         user_state[uid] = st
         bot.answer_callback_query(c.id, f"Шаблон {tpl} выбран ✅")
         template_name = "МН 2" if tpl == "MN2" else "МН"
-        bot.send_message(
-            c.message.chat.id,
-            f"📰 Выбран шаблон <b>{template_name}</b>\n\n"
-            "Где разместить текст?",
-            parse_mode="HTML",
-            reply_markup=text_position_kb()
-        )
+        bot.send_message(c.message.chat.id, f"📰 Выбран шаблон <b>{template_name}</b>\n\nГде разместить текст?", parse_mode="HTML", reply_markup=text_position_kb())
     elif tpl == "FDR_POST":
         st["step"] = "waiting_photo_fdr_post"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
-        bot.send_message(
-            c.message.chat.id,
-            "💜 Выбран шаблон <b>Пост ФДР</b>\n\n"
-            "📸 Пришли фото для поста.\n\n"
-            "<i>Дальше нужно будет:</i>\n"
-            "1️⃣ Отправить полный заголовок\n"
-            "2️⃣ Отправить фразу для фиолетовой плашки\n"
-            "3️⃣ Отправить основной текст",
-            parse_mode="HTML"
-        )
+        bot.send_message(c.message.chat.id, "💜 Выбран шаблон <b>Пост ФДР</b>\n\n📸 Пришли фото для поста.\n\n<i>Дальше нужно будет:</i>\n1️⃣ Отправить полный заголовок\n2️⃣ Отправить фразу для фиолетовой плашки\n3️⃣ Отправить основной текст", parse_mode="HTML")
     elif tpl == "MN_TG":
         st["step"] = "waiting_photo_mn_tg"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Шаблон 'МН ТГ' выбран ✅")
-        bot.send_message(
-            c.message.chat.id,
-            "📱 Выбран шаблон <b>МН ТГ</b>\n\n"
-            "📸 Сначала пришли фото для поста.\n\n"
-            "<i>После фото нужно будет отправить текст целиком.</i>\n"
-            "Первый абзац автоматически станет жирным заголовком, остальное - основным текстом.",
-            parse_mode="HTML"
-        )
+        bot.send_message(c.message.chat.id, "📱 Выбран шаблон <b>МН ТГ</b>\n\n📸 Сначала пришли фото для поста.\n\n<i>После фото нужно будет отправить текст целиком.</i>\nПервый абзац автоматически станет жирным заголовком, остальное - основным текстом.", parse_mode="HTML")
     else:
         if st.get("step") in {"waiting_template", None}:
             st["step"] = "waiting_photo"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Ок ✅")
-        
-        tpl_names = {
-            'CHP': 'ЧП ВМ',
-            'AM': 'АМ',
-            'FDR_STORY': 'Сторис ФДР'
-        }
+        tpl_names = {'CHP': 'ЧП ВМ', 'AM': 'АМ', 'FDR_STORY': 'Сторис ФДР'}
         tpl_name = tpl_names.get(tpl, tpl)
         bot.send_message(c.message.chat.id, f"Шаблон выбран: {tpl_name}. Пришли фото 📷")
 
@@ -2799,12 +2876,7 @@ def on_text_position(c):
     
     position_text = "сверху" if position == "top" else "снизу"
     bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
-    bot.send_message(
-        c.message.chat.id,
-        f"Текст будет расположен <b>{position_text}</b> фотографии.\n\n"
-        "Теперь пришли фото 📷",
-        parse_mode="HTML"
-    )
+    bot.send_message(c.message.chat.id, f"Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли фото 📷", parse_mode="HTML")
 
 
 # =========================
@@ -2825,7 +2897,8 @@ def cmd_start(message):
         "• /post — оформить пост\n"
         "• /news — получить новости за 24 часа\n"
         "• /template — выбрать шаблон (МН / ЧП ВМ / АМ / Сторис ФДР / Пост ФДР / МН ТГ / МН 2)\n"
-        "• /stop — сбросить состояние бота\n",
+        "• /stop — сбросить состояние бота\n\n"
+        "🎥 Также доступна работа с видео:",
         reply_markup=main_menu_kb()
     )
 
@@ -2851,9 +2924,7 @@ def cmd_post(message):
 
 @bot.message_handler(commands=["news"])
 def cmd_news(message):
-    """Команда получения новостей с выбором источника"""
     uid = message.from_user.id
-    
     if str(uid) == str(AUTO_NEWS_CHAT_ID):
         cmd_manual_news(message)
         return
@@ -2863,14 +2934,7 @@ def cmd_news(message):
     st["selected_sources"] = []
     user_state[uid] = st
     
-    bot.send_message(
-        message.chat.id,
-        "📰 Выбери источники новостей (можно несколько):\n\n"
-        "✅ - выбран\n"
-        "❌ - не выбран\n\n"
-        "После выбора нажми 'Сохранить выбор'",
-        reply_markup=news_sources_kb()
-    )
+    bot.send_message(message.chat.id, "📰 Выбери источники новостей (можно несколько):\n\n✅ - выбран\n❌ - не выбран\n\nПосле выбора нажми 'Сохранить выбор'", reply_markup=news_sources_kb())
 
 
 def send_news_batch(chat_id: int, uid: int, batch: int):
@@ -2983,11 +3047,7 @@ def on_news_item_action(c):
             st["prefill_body"] = auto_body
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Нужно фото")
-        bot.send_message(
-            c.message.chat.id,
-            "Для этой новости не смог взять картинку.\nПришли фото 📷, а заголовок я уже подставлю.",
-            reply_markup=main_menu_kb()
-        )
+        bot.send_message(c.message.chat.id, "Для этой новости не смог взять картинку.\nПришли фото 📷, а заголовок я уже подставлю.", reply_markup=main_menu_kb())
         return
 
     warn_if_too_small(c.message.chat.id, photo_bytes)
@@ -3003,13 +3063,7 @@ def on_news_item_action(c):
                 user_state[uid] = st
 
                 caption = build_caption_html(st["title"], st["body_raw"])
-                bot.send_photo(
-                    chat_id=c.message.chat.id,
-                    photo=BytesIO(st["card_bytes"]),
-                    caption=caption,
-                    parse_mode="HTML",
-                    reply_markup=preview_kb(st.get("source_url", "")),
-                )
+                bot.send_photo(chat_id=c.message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
                 bot.answer_callback_query(c.id, "Оформил ✅")
                 return
             except Exception as e:
@@ -3021,11 +3075,7 @@ def on_news_item_action(c):
             st["step"] = "waiting_body_fdr"
             user_state[uid] = st
             bot.answer_callback_query(c.id, "Нужен текст")
-            bot.send_message(
-                c.message.chat.id,
-                "✅ Карточка с фото готова!\n\nТеперь отправь ОСНОВНОЙ ТЕКСТ для сторис:",
-                reply_markup=main_menu_kb()
-            )
+            bot.send_message(c.message.chat.id, "✅ Карточка с фото готова!\n\nТеперь отправь ОСНОВНОЙ ТЕКСТ для сторис.", reply_markup=main_menu_kb())
             return
 
     try:
@@ -3041,13 +3091,7 @@ def on_news_item_action(c):
             user_state[uid] = st
 
             caption = build_caption_html(st["title"], st["body_raw"])
-            bot.send_photo(
-                chat_id=c.message.chat.id,
-                photo=BytesIO(st["card_bytes"]),
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=preview_kb(st.get("source_url", "")),
-            )
+            bot.send_photo(chat_id=c.message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
             bot.answer_callback_query(c.id, "Оформил ✅")
             return
 
@@ -3071,7 +3115,6 @@ def on_photo(message):
     st = user_state.get(uid) or {}
     st.setdefault("template", "MN")
 
-    # Блок улучшения качества
     if st.get("step") == "waiting_enhance_photo":
         try:
             file_id = message.photo[-1].file_id
@@ -3090,18 +3133,7 @@ def on_photo(message):
                 enhanced = enhance_image_quality(photo_bytes)
                 quality_text = "улучшено"
             
-            bot.send_photo(
-                message.chat.id,
-                photo=enhanced,
-                caption=f"✨ Фото {quality_text}!\n\n"
-                       "✓ +30-40% резкости\n"
-                       "✓ +20-25% насыщенности\n"
-                       "✓ +20-25% контрастности\n"
-                       "✓ Удалены шумы\n"
-                       "✓ HDR-эффект",
-                reply_markup=main_menu_kb()
-            )
-            
+            bot.send_photo(message.chat.id, photo=enhanced, caption=f"✨ Фото {quality_text}!\n\n✓ +30-40% резкости\n✓ +20-25% насыщенности\n✓ +20-25% контрастности\n✓ Удалены шумы\n✓ HDR-эффект", reply_markup=main_menu_kb())
             bot.delete_message(message.chat.id, processing_msg.message_id)
             st["step"] = "idle"
             user_state[uid] = st
@@ -3115,7 +3147,6 @@ def on_photo(message):
         bot.send_message(message.chat.id, "Сначала выбери шаблон:", reply_markup=template_kb())
         return
 
-    # Блок FDR_POST
     if st.get("step") == "waiting_photo_fdr_post":
         try:
             file_id = message.photo[-1].file_id
@@ -3131,19 +3162,13 @@ def on_photo(message):
             st["step"] = "waiting_title_fdr_post"
             user_state[uid] = st
 
-            bot.reply_to(
-                message,
-                "📸 Фото сохранено!\n\n"
-                "Теперь отправь <b>ПОЛНЫЙ ЗАГОЛОВОК</b> поста:",
-                parse_mode="HTML"
-            )
+            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ПОЛНЫЙ ЗАГОЛОВОК</b> поста:", parse_mode="HTML")
             return
         except Exception as e:
             logger.error(f"Error processing photo for FDR_POST: {e}")
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
 
-    # Блок MN_TG
     if st.get("step") == "waiting_photo_mn_tg":
         try:
             file_id = message.photo[-1].file_id
@@ -3161,20 +3186,13 @@ def on_photo(message):
             st["step"] = "waiting_text_mn_tg"
             user_state[uid] = st
 
-            bot.reply_to(
-                message,
-                "📸 Фото сохранено!\n\n"
-                "Теперь отправь <b>ВЕСЬ ТЕКСТ</b> поста одним сообщением.\n"
-                "Первый абзац станет жирным заголовком, остальное - основным текстом.",
-                parse_mode="HTML"
-            )
+            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ВЕСЬ ТЕКСТ</b> поста одним сообщением.\nПервый абзац станет жирным заголовком, остальное - основным текстом.", parse_mode="HTML")
             return
         except Exception as e:
             logger.error(f"Error processing photo for MN_TG: {e}")
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
 
-    # Основной блок обработки фото
     try:
         file_id = message.photo[-1].file_id
         photo_bytes = tg_file_bytes(file_id)
@@ -3186,7 +3204,6 @@ def on_photo(message):
         warn_if_too_small(message.chat.id, photo_bytes)
         st["photo_bytes"] = photo_bytes
 
-        # Обработка с предзаполненными данными
         if st.get("prefill_title"):
             st["title"] = st["prefill_title"]
             st["source_url"] = st.get("prefill_source", "") or ""
@@ -3204,13 +3221,7 @@ def on_photo(message):
                         user_state[uid] = st
 
                         caption = build_caption_html(st["title"], st["body_raw"])
-                        bot.send_photo(
-                            chat_id=message.chat.id,
-                            photo=BytesIO(st["card_bytes"]),
-                            caption=caption,
-                            parse_mode="HTML",
-                            reply_markup=preview_kb(st.get("source_url", "")),
-                        )
+                        bot.send_photo(chat_id=message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
                         bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
                         return
                     else:
@@ -3237,13 +3248,7 @@ def on_photo(message):
                     user_state[uid] = st
 
                     caption = build_caption_html(st["title"], st["body_raw"])
-                    bot.send_photo(
-                        chat_id=message.chat.id,
-                        photo=BytesIO(st["card_bytes"]),
-                        caption=caption,
-                        parse_mode="HTML",
-                        reply_markup=preview_kb(st.get("source_url", "")),
-                    )
+                    bot.send_photo(chat_id=message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
                     bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
                     return
 
@@ -3259,7 +3264,6 @@ def on_photo(message):
                 bot.reply_to(message, f"Ошибка при создании карточки: {e}")
             return
 
-        # Обычная обработка
         if st["template"] == "FDR_STORY":
             st["step"] = "waiting_title_fdr"
         else:
@@ -3273,6 +3277,43 @@ def on_photo(message):
         bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
 
 
+@bot.message_handler(content_types=["video"])
+def on_video(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    
+    if message.video.file_size > MAX_VIDEO_SIZE:
+        bot.reply_to(message, f"❌ Видео слишком большое. Максимальный размер {MAX_VIDEO_SIZE//1024//1024}MB.")
+        return
+    
+    step = st.get("step")
+    
+    if step == "waiting_video_for_gif":
+        processing_msg = bot.reply_to(message, "⏳ Конвертирую видео в GIF... Это может занять некоторое время.")
+        try:
+            video_bytes = tg_file_bytes(message.video.file_id)
+            gif_bytes = convert_video_to_gif(video_bytes, max_duration=10, fps=10)
+            bot.send_animation(message.chat.id, animation=gif_bytes, caption="🎬 Видео конвертировано в GIF!")
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+        except Exception as e:
+            logger.error(f"Error converting video to GIF: {e}")
+            bot.reply_to(message, f"❌ Ошибка при конвертации: {e}")
+        st["step"] = "idle"
+        user_state[uid] = st
+        return
+    
+    elif step == "waiting_video_for_edit":
+        video_bytes = tg_file_bytes(message.video.file_id)
+        st["video_bytes"] = video_bytes
+        st["step"] = "waiting_video_template"
+        user_state[uid] = st
+        bot.reply_to(message, "📹 Видео получено!\n\nТеперь выбери шаблон для оформления:", reply_markup=video_template_kb())
+        return
+    
+    else:
+        bot.reply_to(message, "🎥 Получено видео!\n\nВыбери действие в меню:", reply_markup=video_menu_kb())
+
+
 @bot.message_handler(content_types=["document"])
 def on_document(message):
     uid = message.from_user.id
@@ -3280,11 +3321,36 @@ def on_document(message):
     st.setdefault("template", "MN")
 
     doc = message.document
+    video_mime_types = ['video/mp4', 'video/avi', 'video/mov', 'video/mkv', 'video/webm']
+    
+    if doc.mime_type and doc.mime_type in video_mime_types:
+        try:
+            if doc.file_size > MAX_VIDEO_SIZE:
+                bot.reply_to(message, f"❌ Видео слишком большое. Максимальный размер {MAX_VIDEO_SIZE//1024//1024}MB.")
+                return
+            
+            step = st.get("step")
+            
+            if step in ["waiting_video_for_gif", "waiting_video_for_edit", "waiting_video_template"]:
+                class VideoMock:
+                    def __init__(self, file_id, file_size):
+                        self.file_id = file_id
+                        self.file_size = file_size
+                message.video = VideoMock(doc.file_id, doc.file_size)
+                on_video(message)
+                return
+            else:
+                bot.reply_to(message, "🎥 Получено видео!\n\nВыбери действие в меню:", reply_markup=video_menu_kb())
+                return
+        except Exception as e:
+            logger.error(f"Error processing video document: {e}")
+            bot.reply_to(message, f"❌ Ошибка при обработке видео: {e}")
+            return
+    
     if not doc.mime_type or not doc.mime_type.startswith("image/"):
-        bot.reply_to(message, "Пришли картинку (JPG/PNG).")
+        bot.reply_to(message, "Пришли картинку (JPG/PNG) или видео.")
         return
 
-    # Проверяем, не в режиме ли улучшения фото
     if st.get("step") == "waiting_enhance_photo":
         try:
             photo_bytes = tg_file_bytes(doc.file_id)
@@ -3294,26 +3360,11 @@ def on_document(message):
                 return
 
             processing_msg = bot.reply_to(message, "⏳ Улучшаю качество фото...")
-            
             enhanced = enhance_image_quality(photo_bytes)
-            
-            bot.send_photo(
-                message.chat.id,
-                photo=enhanced,
-                caption="✨ Фото улучшено!\n\n"
-                       "✓ +30-40% резкости\n"
-                       "✓ +20-25% насыщенности\n"
-                       "✓ +20-25% контрастности\n"
-                       "✓ Удалены шумы\n"
-                       "✓ HDR-эффект",
-                reply_markup=main_menu_kb()
-            )
-            
+            bot.send_photo(message.chat.id, photo=enhanced, caption="✨ Фото улучшено!\n\n✓ +30-40% резкости\n✓ +20-25% насыщенности\n✓ +20-25% контрастности\n✓ Удалены шумы\n✓ HDR-эффект", reply_markup=main_menu_kb())
             bot.delete_message(message.chat.id, processing_msg.message_id)
-            
             st["step"] = "idle"
             user_state[uid] = st
-            
         except Exception as e:
             logger.error(f"Error enhancing document: {e}")
             bot.reply_to(message, f"❌ Ошибка при улучшении фото: {e}")
@@ -3365,7 +3416,6 @@ def on_text(message):
 
     step = st.get("step")
 
-    # Блок получения текста для MN_TG
     if step == "waiting_text_mn_tg":
         if not text:
             bot.reply_to(message, "❌ Текст не может быть пустым. Отправь текст:")
@@ -3376,22 +3426,10 @@ def on_text(message):
         user_state[uid] = st
         
         caption = build_caption_tg(text)
-        
-        bot.send_photo(
-            chat_id=message.chat.id,
-            photo=BytesIO(st["card_bytes"]),
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=preview_kb(st.get("source_url", "")),
-        )
-        bot.reply_to(
-            message, 
-            "✅ Пост готов! Нажми кнопку под превью для публикации.",
-            reply_markup=main_menu_kb()
-        )
+        bot.send_photo(chat_id=message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
+        bot.reply_to(message, "✅ Пост готов! Нажми кнопку под превью для публикации.", reply_markup=main_menu_kb())
         return
 
-    # Блок FDR_POST
     if step == "waiting_title_fdr_post":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым. Отправь текст:")
@@ -3401,14 +3439,7 @@ def on_text(message):
         st["step"] = "waiting_highlight_fdr_post"
         user_state[uid] = st
         
-        bot.reply_to(
-            message,
-            f"✅ Заголовок сохранён!\n\n"
-            f"<b>{html.escape(text)}</b>\n\n"
-            f"🎯 Теперь отправь <b>ФРАЗУ</b>, которую нужно выделить фиолетовой плашкой:\n\n"
-            f"<i>(можно скопировать часть заголовка или написать свою)</i>",
-            parse_mode="HTML"
-        )
+        bot.reply_to(message, f"✅ Заголовок сохранён!\n\n<b>{html.escape(text)}</b>\n\n🎯 Теперь отправь <b>ФРАЗУ</b>, которую нужно выделить фиолетовой плашкой:\n\n<i>(можно скопировать часть заголовка или написать свою)</i>", parse_mode="HTML")
         return
 
     if step == "waiting_highlight_fdr_post":
@@ -3421,39 +3452,18 @@ def on_text(message):
         user_state[uid] = st
         
         try:
-            card = make_card(
-                st["photo_bytes"],
-                st["full_title"],
-                st["template"],
-                highlight_phrase=st["highlight_phrase"]
-            )
+            card = make_card(st["photo_bytes"], st["full_title"], st["template"], highlight_phrase=st["highlight_phrase"])
             st["card_bytes"] = card.getvalue()
-            
-            bot.send_photo(
-                message.chat.id,
-                photo=BytesIO(st["card_bytes"]),
-                caption=(
-                    f"💜 <b>Предпросмотр</b>\n\n"
-                    f"Выделенная фраза: <b>{html.escape(text)}</b>\n\n"
-                    f"Теперь отправь <b>ОСНОВНОЙ ТЕКСТ</b> поста:"
-                ),
-                parse_mode="HTML"
-            )
-            
+            bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]), caption=f"💜 <b>Предпросмотр</b>\n\nВыделенная фраза: <b>{html.escape(text)}</b>\n\nТеперь отправь <b>ОСНОВНОЙ ТЕКСТ</b> поста:", parse_mode="HTML")
         except Exception as e:
             logger.error(f"Error creating FDR_POST preview: {e}")
-            bot.reply_to(
-                message, 
-                f"❌ Ошибка при создании превью: {e}\n\n"
-                f"Попробуй отправить фразу ещё раз или начни заново с /post"
-            )
+            bot.reply_to(message, f"❌ Ошибка при создании превью: {e}\n\nПопробуй отправить фразу ещё раз или начни заново с /post")
             st["step"] = "waiting_highlight_fdr_post"
             user_state[uid] = st
         return
 
     if step == "waiting_body_fdr_post":
         st["body_raw"] = text
-        
         body_src = extract_source_url(text)
         if body_src:
             st["source_url"] = body_src
@@ -3462,27 +3472,10 @@ def on_text(message):
         user_state[uid] = st
         
         try:
-            card = make_card(
-                st["photo_bytes"],
-                st["full_title"],
-                st["template"],
-                body_text=st["body_raw"],
-                highlight_phrase=st["highlight_phrase"]
-            )
-            
+            card = make_card(st["photo_bytes"], st["full_title"], st["template"], body_text=st["body_raw"], highlight_phrase=st["highlight_phrase"])
             caption = build_caption_html(st["full_title"], st["body_raw"])
-            bot.send_photo(
-                chat_id=message.chat.id,
-                photo=BytesIO(card.getvalue()),
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=preview_kb(st.get("source_url", "")),
-            )
-            bot.reply_to(
-                message, 
-                "✅ Пост готов! Нажми кнопку под превью для публикации.",
-                reply_markup=main_menu_kb()
-            )
+            bot.send_photo(chat_id=message.chat.id, photo=BytesIO(card.getvalue()), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
+            bot.reply_to(message, "✅ Пост готов! Нажми кнопку под превью для публикации.", reply_markup=main_menu_kb())
         except Exception as e:
             logger.error(f"Error creating final FDR_POST card: {e}")
             bot.reply_to(message, f"❌ Ошибка при создании финальной карточки: {e}")
@@ -3507,30 +3500,61 @@ def on_text(message):
             st["source_url"] = body_src
 
         try:
-            card = make_card(
-                st["photo_bytes"],
-                st["title"],
-                st.get("template", "FDR_STORY"),
-                st["body_raw"]
-            )
+            card = make_card(st["photo_bytes"], st["title"], st.get("template", "FDR_STORY"), st["body_raw"])
             st["card_bytes"] = card.getvalue()
             st["step"] = "waiting_action"
             user_state[uid] = st
 
             caption = build_caption_html(st["title"], st["body_raw"])
-            bot.send_photo(
-                chat_id=message.chat.id,
-                photo=BytesIO(st["card_bytes"]),
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=preview_kb(st.get("source_url", "")),
-            )
+            bot.send_photo(chat_id=message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
             bot.reply_to(message, "Сторис готова ✅ Нажми кнопку.")
         except Exception as e:
             logger.error(f"Error creating story: {e}")
             bot.reply_to(message, f"❌ Ошибка при создании сторис: {e}")
             st["step"] = "waiting_photo"
             user_state[uid] = st
+        return
+
+    if step == "waiting_video_title":
+        if not text:
+            bot.reply_to(message, "❌ Заголовок не может быть пустым. Отправь текст:")
+            return
+        
+        template = st.get("video_template", "MN")
+        processing_msg = bot.reply_to(message, "⏳ Обрабатываю видео... Это может занять некоторое время.")
+        
+        try:
+            result = process_video_with_template(
+                st["video_bytes"],
+                template,
+                title=text,
+                text_position=st.get("video_text_position", TEXT_POSITION_TOP)
+            )
+            
+            caption = f"🎥 Видео в стиле {template}\n\n{html.escape(text)}"
+            bot.send_video(message.chat.id, video=result, caption=caption, parse_mode="HTML")
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+        except Exception as e:
+            logger.error(f"Error processing video: {e}")
+            bot.reply_to(message, f"❌ Ошибка при обработке видео: {e}")
+        
+        st.pop("step", None)
+        st.pop("video_bytes", None)
+        st.pop("video_template", None)
+        st.pop("video_text_position", None)
+        user_state[uid] = st
+        return
+    
+    if step == "waiting_video_highlight":
+        if not text:
+            bot.reply_to(message, "❌ Фраза не может быть пустой. Отправь текст:")
+            return
+        
+        st["video_highlight"] = text
+        st["step"] = "waiting_video_title"
+        user_state[uid] = st
+        
+        bot.reply_to(message, f"✅ Фраза сохранена: {html.escape(text)}\n\nТеперь отправь заголовок для видео:", parse_mode="HTML")
         return
 
     if step == "waiting_title":
@@ -3567,13 +3591,7 @@ def on_text(message):
         else:
             caption = build_caption_html(st["title"], st["body_raw"])
             
-        bot.send_photo(
-            chat_id=message.chat.id,
-            photo=BytesIO(st["card_bytes"]),
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=preview_kb(st.get("source_url", "")),
-        )
+        bot.send_photo(chat_id=message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
         bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
 
     elif step == "waiting_action":
@@ -3607,13 +3625,7 @@ def on_action(call):
                 title_to_use = st["full_title"] if st.get("template") == "FDR_POST" and "full_title" in st else st.get("title", "")
                 caption = build_caption_html(title_to_use, st["body_raw"])
                 
-            bot.send_photo(
-                CHANNEL,
-                BytesIO(st["card_bytes"]),
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=channel_kb()
-            )
+            bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=channel_kb())
             bot.answer_callback_query(call.id, "Опубликовано ✅")
             bot.send_message(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
             tpl = st.get("template", "MN")
@@ -3684,11 +3696,9 @@ def cmd_stats(message):
         "cache_size": get_cached_image.cache_info().currsize if hasattr(get_cached_image, 'cache_info') else 0,
         "pool_connections": len(SESSION.adapters),
     }
-
     stats_text = "📊 Статистика:\n"
     for key, value in stats.items():
         stats_text += f"• {key}: {value}\n"
-
     bot.reply_to(message, stats_text)
 
 
@@ -3699,7 +3709,6 @@ def cmd_health(message):
         "timestamp": datetime.now().isoformat(),
         "fonts_loaded": all(os.path.exists(f) for f in [FONT_MN, FONT_CHP, FONT_AM, FONT_MONTSERRAT_BLACK]),
     }
-
     bot.reply_to(message, f"✅ Health check:\n{json.dumps(health_data, indent=2, ensure_ascii=False)}")
 
 
