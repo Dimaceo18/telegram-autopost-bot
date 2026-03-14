@@ -5,4 +5,3 @@ Pillow
 pyTelegramBotAPI
 apscheduler
 pytz
-pip install moviepy numpy opencv-python-headless
