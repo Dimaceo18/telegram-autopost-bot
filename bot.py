@@ -100,8 +100,6 @@ if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set (Render -> Environment -> BOT_TOKEN)")
 if " " in TOKEN:
     raise ValueError("BOT_TOKEN must not contain spaces")
-if not CHANNEL or CHANNEL == "@":
-    raise RuntimeError("CHANNEL_USERNAME is not set (Render -> Environment -> CHANNEL_USERNAME)")
 
 if not SUGGEST_URL and BOT_USERNAME:
     SUGGEST_URL = f"https://t.me/{BOT_USERNAME}?start=suggest"
@@ -355,19 +353,6 @@ def ensure_fonts():
     for font in fonts:
         if not os.path.exists(font):
             raise RuntimeError(f"Font not found: {font}")
-
-
-def warn_if_too_small(chat_id, photo_bytes: bytes):
-    try:
-        im = Image.open(BytesIO(photo_bytes))
-        if im.width < 900 or im.height < 1100:
-            bot.send_message(
-                chat_id,
-                "⚠️ Фото маленького разрешения. Лучше присылать больше (от 1080×1350 и выше), "
-                "чтобы текст был максимально чёткий."
-            )
-    except Exception as e:
-        logger.error(f"Error checking image size: {e}")
 
 
 def clear_state(user_id: int):
@@ -943,7 +928,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     return out
 
 
-def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
+def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0) -> BytesIO:
     ensure_fonts()
 
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -972,6 +957,10 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     text = (title_text or "").strip().upper()
 
+    # Применяем множитель к начальному размеру шрифта
+    base_start_size = int(img.height * 0.11)
+    adjusted_start_size = int(base_start_size * font_size_multiplier)
+    
     font, lines, heights, spacing, total_text_height = fit_text_block(
         draw=draw,
         text=text,
@@ -979,7 +968,7 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         safe_w=safe_w,
         max_block_h=title_max_h,
         max_lines=6,
-        start_size=int(img.height * 0.11),
+        start_size=adjusted_start_size,
         min_size=16,
         line_spacing_ratio=0.22
     )
@@ -1262,7 +1251,7 @@ def make_card_mn_tg(photo_bytes: bytes, title_text: str) -> BytesIO:
     return out
 
 
-def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", text_position: str = TEXT_POSITION_TOP) -> BytesIO:
+def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0) -> BytesIO:
     if template == "CHP":
         return make_card_chp(photo_bytes, title_text)
     if template == "AM":
@@ -1274,12 +1263,12 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
     if template == "MN_TG":
         return make_card_mn_tg(photo_bytes, title_text)
     if template == "MN2":
-        return make_card_mn2(photo_bytes, title_text, text_position)
+        return make_card_mn2(photo_bytes, title_text, text_position, font_size_multiplier)
     return make_card_mn(photo_bytes, title_text, text_position)
 
 
 # =========================
-# Caption formatting
+# Caption formatting (оставлено для совместимости, но не используется)
 # =========================
 RU_STOP = {
     "и", "в", "во", "на", "но", "а", "что", "это", "как", "к", "по", "из", "за", "для", "с", "со", "у", "от", "до",
@@ -1409,27 +1398,14 @@ def text_position_kb():
     return kb
 
 
-def preview_kb(source_url: str):
-    kb = InlineKeyboardMarkup()
-    kb.row(
-        InlineKeyboardButton("✅ Опубликовать", callback_data="publish"),
-        InlineKeyboardButton("✏️ Изменить текст", callback_data="edit_body"),
+def font_size_kb(current_multiplier: float = 1.0):
+    kb = InlineKeyboardMarkup(row_width=3)
+    kb.add(
+        InlineKeyboardButton("➖", callback_data=f"font_size:minus:{current_multiplier}"),
+        InlineKeyboardButton(f"{int(current_multiplier*100)}%", callback_data="font_size:current"),
+        InlineKeyboardButton("➕", callback_data=f"font_size:plus:{current_multiplier}")
     )
-    kb.row(
-        InlineKeyboardButton("✏️ Изменить заголовок", callback_data="edit_title"),
-        InlineKeyboardButton("❌ Отмена", callback_data="cancel"),
-    )
-    if source_url:
-        kb.row(InlineKeyboardButton("🔗 Источник", url=source_url))
-    if SUGGEST_URL:
-        kb.row(InlineKeyboardButton("📝 Предложить новость", url=SUGGEST_URL))
-    return kb
-
-
-def channel_kb():
-    kb = InlineKeyboardMarkup()
-    if SUGGEST_URL:
-        kb.row(InlineKeyboardButton("📝 Предложить новость", url=SUGGEST_URL))
+    kb.add(InlineKeyboardButton("✅ Готово", callback_data="font_size:done"))
     return kb
 
 
@@ -1571,6 +1547,53 @@ def run_http_server():
 # =========================
 # Callback handlers
 # =========================
+@bot.callback_query_handler(func=lambda c: c.data.startswith("font_size:"))
+def on_font_size_adjust(c):
+    uid = c.from_user.id
+    parts = c.data.split(":")
+    action = parts[1]
+    
+    st = user_state.get(uid) or {}
+    
+    if action == "done":
+        st["step"] = "waiting_text_position"
+        user_state[uid] = st
+        bot.edit_message_text(
+            "✅ Размер шрифта настроен. Теперь выбери расположение текста:",
+            c.message.chat.id,
+            c.message.message_id,
+            reply_markup=text_position_kb()
+        )
+        bot.answer_callback_query(c.id, "Настройки сохранены")
+        return
+    
+    current = float(parts[2]) if len(parts) > 2 else st.get("font_size_multiplier", 1.0)
+    
+    if action == "plus":
+        new_mult = min(2.0, current + 0.1)
+    elif action == "minus":
+        new_mult = max(0.5, current - 0.1)
+    else:
+        bot.answer_callback_query(c.id)
+        return
+    
+    st["font_size_multiplier"] = new_mult
+    user_state[uid] = st
+    
+    # Обновляем сообщение с новой клавиатурой
+    bot.edit_message_text(
+        f"🔤 Настройка размера шрифта для шаблона МН 2\n\n"
+        f"Текущий размер: {int(new_mult*100)}%\n"
+        f"Используй кнопки + и - для регулировки.\n"
+        f"Нажми «Готово» когда закончишь.",
+        c.message.chat.id,
+        c.message.message_id,
+        reply_markup=font_size_kb(new_mult)
+    )
+    
+    bot.answer_callback_query(c.id)
+
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("news_source:"))
 def on_news_source_select(c):
     uid = c.from_user.id
@@ -1829,7 +1852,16 @@ def on_tpl(c):
     st = user_state.get(uid) or {}
     st["template"] = tpl
     
-    if tpl in ["MN", "MN2"]:
+    if tpl == "MN2":
+        st["step"] = "waiting_font_size"
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, f"Шаблон МН 2 выбран ✅")
+        bot.send_message(
+            c.message.chat.id, 
+            "🔤 Настрой размер шрифта для заголовка:",
+            reply_markup=font_size_kb(1.0)
+        )
+    elif tpl in ["MN", "MN2"]:
         st["step"] = "waiting_text_position"
         user_state[uid] = st
         bot.answer_callback_query(c.id, f"Шаблон {tpl} выбран ✅")
@@ -1839,18 +1871,23 @@ def on_tpl(c):
         st["step"] = "waiting_photo_fdr_post"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
-        bot.send_message(c.message.chat.id, "💜 Выбран шаблон <b>Пост ФДР</b>\n\n📸 Пришли фото для поста.\n\n<i>Дальше нужно будет:</i>\n1️⃣ Отправить полный заголовок\n2️⃣ Отправить фразу для фиолетовой плашки\n3️⃣ Отправить основной текст", parse_mode="HTML")
+        bot.send_message(c.message.chat.id, "💜 Выбран шаблон <b>Пост ФДР</b>\n\n📸 Пришли фото для поста.\n\n<i>Дальше нужно будет:</i>\n1️⃣ Отправить полный заголовок\n2️⃣ Отправить фразу для фиолетовой плашки", parse_mode="HTML")
+    elif tpl == "FDR_STORY":
+        st["step"] = "waiting_photo_fdr_story"
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, "Шаблон 'Сторис ФДР' выбран ✅")
+        bot.send_message(c.message.chat.id, "📱 Выбран шаблон <b>Сторис ФДР</b>\n\n📸 Пришли фото для сторис.\n\n<i>Дальше нужно будет:</i>\n1️⃣ Отправить заголовок\n2️⃣ Отправить основной текст", parse_mode="HTML")
     elif tpl == "MN_TG":
         st["step"] = "waiting_photo_mn_tg"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Шаблон 'МН ТГ' выбран ✅")
-        bot.send_message(c.message.chat.id, "📱 Выбран шаблон <b>МН ТГ</b>\n\n📸 Сначала пришли фото для поста.\n\n<i>После фото нужно будет отправить текст целиком.</i>\nПервый абзац автоматически станет жирным заголовком, остальное - основным текстом.", parse_mode="HTML")
+        bot.send_message(c.message.chat.id, "📱 Выбран шаблон <b>МН ТГ</b>\n\n📸 Пришли фото для поста.\n\n<i>После фото нужно будет отправить заголовок.</i>", parse_mode="HTML")
     else:
         if st.get("step") in {"waiting_template", None}:
             st["step"] = "waiting_photo"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Ок ✅")
-        tpl_names = {'CHP': 'ЧП ВМ', 'AM': 'АМ', 'FDR_STORY': 'Сторис ФДР'}
+        tpl_names = {'CHP': 'ЧП ВМ', 'AM': 'АМ'}
         tpl_name = tpl_names.get(tpl, tpl)
         bot.send_message(c.message.chat.id, f"Шаблон выбран: {tpl_name}. Пришли фото 📷")
 
@@ -1868,84 +1905,6 @@ def on_text_position(c):
     position_text = "сверху" if position == "top" else "снизу"
     bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
     bot.send_message(c.message.chat.id, f"Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли фото 📷", parse_mode="HTML")
-
-
-@bot.callback_query_handler(func=lambda c: c.data in ["publish", "edit_body", "edit_title", "cancel"])
-def on_action(call):
-    uid = call.from_user.id
-    st = user_state.get(uid)
-
-    if not st or st.get("step") != "waiting_action":
-        bot.answer_callback_query(call.id, "Нет активного превью. Начни с «Оформить пост».")
-        return
-
-    if call.data == "publish":
-        try:
-            if st.get("template") == "MN_TG" and "full_text" in st:
-                caption = build_caption_tg(st["full_text"])
-            else:
-                title_to_use = st["full_title"] if st.get("template") == "FDR_POST" and "full_title" in st else st.get("title", "")
-                caption = build_caption_html(title_to_use, st["body_raw"])
-                
-            bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=channel_kb())
-            bot.answer_callback_query(call.id, "Опубликовано ✅")
-            bot.send_message(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
-            tpl = st.get("template", "MN")
-            user_state[uid] = {"step": "idle", "template": tpl}
-        except Exception as e:
-            logger.error(f"Error publishing: {e}")
-            bot.answer_callback_query(call.id, "Ошибка публикации")
-            bot.send_message(call.message.chat.id, f"Не смог опубликовать: {e}", reply_markup=main_menu_kb())
-
-    elif call.data == "edit_body":
-        if st.get("template") == "FDR_STORY":
-            st["step"] = "waiting_body_fdr"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ для сторис.", reply_markup=main_menu_kb())
-        elif st.get("template") == "FDR_POST":
-            st["step"] = "waiting_body_fdr_post"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
-        elif st.get("template") == "MN_TG":
-            st["step"] = "waiting_text_mn_tg"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком. Первый абзац станет заголовком.", reply_markup=main_menu_kb())
-        else:
-            st["step"] = "waiting_body"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
-
-    elif call.data == "edit_title":
-        if st.get("template") == "FDR_STORY":
-            st["step"] = "waiting_title_fdr"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК для сторис.", reply_markup=main_menu_kb())
-        elif st.get("template") == "FDR_POST":
-            st["step"] = "waiting_title_fdr_post"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ПОЛНЫЙ ЗАГОЛОВОК.", reply_markup=main_menu_kb())
-        elif st.get("template") == "MN_TG":
-            st["step"] = "waiting_text_mn_tg"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком. Первый абзац станет заголовком.", reply_markup=main_menu_kb())
-        else:
-            st["step"] = "waiting_title"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК.", reply_markup=main_menu_kb())
-
-    elif call.data == "cancel":
-        bot.answer_callback_query(call.id, "Отменено")
-        tpl = st.get("template", "MN")
-        user_state[uid] = {"step": "idle", "template": tpl}
-        bot.send_message(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
 
 
 # =========================
@@ -2109,11 +2068,7 @@ def cmd_template(message):
 @bot.message_handler(commands=["stop"])
 def cmd_stop(message):
     uid = message.from_user.id
-    if uid in user_state:
-        template = user_state[uid].get("template", "MN")
-        user_state[uid] = {"template": template, "step": "idle"}
-        logger.info(f"Reset state for user {uid}")
-    
+    clear_state(uid)
     bot.send_message(message.chat.id, "🛑 Бот сброшен в исходное состояние.\nМожно начинать новую команду.", reply_markup=main_menu_kb())
 
 
@@ -2256,8 +2211,6 @@ def on_photo_or_document(message):
                 bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
                 return
 
-            warn_if_too_small(message.chat.id, photo_bytes)
-
             st["photo_bytes"] = photo_bytes
             st["step"] = "waiting_title_fdr_post"
             user_state[uid] = st
@@ -2266,6 +2219,30 @@ def on_photo_or_document(message):
             return
         except Exception as e:
             logger.error(f"Error processing photo for FDR_POST: {e}")
+            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
+            return
+
+    if st.get("step") == "waiting_photo_fdr_story":
+        try:
+            if message.content_type == "photo":
+                file_id = message.photo[-1].file_id
+            else:
+                file_id = message.document.file_id
+            
+            photo_bytes = tg_file_bytes(file_id)
+
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                return
+
+            st["photo_bytes"] = photo_bytes
+            st["step"] = "waiting_title_fdr_story"
+            user_state[uid] = st
+
+            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для сторис:", parse_mode="HTML")
+            return
+        except Exception as e:
+            logger.error(f"Error processing photo for FDR_STORY: {e}")
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
 
@@ -2282,107 +2259,44 @@ def on_photo_or_document(message):
                 bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
                 return
 
-            warn_if_too_small(message.chat.id, photo_bytes)
-
-            card = make_card_mn_tg(photo_bytes, "")
             st["photo_bytes"] = photo_bytes
-            st["card_bytes"] = card.getvalue()
-            st["step"] = "waiting_text_mn_tg"
+            st["step"] = "waiting_title"
             user_state[uid] = st
 
-            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ВЕСЬ ТЕКСТ</b> поста одним сообщением.\nПервый абзац станет жирным заголовком, остальное - основным текстом.", parse_mode="HTML")
+            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
             return
         except Exception as e:
             logger.error(f"Error processing photo for MN_TG: {e}")
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
 
-    try:
-        if message.content_type == "photo":
-            file_id = message.photo[-1].file_id
-        else:
-            file_id = message.document.file_id
-        
-        photo_bytes = tg_file_bytes(file_id)
+    # Обработка фото для остальных шаблонов
+    if st.get("step") in ["waiting_photo", "waiting_photo_after_font"]:
+        try:
+            if message.content_type == "photo":
+                file_id = message.photo[-1].file_id
+            else:
+                file_id = message.document.file_id
+            
+            photo_bytes = tg_file_bytes(file_id)
 
-        if not check_file_size(photo_bytes):
-            bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
-            return
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                return
 
-        warn_if_too_small(message.chat.id, photo_bytes)
-        st["photo_bytes"] = photo_bytes
-
-        if st.get("prefill_title"):
-            st["title"] = st["prefill_title"]
-            st["source_url"] = st.get("prefill_source", "") or ""
-
-            try:
-                if st["template"] == "FDR_STORY":
-                    if st.get("prefill_body"):
-                        card = make_card(st["photo_bytes"], st["title"], st["template"], st["prefill_body"])
-                        st["card_bytes"] = card.getvalue()
-                        st["body_raw"] = st["prefill_body"]
-                        st.pop("prefill_body", None)
-                        st.pop("prefill_title", None)
-                        st.pop("prefill_source", None)
-                        st["step"] = "waiting_action"
-                        user_state[uid] = st
-
-                        caption = build_caption_html(st["title"], st["body_raw"])
-                        bot.send_photo(chat_id=message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
-                        bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-                        return
-                    else:
-                        st["step"] = "waiting_body_fdr"
-                        st.pop("prefill_title", None)
-                        st.pop("prefill_source", None)
-                        user_state[uid] = st
-                        bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
-                        return
-
-                if st["template"] in ["MN", "MN2"]:
-                    card = make_card(st["photo_bytes"], st["title"], st["template"], text_position=st.get("text_position", TEXT_POSITION_TOP))
-                else:
-                    card = make_card(st["photo_bytes"], st["title"], st["template"])
-                
-                st["card_bytes"] = card.getvalue()
-
-                if st.get("prefill_body"):
-                    st["body_raw"] = st["prefill_body"]
-                    st.pop("prefill_body", None)
-                    st.pop("prefill_title", None)
-                    st.pop("prefill_source", None)
-                    st["step"] = "waiting_action"
-                    user_state[uid] = st
-
-                    caption = build_caption_html(st["title"], st["body_raw"])
-                    bot.send_photo(chat_id=message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
-                    bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-                    return
-
-                st["step"] = "waiting_body"
-                st.pop("prefill_title", None)
-                st.pop("prefill_source", None)
-                user_state[uid] = st
-                bot.reply_to(message, "Фото получено ✅ Заголовок уже есть. Теперь пришли ОСНОВНОЙ ТЕКСТ поста.")
-            except Exception as e:
-                logger.error(f"Error creating card: {e}")
-                st["step"] = "waiting_photo"
-                user_state[uid] = st
-                bot.reply_to(message, f"Ошибка при создании карточки: {e}")
-            return
-
-        if st["template"] == "FDR_STORY":
-            st["step"] = "waiting_title_fdr"
-        else:
+            st["photo_bytes"] = photo_bytes
             st["step"] = "waiting_title"
+            user_state[uid] = st
 
-        user_state[uid] = st
-        bot.reply_to(message, "Фото получено ✅ Теперь отправь ЗАГОЛОВОК.")
+            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
+            return
 
-    except Exception as e:
-        logger.error(f"Error processing photo: {e}")
-        bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
+        except Exception as e:
+            logger.error(f"Error processing photo: {e}")
+            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
+            return
+
+    bot.reply_to(message, "Не знаю, что делать с этим фото. Начни с /post")
 
 
 @bot.message_handler(content_types=["video"])
@@ -2430,42 +2344,65 @@ def on_text(message):
     text = (message.text or "").strip()
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
 
+    # Обработка кнопок главного меню
     if text == BTN_POST:
         cmd_post(message)
         return
-
     if text == BTN_NEWS:
         cmd_news(message)
         return
-
     if text == BTN_ENHANCE:
         cmd_enhance(message)
         return
-
     if text == "🎥 Видео":
         cmd_video_menu(message)
         return
-
     if text == "🎬 Видео в GIF":
         cmd_video_to_gif(message)
         return
 
     step = st.get("step")
 
-    if step == "waiting_text_mn_tg":
+    # Обработка заголовка для FDR_STORY
+    if step == "waiting_title_fdr_story":
         if not text:
-            bot.reply_to(message, "❌ Текст не может быть пустым. Отправь текст:")
+            bot.reply_to(message, "❌ Заголовок не может быть пустым. Отправь текст:")
             return
         
-        st["full_text"] = text
-        st["step"] = "waiting_action"
+        st["title"] = text
+        st["step"] = "waiting_body_fdr_story"
         user_state[uid] = st
         
-        caption = build_caption_tg(text)
-        bot.send_photo(chat_id=message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
-        bot.reply_to(message, "✅ Пост готов! Нажми кнопку под превью для публикации.", reply_markup=main_menu_kb())
+        bot.reply_to(message, f"✅ Заголовок сохранён!\n\nТеперь отправь <b>ОСНОВНОЙ ТЕКСТ</b> для сторис:", parse_mode="HTML")
         return
 
+    # Обработка основного текста для FDR_STORY
+    if step == "waiting_body_fdr_story":
+        if not st.get("photo_bytes"):
+            bot.reply_to(message, "❌ Фото потерялось. Начни заново с /post")
+            clear_state(uid)
+            return
+
+        try:
+            card = make_card(st["photo_bytes"], st["title"], "FDR_STORY", body_text=text)
+            
+            # Отправляем файлом
+            bot.send_document(
+                chat_id=message.chat.id,
+                document=BytesIO(card.getvalue()),
+                visible_file_name="story.jpg",
+                caption="✅ Сторис готова!"
+            )
+            
+            # Сбрасываем состояние
+            clear_state(uid)
+            
+        except Exception as e:
+            logger.error(f"Error creating story: {e}")
+            bot.reply_to(message, f"❌ Ошибка при создании сторис: {e}")
+        return
+
+    # Обработка полного заголовка для FDR_POST
     if step == "waiting_title_fdr_post":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым. Отправь текст:")
@@ -2478,166 +2415,83 @@ def on_text(message):
         bot.reply_to(message, f"✅ Заголовок сохранён!\n\n<b>{html.escape(text)}</b>\n\n🎯 Теперь отправь <b>ФРАЗУ</b>, которую нужно выделить фиолетовой плашкой:\n\n<i>(можно скопировать часть заголовка или написать свою)</i>", parse_mode="HTML")
         return
 
+    # Обработка выделенной фразы для FDR_POST
     if step == "waiting_highlight_fdr_post":
         if not text:
             bot.reply_to(message, "❌ Фраза не может быть пустой. Отправь текст:")
             return
         
         st["highlight_phrase"] = text
-        st["step"] = "waiting_body_fdr_post"
-        user_state[uid] = st
         
         try:
-            card = make_card(st["photo_bytes"], st["full_title"], st["template"], highlight_phrase=st["highlight_phrase"])
-            st["card_bytes"] = card.getvalue()
-            bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]), caption=f"💜 <b>Предпросмотр</b>\n\nВыделенная фраза: <b>{html.escape(text)}</b>\n\nТеперь отправь <b>ОСНОВНОЙ ТЕКСТ</b> поста:", parse_mode="HTML")
-        except Exception as e:
-            logger.error(f"Error creating FDR_POST preview: {e}")
-            bot.reply_to(message, f"❌ Ошибка при создании превью: {e}\n\nПопробуй отправить фразу ещё раз или начни заново с /post")
-            st["step"] = "waiting_highlight_fdr_post"
-            user_state[uid] = st
-        return
-
-    if step == "waiting_body_fdr_post":
-        st["body_raw"] = text
-        body_src = extract_source_url(text)
-        if body_src:
-            st["source_url"] = body_src
-        
-        st["step"] = "waiting_action"
-        user_state[uid] = st
-        
-        try:
-            card = make_card(st["photo_bytes"], st["full_title"], st["template"], body_text=st["body_raw"], highlight_phrase=st["highlight_phrase"])
-            caption = build_caption_html(st["full_title"], st["body_raw"])
-            bot.send_photo(chat_id=message.chat.id, photo=BytesIO(card.getvalue()), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
-            bot.reply_to(message, "✅ Пост готов! Нажми кнопку под превью для публикации.", reply_markup=main_menu_kb())
-        except Exception as e:
-            logger.error(f"Error creating final FDR_POST card: {e}")
-            bot.reply_to(message, f"❌ Ошибка при создании финальной карточки: {e}")
-        return
-
-    if step == "waiting_title_fdr":
-        st["title"] = text
-        st["step"] = "waiting_body_fdr"
-        user_state[uid] = st
-        bot.reply_to(message, "Заголовок сохранен ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ для сторис.")
-        return
-
-    if step == "waiting_body_fdr":
-        if not st.get("photo_bytes"):
-            bot.reply_to(message, "❌ Фото потерялось. Начни заново с /post")
+            card = make_card(st["photo_bytes"], st["full_title"], "FDR_POST", highlight_phrase=st["highlight_phrase"])
+            
+            # Отправляем файлом
+            bot.send_document(
+                chat_id=message.chat.id,
+                document=BytesIO(card.getvalue()),
+                visible_file_name="post.jpg",
+                caption="✅ Пост готов!"
+            )
+            
+            # Сбрасываем состояние
             clear_state(uid)
-            return
-
-        st["body_raw"] = text
-        body_src = extract_source_url(text)
-        if body_src:
-            st["source_url"] = body_src
-
-        try:
-            card = make_card(st["photo_bytes"], st["title"], st.get("template", "FDR_STORY"), st["body_raw"])
-            st["card_bytes"] = card.getvalue()
-            st["step"] = "waiting_action"
-            user_state[uid] = st
-
-            caption = build_caption_html(st["title"], st["body_raw"])
-            bot.send_photo(chat_id=message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
-            bot.reply_to(message, "Сторис готова ✅ Нажми кнопку.")
+            
         except Exception as e:
-            logger.error(f"Error creating story: {e}")
-            bot.reply_to(message, f"❌ Ошибка при создании сторис: {e}")
-            st["step"] = "waiting_photo"
-            user_state[uid] = st
+            logger.error(f"Error creating FDR_POST: {e}")
+            bot.reply_to(message, f"❌ Ошибка при создании поста: {e}")
         return
 
-    if step == "waiting_video_title":
+    # Обработка заголовка для остальных шаблонов
+    if step == "waiting_title":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым. Отправь текст:")
             return
         
-        template = st.get("video_template", "MN")
-        processing_msg = bot.reply_to(message, "⏳ Обрабатываю видео... Это может занять некоторое время.")
-        
         try:
-            # Здесь должна быть функция обработки видео
-            # result = process_video_with_template(st["video_bytes"], template, title=text, text_position=st.get("video_text_position", TEXT_POSITION_TOP))
-            # caption = f"🎥 Видео в стиле {template}\n\n{html.escape(text)}"
-            # bot.send_video(message.chat.id, video=result, caption=caption, parse_mode="HTML")
-            bot.delete_message(message.chat.id, processing_msg.message_id)
-            bot.send_message(message.chat.id, "⚠️ Обработка видео временно недоступна")
-        except Exception as e:
-            logger.error(f"Error processing video: {e}")
-            bot.reply_to(message, f"❌ Ошибка при обработке видео: {e}")
-        
-        st.pop("step", None)
-        st.pop("video_bytes", None)
-        st.pop("video_template", None)
-        st.pop("video_text_position", None)
-        user_state[uid] = st
-        return
-    
-    if step == "waiting_video_highlight":
-        if not text:
-            bot.reply_to(message, "❌ Фраза не может быть пустой. Отправь текст:")
-            return
-        
-        st["video_highlight"] = text
-        st["step"] = "waiting_video_title"
-        user_state[uid] = st
-        
-        bot.reply_to(message, f"✅ Фраза сохранена: {html.escape(text)}\n\nТеперь отправь заголовок для видео:", parse_mode="HTML")
-        return
-
-    if step == "waiting_title":
-        st["title"] = text
-        try:
-            if st.get("template") in ["MN", "MN2"]:
-                card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), text_position=st.get("text_position", TEXT_POSITION_TOP))
-            elif st.get("template") == "MN_TG":
-                card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN_TG"))
-            else:
-                card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"))
+            font_mult = st.get("font_size_multiplier", 1.0) if st.get("template") == "MN2" else 1.0
             
-            st["card_bytes"] = card.getvalue()
-            st["step"] = "waiting_body"
-            user_state[uid] = st
-            bot.reply_to(message, "Карточка готова ✅ Теперь пришли ОСНОВНОЙ ТЕКСТ поста.")
+            card = make_card(
+                st["photo_bytes"], 
+                text, 
+                st.get("template", "MN"), 
+                text_position=st.get("text_position", TEXT_POSITION_TOP),
+                font_size_multiplier=font_mult
+            )
+            
+            # Отправляем файлом
+            bot.send_document(
+                chat_id=message.chat.id,
+                document=BytesIO(card.getvalue()),
+                visible_file_name="post.jpg",
+                caption="✅ Пост готов!"
+            )
+            
+            # Сбрасываем состояние
+            clear_state(uid)
+            
         except Exception as e:
             logger.error(f"Error creating card: {e}")
-            st["step"] = "waiting_photo"
-            user_state[uid] = st
-            bot.reply_to(message, f"Ошибка при создании карточки: {e}")
+            bot.reply_to(message, f"❌ Ошибка при создании карточки: {e}")
+        return
 
-    elif step == "waiting_body":
-        st["body_raw"] = text
-        body_src = extract_source_url(text)
-        if body_src:
-            st["source_url"] = body_src
-
-        st["step"] = "waiting_action"
-        user_state[uid] = st
-        
-        if st.get("template") == "MN_TG":
-            caption = build_caption_tg(st["body_raw"])
-        else:
-            caption = build_caption_html(st["title"], st["body_raw"])
-            
-        bot.send_photo(chat_id=message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb(st.get("source_url", "")))
-        bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
-
-    elif step == "waiting_action":
-        bot.reply_to(message, "Нажми кнопку под превью ✅✏️❌ (или выбери действие в меню снизу).", reply_markup=main_menu_kb())
-
-    elif step == "waiting_template":
+    # Если мы в состоянии ожидания шаблона
+    if step == "waiting_template":
         bot.send_message(message.chat.id, "Выбери шаблон кнопками:", reply_markup=template_kb())
+        return
 
-    elif step == "waiting_text_position":
+    # Если в состоянии ожидания расположения текста
+    if step == "waiting_text_position":
         bot.send_message(message.chat.id, "Сначала выбери расположение текста:", reply_markup=text_position_kb())
+        return
 
-    else:
-        user_state[uid] = st
-        bot.send_message(message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
+    # Если в состоянии ожидания настройки шрифта
+    if step == "waiting_font_size":
+        bot.send_message(message.chat.id, "Сначала настрой размер шрифта:", reply_markup=font_size_kb(st.get("font_size_multiplier", 1.0)))
+        return
+
+    # Если ничего не подошло, показываем главное меню
+    bot.send_message(message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
 
 
 # =========================
