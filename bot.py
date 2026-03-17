@@ -952,7 +952,7 @@ def crop_to_square(img: Image.Image) -> Image.Image:
 
 
 # =========================
-# Text wrapping functions - НАСТРОЙКИ ИЗ bot (23).py
+# Text wrapping functions - ИСПРАВЛЕНО: настройки из bot (20) (1).py
 # =========================
 def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) -> int:
     bb = draw.textbbox((0, 0), s, font=font)
@@ -1001,9 +1001,9 @@ def fit_text_block(
     max_lines: int = 6,
     start_size: int = 90,
     min_size: int = 16,
-    line_spacing_ratio: float = 0.22,  # ИЗ bot (23).py
+    line_spacing_ratio: float = 0.22,  # ИЗ bot (20) (1).py - такое же значение
 ) -> Tuple[ImageFont.FreeTypeFont, List[str], List[int], int, int]:
-    """Функция подбора размера шрифта с равномерными отступами (как в bot 23)"""
+    """Функция подбора размера шрифта с отступами как в bot (20) (1).py"""
     text = (text or "").strip()
     if not text:
         text = " "
@@ -1149,7 +1149,7 @@ def _draw_story_text(draw, text, box, font, fill=(255, 255, 255), align="center"
 
 
 # =========================
-# Card making functions - С ПОДДЕРЖКОЙ КВАДРАТОВ
+# Card making functions - С ПОДДЕРЖКОЙ КВАДРАТОВ и правильными отступами
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, is_square: bool = False) -> BytesIO:
     ensure_fonts()
