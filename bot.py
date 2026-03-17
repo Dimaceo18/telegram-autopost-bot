@@ -127,12 +127,15 @@ VIDEO_BITRATE = "2000k"
 # =========================
 BTN_POST = "📝 Оформить пост"
 BTN_NEWS = "📰 Получить новости"
+BTN_NEWS_BY_LINK = "🔗 Новость по ссылке"
 BTN_ENHANCE = "✨ Улучшить качество"
+BTN_WATERMARK = "💧 Водяные знаки"
 
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_NEWS))
-    kb.row(KeyboardButton(BTN_ENHANCE), KeyboardButton("🎥 Видео"))
+    kb.row(KeyboardButton(BTN_NEWS_BY_LINK), KeyboardButton(BTN_ENHANCE))
+    kb.row(KeyboardButton(BTN_WATERMARK), KeyboardButton("🎥 Видео"))
     kb.row(KeyboardButton("🎬 Видео в GIF"))
     return kb
 
@@ -570,6 +573,117 @@ def enhance_image_simple(image_bytes: bytes) -> BytesIO:
 
 
 # =========================
+# Watermark functions
+# =========================
+def apply_watermark_mn(photo_bytes: bytes) -> BytesIO:
+    """
+    Наносит водяной знак "MINSK NEWS" по центру фото с прозрачностью 25%
+    """
+    try:
+        # Открываем изображение
+        img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
+        
+        # Создаем слой для водяного знака
+        watermark = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(watermark)
+        
+        # Определяем размер шрифта (10% от ширины изображения)
+        font_size = int(img.width * 0.1)
+        
+        # Загружаем шрифт
+        try:
+            font = ImageFont.truetype(FONT_MN, font_size)
+        except:
+            font = ImageFont.load_default()
+        
+        # Текст водяного знака
+        watermark_text = "MINSK NEWS"
+        
+        # Получаем размеры текста
+        bbox = draw.textbbox((0, 0), watermark_text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        # Вычисляем позицию для центрирования
+        x = (img.width - text_width) // 2
+        y = (img.height - text_height) // 2
+        
+        # Рисуем текст с прозрачностью 25% (64 из 255)
+        draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 64))
+        
+        # Накладываем водяной знак на исходное изображение
+        result = Image.alpha_composite(img, watermark)
+        
+        # Конвертируем обратно в RGB для сохранения в JPEG
+        result = result.convert("RGB")
+        
+        # Сохраняем в буфер
+        output = BytesIO()
+        result.save(output, format="JPEG", quality=95, optimize=True)
+        output.seek(0)
+        
+        return output
+        
+    except Exception as e:
+        logger.error(f"Error applying MN watermark: {e}")
+        raise
+
+
+def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
+    """
+    Наносит водяной знак "ЧП Минск" по центру фото с прозрачностью 25%
+    """
+    try:
+        # Открываем изображение
+        img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
+        
+        # Создаем слой для водяного знака
+        watermark = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(watermark)
+        
+        # Определяем размер шрифта (10% от ширины изображения)
+        font_size = int(img.width * 0.1)
+        
+        # Загружаем шрифт
+        try:
+            font = ImageFont.truetype(FONT_CHP, font_size)
+        except:
+            font = ImageFont.load_default()
+        
+        # Текст водяного знака
+        watermark_text = "ЧП Минск"
+        
+        # Получаем размеры текста
+        bbox = draw.textbbox((0, 0), watermark_text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        # Вычисляем позицию для центрирования
+        x = (img.width - text_width) // 2
+        y = (img.height - text_height) // 2
+        
+        # Рисуем текст с прозрачностью 25% (64 из 255)
+        draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 64))
+        
+        # Накладываем водяной знак на исходное изображение
+        result = Image.alpha_composite(img, watermark)
+        
+        # Конвертируем обратно в RGB для сохранения в JPEG
+        result = result.convert("RGB")
+        
+        # Сохраняем в буфер
+        output = BytesIO()
+        result.save(output, format="JPEG", quality=95, optimize=True)
+        output.seek(0)
+        
+        return output
+        
+    except Exception as e:
+        logger.error(f"Error applying CHP watermark: {e}")
+        raise
+
+
+# =========================
 # Gradient functions
 # =========================
 def apply_top_gradient(img: Image.Image, height_pct: float, max_alpha: int = 165) -> Image.Image:
@@ -703,8 +817,13 @@ def fit_text_block(
     max_lines: int = 6,
     start_size: int = 90,
     min_size: int = 16,
-    line_spacing_ratio: float = 0.22,
+    line_spacing: int = 10,
 ) -> Tuple[ImageFont.FreeTypeFont, List[str], List[int], int, int]:
+    """
+    Подбирает размер шрифта так, чтобы текст поместился в заданную область.
+    Использует фиксированный межстрочный интервал line_spacing.
+    Возвращает: (font, lines, line_heights, line_spacing, total_height)
+    """
     text = (text or "").strip()
     if not text:
         text = " "
@@ -713,37 +832,44 @@ def fit_text_block(
     while size >= min_size:
         font = ImageFont.truetype(font_path, size)
         lines, ok = wrap_no_truncate(draw, text, font, safe_w, max_lines=max_lines)
-        spacing = int(size * line_spacing_ratio)
 
-        heights = []
+        # Вычисляем высоты строк и общую высоту с фиксированным интервалом
+        line_heights = []
         total_h = 0
         max_w = 0
-        for ln in lines:
+        
+        for i, ln in enumerate(lines):
             bb = draw.textbbox((0, 0), ln, font=font)
             lw = bb[2] - bb[0]
             lh = bb[3] - bb[1]
-            heights.append(lh)
+            line_heights.append(lh)
             total_h += lh
             max_w = max(max_w, lw)
-        total_h += spacing * (len(lines) - 1)
+            
+            # Добавляем межстрочный интервал после каждой строки, кроме последней
+            if i < len(lines) - 1:
+                total_h += line_spacing
 
         if ok and max_w <= safe_w and total_h <= max_block_h:
-            return font, lines, heights, spacing, total_h
+            return font, lines, line_heights, line_spacing, total_h
 
         size -= 2
 
+    # Если не удалось подобрать размер, используем минимальный
     font = ImageFont.truetype(font_path, min_size)
     lines, _ = wrap_no_truncate(draw, text, font, safe_w, max_lines=max_lines)
-    spacing = int(min_size * line_spacing_ratio)
-    heights = []
+    
+    line_heights = []
     total_h = 0
-    for ln in lines:
+    for i, ln in enumerate(lines):
         bb = draw.textbbox((0, 0), ln, font=font)
         lh = bb[3] - bb[1]
-        heights.append(lh)
+        line_heights.append(lh)
         total_h += lh
-    total_h += spacing * (len(lines) - 1)
-    return font, lines, heights, spacing, total_h
+        if i < len(lines) - 1:
+            total_h += line_spacing
+            
+    return font, lines, line_heights, line_spacing, total_h
 
 
 def crop_to_4x5(img: Image.Image) -> Image.Image:
@@ -889,6 +1015,10 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     text = (title_text or "").strip().upper()
 
+    # Фиксированный межстрочный интервал - 15% от высоты шрифта
+    base_font_size = int(img.height * 0.11)
+    line_spacing = int(base_font_size * 0.15)
+    
     font, lines, heights, spacing, total_text_height = fit_text_block(
         draw=draw,
         text=text,
@@ -896,9 +1026,9 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
         safe_w=safe_w,
         max_block_h=title_max_h,
         max_lines=6,
-        start_size=int(img.height * 0.11),
+        start_size=base_font_size,
         min_size=16,
-        line_spacing_ratio=0.22
+        line_spacing=line_spacing
     )
 
     block_w = 0
@@ -917,7 +1047,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     y = title_y
     for i, ln in enumerate(lines):
         draw.text((block_x, y), ln, font=font, fill="white")
-        y += heights[i] + spacing
+        y += heights[i] + (spacing if i < len(lines) - 1 else 0)
 
     footer_x = (img.width - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
@@ -961,6 +1091,9 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     base_start_size = int(img.height * 0.11)
     adjusted_start_size = int(base_start_size * font_size_multiplier)
     
+    # Фиксированный межстрочный интервал - 15% от скорректированного размера шрифта
+    line_spacing = int(adjusted_start_size * 0.15)
+    
     font, lines, heights, spacing, total_text_height = fit_text_block(
         draw=draw,
         text=text,
@@ -970,7 +1103,7 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         max_lines=6,
         start_size=adjusted_start_size,
         min_size=16,
-        line_spacing_ratio=0.22
+        line_spacing=line_spacing
     )
 
     block_w = 0
@@ -989,7 +1122,7 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     y = title_y
     for i, ln in enumerate(lines):
         draw.text((block_x, y), ln, font=font, fill="white")
-        y += heights[i] + spacing
+        y += heights[i] + (spacing if i < len(lines) - 1 else 0)
 
     footer_x = (img.width - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
@@ -1017,6 +1150,9 @@ def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     text = (title_text or "").strip().upper()
 
+    base_font_size = int(img.height * 0.11)
+    line_spacing = int(base_font_size * 0.15)
+
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw,
         text=text,
@@ -1024,15 +1160,15 @@ def make_card_chp(photo_bytes: bytes, title_text: str) -> BytesIO:
         safe_w=safe_w,
         max_block_h=title_max_h,
         max_lines=6,
-        start_size=int(img.height * 0.11),
+        start_size=base_font_size,
         min_size=16,
-        line_spacing_ratio=0.22
+        line_spacing=line_spacing
     )
 
     y = img.height - margin_bottom - total_h
     for i, ln in enumerate(lines):
         draw.text((margin_x, y), ln, font=font, fill="white")
-        y += heights[i] + spacing
+        y += heights[i] + (spacing if i < len(lines) - 1 else 0)
 
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
@@ -1059,6 +1195,9 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     text_zone_bottom = int(band_h * 0.12)
     text_zone_h = max(1, band_h - text_zone_top - text_zone_bottom)
 
+    base_font_size = int(img.height * 0.060)
+    line_spacing = int(base_font_size * 0.12)
+
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw,
         text=text,
@@ -1066,9 +1205,9 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
         safe_w=safe_w,
         max_block_h=text_zone_h,
         max_lines=3,
-        start_size=int(img.height * 0.060),
+        start_size=base_font_size,
         min_size=20,
-        line_spacing_ratio=0.16
+        line_spacing=line_spacing
     )
 
     y = text_zone_top + max(0, (text_zone_h - total_h) // 2)
@@ -1076,7 +1215,7 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
         lw = text_width(draw, ln, font)
         x = (img.width - lw) // 2
         draw.text((x, y), ln, font=font, fill="white")
-        y += heights[i] + spacing
+        y += heights[i] + (spacing if i < len(lines) - 1 else 0)
 
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
@@ -1162,6 +1301,9 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     
+    base_font_size = int(img.height * 0.11)
+    line_spacing = int(base_font_size * 0.15)
+    
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw,
         text=title_text_upper,
@@ -1169,13 +1311,14 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
         safe_w=safe_w,
         max_block_h=title_max_h,
         max_lines=6,
-        start_size=int(img.height * 0.11),
+        start_size=base_font_size,
         min_size=16,
-        line_spacing_ratio=0.22
+        line_spacing=line_spacing
     )
     
     base_y = img.height - margin_bottom - total_h
     
+    # Сначала рисуем фиолетовые плашки
     y = base_y
     for line_idx, line in enumerate(lines):
         line_words = line.split()
@@ -1199,8 +1342,9 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
             else:
                 current_x += text_width(draw, word, font)
         
-        y += heights[line_idx] + spacing
+        y += heights[line_idx] + (spacing if line_idx < len(lines) - 1 else 0)
     
+    # Затем рисуем текст поверх
     y = base_y
     for line_idx, line in enumerate(lines):
         line_words = line.split()
@@ -1214,7 +1358,7 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
             else:
                 current_x += text_width(draw, word, font)
         
-        y += heights[line_idx] + spacing
+        y += heights[line_idx] + (spacing if line_idx < len(lines) - 1 else 0)
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
@@ -1265,6 +1409,126 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
     if template == "MN2":
         return make_card_mn2(photo_bytes, title_text, text_position, font_size_multiplier)
     return make_card_mn(photo_bytes, title_text, text_position)
+
+
+# =========================
+# News by link parser
+# =========================
+def parse_news_from_url(url: str) -> Optional[Dict]:
+    """
+    Парсит новость по ссылке, извлекает заголовок и изображение
+    """
+    try:
+        # Получаем HTML страницы
+        html_content = http_get(url, timeout=REQUEST_TIMEOUT)
+        if not html_content:
+            return None
+        
+        soup = BeautifulSoup(html_content, "html.parser")
+        
+        # Удаляем ненужные элементы
+        for tag in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside', 'iframe']):
+            tag.decompose()
+        
+        # Ищем заголовок
+        title = None
+        
+        # Пробуем найти по разным селекторам
+        title_selectors = [
+            'h1',
+            'h1.article__title',
+            'h1.news__title',
+            'h1.post__title',
+            'h1.entry-title',
+            '.article-title',
+            '.news-title',
+            '.post-title',
+            '.entry-title',
+            'meta[property="og:title"]',
+            'meta[name="twitter:title"]'
+        ]
+        
+        for selector in title_selectors:
+            if selector.startswith('meta'):
+                # Для meta тегов
+                meta_tag = soup.find('meta', attrs={'property': selector.split('[')[1].split('=')[1].strip('"\'')})
+                if meta_tag and meta_tag.get('content'):
+                    title = meta_tag['content']
+                    break
+            else:
+                # Для обычных селекторов
+                element = soup.select_one(selector)
+                if element:
+                    title = element.get_text(strip=True)
+                    break
+        
+        # Если не нашли, пробуем получить из title страницы
+        if not title and soup.title:
+            title = soup.title.get_text(strip=True)
+            # Обрезаем название сайта, если есть
+            common_site_names = ['Onliner', 'Sputnik', 'Telegraf', 'Tochka', 'Smartpress', 'Minsknews', 'Mlyn', 'ONT']
+            for site in common_site_names:
+                if f' - {site}' in title:
+                    title = title.split(f' - {site}')[0]
+                    break
+                elif f' | {site}' in title:
+                    title = title.split(f' | {site}')[0]
+                    break
+        
+        # Ищем изображение
+        image_url = None
+        
+        # Пробуем Open Graph изображение
+        og_image = soup.find('meta', property='og:image')
+        if og_image and og_image.get('content'):
+            image_url = og_image['content']
+        
+        # Если нет og:image, ищем другие изображения
+        if not image_url:
+            # Ищем Twitter изображение
+            twitter_image = soup.find('meta', attrs={'name': 'twitter:image'})
+            if twitter_image and twitter_image.get('content'):
+                image_url = twitter_image['content']
+        
+        if not image_url:
+            # Ищем первое подходящее изображение в статье
+            # Сначала ищем в article
+            article = soup.find('article') or soup.find(class_=re.compile(r'(content|article|post|news)', re.I))
+            if article:
+                img = article.find('img', src=True)
+                if img and img.get('src'):
+                    image_url = normalize_url(url, img['src'])
+            
+            # Если не нашли, ищем любое большое изображение
+            if not image_url:
+                for img in soup.find_all('img', src=True):
+                    src = img.get('src', '')
+                    # Проверяем, что изображение не иконка и не маленькое
+                    if any(x in src.lower() for x in ['photo', 'image', 'picture', 'news', 'article', 'post']):
+                        if not any(x in src.lower() for x in ['icon', 'logo', 'avatar', 'profile', 'comment']):
+                            image_url = normalize_url(url, src)
+                            # Проверяем размер, если сможем
+                            try:
+                                img_data = http_get_bytes(image_url, timeout=3)
+                                if img_data:
+                                    img_pil = Image.open(BytesIO(img_data))
+                                    if img_pil.width > 300 and img_pil.height > 200:
+                                        break
+                            except:
+                                continue
+        
+        if not title:
+            title = "Новость"
+        
+        return {
+            "title": title,
+            "image_url": image_url,
+            "url": url
+        }
+        
+    except Exception as e:
+        logger.error(f"Error parsing news from URL {url}: {e}")
+        return None
 
 
 # =========================
@@ -1409,6 +1673,16 @@ def font_size_kb(current_multiplier: float = 1.0):
     return kb
 
 
+def watermark_type_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("📰 МН", callback_data="watermark:mn"),
+        InlineKeyboardButton("🚨 ЧП", callback_data="watermark:chp")
+    )
+    kb.add(InlineKeyboardButton("❌ Отмена", callback_data="watermark:cancel"))
+    return kb
+
+
 SOURCE_NAMES = {
     "onliner": "Onliner",
     "sputnik": "Sputnik",
@@ -1547,6 +1821,42 @@ def run_http_server():
 # =========================
 # Callback handlers
 # =========================
+@bot.callback_query_handler(func=lambda c: c.data.startswith("watermark:"))
+def on_watermark_type(c):
+    uid = c.from_user.id
+    wm_type = c.data.split(":", 1)[1]
+    st = user_state.get(uid) or {}
+    
+    if wm_type == "cancel":
+        st.pop("step", None)
+        user_state[uid] = st
+        bot.edit_message_text(
+            "❌ Отменено",
+            c.message.chat.id,
+            c.message.message_id
+        )
+        bot.answer_callback_query(c.id, "Отменено")
+        return
+    
+    # Сохраняем тип водяного знака
+    st["watermark_type"] = wm_type
+    st["step"] = "waiting_watermark_photo"
+    user_state[uid] = st
+    
+    wm_names = {"mn": "MINSK NEWS", "chp": "ЧП Минск"}
+    wm_name = wm_names.get(wm_type, wm_type)
+    
+    bot.edit_message_text(
+        f"✅ Выбран водяной знак: <b>{wm_name}</b>\n\n"
+        f"📸 Теперь отправь фото, на которое нужно нанести водяной знак.\n\n"
+        f"<i>Знак будет расположен по центру с прозрачностью 25%</i>",
+        c.message.chat.id,
+        c.message.message_id,
+        parse_mode="HTML"
+    )
+    bot.answer_callback_query(c.id, f"Выбран {wm_name}")
+
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("font_size:"))
 def on_font_size_adjust(c):
     uid = c.from_user.id
@@ -1556,14 +1866,25 @@ def on_font_size_adjust(c):
     st = user_state.get(uid) or {}
     
     if action == "done":
-        st["step"] = "waiting_text_position"
-        user_state[uid] = st
-        bot.edit_message_text(
-            "✅ Размер шрифта настроен. Теперь выбери расположение текста:",
-            c.message.chat.id,
-            c.message.message_id,
-            reply_markup=text_position_kb()
-        )
+        # Проверяем режим новости
+        if st.get("step") == "waiting_font_size_for_news":
+            st["step"] = "waiting_text_position_for_news"
+            user_state[uid] = st
+            bot.edit_message_text(
+                "✅ Размер шрифта настроен. Теперь выбери расположение текста:",
+                c.message.chat.id,
+                c.message.message_id,
+                reply_markup=text_position_kb()
+            )
+        else:
+            st["step"] = "waiting_text_position"
+            user_state[uid] = st
+            bot.edit_message_text(
+                "✅ Размер шрифта настроен. Теперь выбери расположение текста:",
+                c.message.chat.id,
+                c.message.message_id,
+                reply_markup=text_position_kb()
+            )
         bot.answer_callback_query(c.id, "Настройки сохранены")
         return
     
@@ -1850,6 +2171,120 @@ def on_tpl(c):
     uid = c.from_user.id
     tpl = c.data.split(":", 1)[1]
     st = user_state.get(uid) or {}
+    
+    # Проверяем, находимся ли мы в режиме новости по ссылке
+    if st.get("step") == "waiting_template_for_news":
+        # Обрабатываем новость по ссылке
+        st["template"] = tpl
+        
+        # Получаем данные новости
+        news_title = st.get("news_title", "")
+        news_image_url = st.get("news_image_url")
+        news_url = st.get("news_url", "")
+        
+        # Если есть фото по ссылке, скачиваем его
+        if news_image_url:
+            try:
+                photo_bytes = http_get_bytes(news_image_url, timeout=10)
+                if not photo_bytes:
+                    bot.answer_callback_query(c.id, "❌ Не удалось загрузить фото")
+                    return
+                
+                st["photo_bytes"] = photo_bytes
+            except Exception as e:
+                logger.error(f"Error downloading news image: {e}")
+                bot.answer_callback_query(c.id, "❌ Ошибка загрузки фото")
+                return
+        else:
+            # Если фото нет, просим пользователя прислать своё
+            st["step"] = "waiting_photo_for_news"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, "Выбери шаблон ✅")
+            bot.send_message(
+                c.message.chat.id,
+                f"📸 Фото не найдено. Пришли своё фото для оформления новости.\n\n"
+                f"Заголовок новости:\n<b>{html.escape(news_title)}</b>",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Если есть фото, проверяем нужна ли настройка шрифта/позиции
+        if tpl == "MN2":
+            st["step"] = "waiting_font_size_for_news"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, f"Шаблон МН 2 выбран ✅")
+            bot.send_message(
+                c.message.chat.id,
+                "🔤 Настрой размер шрифта для заголовка:",
+                reply_markup=font_size_kb(1.0)
+            )
+        elif tpl in ["MN", "MN2"]:
+            st["step"] = "waiting_text_position_for_news"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, f"Шаблон {tpl} выбран ✅")
+            template_name = "МН 2" if tpl == "MN2" else "МН"
+            bot.send_message(
+                c.message.chat.id,
+                f"📰 Выбран шаблон <b>{template_name}</b>\n\nГде разместить текст?",
+                parse_mode="HTML",
+                reply_markup=text_position_kb()
+            )
+        elif tpl == "FDR_POST":
+            st["step"] = "waiting_highlight_for_news"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
+            bot.send_message(
+                c.message.chat.id,
+                f"💜 Выбран шаблон <b>Пост ФДР</b>\n\n"
+                f"🎯 Отправь <b>ФРАЗУ</b>, которую нужно выделить фиолетовой плашкой:\n\n"
+                f"<i>(можно скопировать часть заголовка: {html.escape(news_title[:50])}...)</i>",
+                parse_mode="HTML"
+            )
+        elif tpl == "FDR_STORY":
+            st["step"] = "waiting_body_for_news_story"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, "Шаблон 'Сторис ФДР' выбран ✅")
+            bot.send_message(
+                c.message.chat.id,
+                f"📱 Выбран шаблон <b>Сторис ФДР</b>\n\n"
+                f"📝 Заголовок уже есть: <b>{html.escape(news_title)}</b>\n\n"
+                f"Теперь отправь <b>ОСНОВНОЙ ТЕКСТ</b> для сторис:",
+                parse_mode="HTML"
+            )
+        else:
+            # Для остальных шаблонов сразу создаём карточку
+            try:
+                font_mult = st.get("font_size_multiplier", 1.0) if tpl == "MN2" else 1.0
+                
+                card = make_card(
+                    st["photo_bytes"],
+                    news_title,
+                    tpl,
+                    text_position=st.get("text_position", TEXT_POSITION_TOP),
+                    font_size_multiplier=font_mult
+                )
+                
+                # Отправляем файлом
+                bot.send_document(
+                    chat_id=c.message.chat.id,
+                    document=BytesIO(card.getvalue()),
+                    visible_file_name=f"news_{tpl}.jpg",
+                    caption=f"✅ Новость оформлена в шаблоне {tpl}\n\n🔗 <a href='{news_url}'>Источник</a>",
+                    parse_mode="HTML"
+                )
+                
+                # Сбрасываем состояние
+                clear_state(uid)
+                bot.answer_callback_query(c.id, "Готово ✅")
+                
+            except Exception as e:
+                logger.error(f"Error creating news card: {e}")
+                bot.answer_callback_query(c.id, "❌ Ошибка создания")
+                bot.send_message(c.message.chat.id, f"❌ Ошибка: {e}")
+        
+        return
+    
+    # Если не в режиме новости, обрабатываем как обычно
     st["template"] = tpl
     
     if tpl == "MN2":
@@ -1898,6 +2333,44 @@ def on_text_position(c):
     position = c.data.split(":", 1)[1]
     st = user_state.get(uid) or {}
     
+    # Проверяем режим новости
+    if st.get("step") == "waiting_text_position_for_news":
+        st["text_position"] = position
+        st["step"] = "create_news_card"
+        user_state[uid] = st
+        
+        position_text = "сверху" if position == "top" else "снизу"
+        bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
+        
+        # Создаём карточку
+        try:
+            font_mult = st.get("font_size_multiplier", 1.0)
+            
+            card = make_card(
+                st["photo_bytes"],
+                st.get("news_title", ""),
+                st.get("template", "MN"),
+                text_position=position,
+                font_size_multiplier=font_mult
+            )
+            
+            bot.send_document(
+                chat_id=c.message.chat.id,
+                document=BytesIO(card.getvalue()),
+                visible_file_name="news.jpg",
+                caption=f"✅ Новость готова!\n\n🔗 <a href='{st.get('news_url', '')}'>Источник</a>",
+                parse_mode="HTML"
+            )
+            
+            clear_state(uid)
+            
+        except Exception as e:
+            logger.error(f"Error creating news card: {e}")
+            bot.send_message(c.message.chat.id, f"❌ Ошибка: {e}")
+        
+        return
+    
+    # Если не в режиме новости, обрабатываем как обычно
     st["text_position"] = position
     st["step"] = "waiting_photo"
     user_state[uid] = st
@@ -2024,8 +2497,10 @@ def cmd_start(message):
         "👋 <b>Привет! Я бот для оформления постов</b>\n\n"
         "<b>📝 Основные функции:</b>\n"
         "• Оформление постов с фото (7 шаблонов)\n"
+        "• 🔗 Новость по ссылке - отправь ссылку, я найду заголовок и фото\n"
         "• Получение свежих новостей из 8 источников\n"
-        "• Улучшение качества фото (+20% резкость, +15% насыщенность)\n"
+        "• ✨ Улучшение качества фото (+20% резкость, +15% насыщенность)\n"
+        "• 💧 <b>Водяные знаки</b> - нанеси \"MINSK NEWS\" или \"ЧП Минск\" на фото\n"
         "• Работа с видео (конвертация в GIF, оформление)\n\n"
         "Выбери действие 👇",
         parse_mode="HTML",
@@ -2105,6 +2580,27 @@ def handle_news_button(message):
     cmd_news(message)
 
 
+@bot.message_handler(func=lambda message: message.text == BTN_NEWS_BY_LINK)
+def cmd_news_by_link(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    st["step"] = "waiting_news_link"
+    st.setdefault("template", "MN")
+    user_state[uid] = st
+    
+    bot.send_message(
+        message.chat.id,
+        "🔗 <b>Новость по ссылке</b>\n\n"
+        "Отправь ссылку на новость, и я:\n"
+        "1️⃣ Извлеку заголовок\n"
+        "2️⃣ Найду главное фото\n"
+        "3️⃣ Предложу выбрать шаблон оформления\n\n"
+        "<i>Поддерживаются сайты: Onliner, Sputnik, Telegraf, Tochka, Smartpress, Minsknews, Mlyn, ONT и другие</i>",
+        parse_mode="HTML",
+        reply_markup=main_menu_kb()
+    )
+
+
 @bot.message_handler(func=lambda message: message.text == BTN_ENHANCE)
 def cmd_enhance(message):
     uid = message.from_user.id
@@ -2121,6 +2617,22 @@ def cmd_enhance(message):
         "<i>Лучше отправлять фото как файл (документ) для сохранения оригинального качества</i>",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
+    )
+
+
+@bot.message_handler(func=lambda message: message.text == BTN_WATERMARK)
+def cmd_watermark(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    st["step"] = "waiting_watermark_type"
+    user_state[uid] = st
+    
+    bot.send_message(
+        message.chat.id,
+        "💧 <b>Водяные знаки</b>\n\n"
+        "Выбери тип водяного знака:",
+        parse_mode="HTML",
+        reply_markup=watermark_type_kb()
     )
 
 
@@ -2156,6 +2668,57 @@ def on_photo_or_document(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     
+    # Обработка фото для водяного знака
+    if st.get("step") == "waiting_watermark_photo":
+        try:
+            if message.content_type == "photo":
+                file_id = message.photo[-1].file_id
+            else:
+                doc = message.document
+                if not doc.mime_type or not doc.mime_type.startswith("image/"):
+                    bot.reply_to(message, "❌ Это не изображение. Отправь JPG или PNG файл.")
+                    return
+                file_id = doc.file_id
+            
+            photo_bytes = tg_file_bytes(file_id)
+            
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимум 20MB.")
+                return
+            
+            processing_msg = bot.reply_to(message, "⏳ Наношу водяной знак...")
+            
+            wm_type = st.get("watermark_type", "mn")
+            
+            # Применяем соответствующий водяной знак
+            if wm_type == "mn":
+                result = apply_watermark_mn(photo_bytes)
+                caption = "💧 Водяной знак <b>MINSK NEWS</b> нанесён!"
+            else:  # chp
+                result = apply_watermark_chp(photo_bytes)
+                caption = "💧 Водяной знак <b>ЧП Минск</b> нанесён!"
+            
+            # Отправляем результат
+            bot.send_document(
+                message.chat.id,
+                document=result,
+                visible_file_name=f"watermark_{wm_type}.jpg",
+                caption=caption,
+                parse_mode="HTML"
+            )
+            
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+            
+            # Сбрасываем состояние
+            clear_state(uid)
+            return
+            
+        except Exception as e:
+            logger.error(f"Error applying watermark: {e}")
+            bot.reply_to(message, f"❌ Ошибка при нанесении водяного знака: {e}")
+            return
+    
+    # Обработка улучшения фото
     if st.get("step") == "waiting_enhance_photo":
         try:
             if message.content_type == "photo":
@@ -2194,6 +2757,94 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при улучшении: {e}")
             return
     
+    # Обработка фото для новости, если не нашлось автоматически
+    if st.get("step") == "waiting_photo_for_news":
+        try:
+            if message.content_type == "photo":
+                file_id = message.photo[-1].file_id
+            else:
+                file_id = message.document.file_id
+            
+            photo_bytes = tg_file_bytes(file_id)
+
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                return
+
+            st["photo_bytes"] = photo_bytes
+            
+            # Проверяем нужна ли настройка шрифта/позиции
+            tpl = st.get("template")
+            news_title = st.get("news_title", "")
+            
+            if tpl == "MN2":
+                st["step"] = "waiting_font_size_for_news"
+                user_state[uid] = st
+                bot.reply_to(
+                    message,
+                    "📸 Фото сохранено!\n\n🔤 Настрой размер шрифта для заголовка:",
+                    reply_markup=font_size_kb(1.0)
+                )
+            elif tpl in ["MN", "MN2"]:
+                st["step"] = "waiting_text_position_for_news"
+                user_state[uid] = st
+                bot.reply_to(
+                    message,
+                    f"📸 Фото сохранено!\n\n📰 Где разместить текст?",
+                    reply_markup=text_position_kb()
+                )
+            elif tpl == "FDR_POST":
+                st["step"] = "waiting_highlight_for_news"
+                user_state[uid] = st
+                bot.reply_to(
+                    message,
+                    f"📸 Фото сохранено!\n\n"
+                    f"🎯 Отправь <b>ФРАЗУ</b>, которую нужно выделить фиолетовой плашкой:\n\n"
+                    f"<i>(можно скопировать часть заголовка: {html.escape(news_title[:50])}...)</i>",
+                    parse_mode="HTML"
+                )
+            elif tpl == "FDR_STORY":
+                st["step"] = "waiting_body_for_news_story"
+                user_state[uid] = st
+                bot.reply_to(
+                    message,
+                    f"📸 Фото сохранено!\n\n"
+                    f"📝 Заголовок: <b>{html.escape(news_title)}</b>\n\n"
+                    f"Теперь отправь <b>ОСНОВНОЙ ТЕКСТ</b> для сторис:",
+                    parse_mode="HTML"
+                )
+            else:
+                # Для остальных шаблонов сразу создаём карточку
+                try:
+                    font_mult = st.get("font_size_multiplier", 1.0) if tpl == "MN2" else 1.0
+                    
+                    card = make_card(
+                        photo_bytes,
+                        news_title,
+                        tpl,
+                        text_position=st.get("text_position", TEXT_POSITION_TOP),
+                        font_size_multiplier=font_mult
+                    )
+                    
+                    bot.send_document(
+                        chat_id=message.chat.id,
+                        document=BytesIO(card.getvalue()),
+                        visible_file_name="news.jpg",
+                        caption=f"✅ Новость готова!\n\n🔗 <a href='{st.get('news_url', '')}'>Источник</a>",
+                        parse_mode="HTML"
+                    )
+                    
+                    clear_state(uid)
+                    
+                except Exception as e:
+                    logger.error(f"Error creating news card: {e}")
+                    bot.reply_to(message, f"❌ Ошибка: {e}")
+            
+        except Exception as e:
+            logger.error(f"Error processing photo for news: {e}")
+            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
+        return
+
     if st.get("step") == "waiting_template":
         bot.send_message(message.chat.id, "Сначала выбери шаблон:", reply_markup=template_kb())
         return
@@ -2351,8 +3002,14 @@ def on_text(message):
     if text == BTN_NEWS:
         cmd_news(message)
         return
+    if text == BTN_NEWS_BY_LINK:
+        cmd_news_by_link(message)
+        return
     if text == BTN_ENHANCE:
         cmd_enhance(message)
+        return
+    if text == BTN_WATERMARK:
+        cmd_watermark(message)
         return
     if text == "🎥 Видео":
         cmd_video_menu(message)
@@ -2362,6 +3019,116 @@ def on_text(message):
         return
 
     step = st.get("step")
+
+    # Обработка ссылки на новость
+    if step == "waiting_news_link":
+        # Проверяем, что это валидная ссылка
+        if not validate_url(text):
+            bot.reply_to(message, "❌ Это не похоже на валидную ссылку. Попробуй ещё раз или нажми /stop для отмены.")
+            return
+        
+        processing_msg = bot.reply_to(message, "⏳ Анализирую ссылку и ищу фото...")
+        
+        # Парсим новость
+        news_data = parse_news_from_url(text)
+        
+        if not news_data:
+            bot.edit_message_text(
+                "❌ Не удалось получить данные по ссылке.\n"
+                "Попробуй другую ссылку или нажми /stop для отмены.",
+                message.chat.id,
+                processing_msg.message_id
+            )
+            return
+        
+        # Сохраняем данные в состояние
+        st["news_title"] = news_data["title"]
+        st["news_image_url"] = news_data["image_url"]
+        st["news_url"] = news_data["url"]
+        st["step"] = "waiting_template_for_news"
+        user_state[uid] = st
+        
+        # Отправляем информацию о найденной новости
+        info_text = (
+            f"🔍 <b>Найдена новость:</b>\n\n"
+            f"📰 <b>Заголовок:</b>\n{html.escape(news_data['title'])}\n\n"
+        )
+        
+        if news_data["image_url"]:
+            info_text += f"🖼️ <b>Фото найдено</b>\n\n"
+        else:
+            info_text += f"⚠️ <b>Фото не найдено</b> - будешь использовать своё?\n\n"
+        
+        info_text += f"📋 <b>Теперь выбери шаблон оформления:</b>"
+        
+        bot.edit_message_text(
+            info_text,
+            message.chat.id,
+            processing_msg.message_id,
+            parse_mode="HTML",
+            reply_markup=template_kb()
+        )
+        return
+
+    # Обработка выделенной фразы для FDR_POST в режиме новости
+    if step == "waiting_highlight_for_news":
+        if not text:
+            bot.reply_to(message, "❌ Фраза не может быть пустой. Отправь текст:")
+            return
+        
+        st["highlight_phrase"] = text
+        
+        try:
+            card = make_card(
+                st["photo_bytes"],
+                st.get("news_title", ""),
+                "FDR_POST",
+                highlight_phrase=text
+            )
+            
+            bot.send_document(
+                chat_id=message.chat.id,
+                document=BytesIO(card.getvalue()),
+                visible_file_name="news_fdr_post.jpg",
+                caption=f"✅ Новость готова!\n\n🔗 <a href='{st.get('news_url', '')}'>Источник</a>",
+                parse_mode="HTML"
+            )
+            
+            clear_state(uid)
+            
+        except Exception as e:
+            logger.error(f"Error creating FDR_POST for news: {e}")
+            bot.reply_to(message, f"❌ Ошибка: {e}")
+        return
+
+    # Обработка основного текста для FDR_STORY в режиме новости
+    if step == "waiting_body_for_news_story":
+        if not text:
+            bot.reply_to(message, "❌ Текст не может быть пустым. Отправь текст:")
+            return
+        
+        try:
+            card = make_card(
+                st["photo_bytes"],
+                st.get("news_title", ""),
+                "FDR_STORY",
+                body_text=text
+            )
+            
+            bot.send_document(
+                chat_id=message.chat.id,
+                document=BytesIO(card.getvalue()),
+                visible_file_name="news_story.jpg",
+                caption=f"✅ Сторис готова!\n\n🔗 <a href='{st.get('news_url', '')}'>Источник</a>",
+                parse_mode="HTML"
+            )
+            
+            clear_state(uid)
+            
+        except Exception as e:
+            logger.error(f"Error creating story for news: {e}")
+            bot.reply_to(message, f"❌ Ошибка: {e}")
+        return
 
     # Обработка заголовка для FDR_STORY
     if step == "waiting_title_fdr_story":
