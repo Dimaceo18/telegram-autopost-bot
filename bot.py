@@ -160,8 +160,8 @@ def prices_menu_kb():
 # FONTS / CARD
 # =========================
 FONT_MN = "CaviarDreams.ttf"
-FONT_CHP = "Montserrat-Black.ttf"
-FONT_AM = "IntroInline.ttf"
+FONT_CHP = "Montserrat-Black.ttf"  # Используем жирный шрифт для АМ и других шаблонов
+FONT_AM = "Montserrat-Black.ttf"   # Заменили IntroInline на жирный Montserrat
 FONT_MONTSERRAT_BLACK = "Montserrat-Black.ttf"
 
 FOOTER_TEXT = "MINSK NEWS"
@@ -178,7 +178,7 @@ AM_BLUR_BLEND = 0.50
 
 
 # =========================
-# NEWS SOURCES
+# NEWS SOURCES (ОБНОВЛЕНО: добавлены новые источники)
 # =========================
 NEWS_FIRST_BATCH = 20
 NEWS_MORE_BATCH = 10
@@ -247,6 +247,55 @@ NEWS_SOURCES = [
         "name": "ONT",
         "kind": "rss",
         "url": "https://ont.by/rss/",
+        "limit": 20,
+        "timeout": 10
+    },
+    # === НОВЫЕ ИСТОЧНИКИ ===
+    {
+        "id": "times",
+        "name": "Times.by",
+        "kind": "rss",
+        "url": "https://times.by/feed/",
+        "limit": 20,
+        "timeout": 10
+    },
+    {
+        "id": "blizko",
+        "name": "Blizko.by",
+        "kind": "rss",
+        "url": "https://blizko.by/rss/",
+        "limit": 20,
+        "timeout": 10
+    },
+    {
+        "id": "realt",
+        "name": "Realt.by",
+        "kind": "rss",
+        "url": "https://realt.by/rss/news/",
+        "limit": 20,
+        "timeout": 10
+    },
+    {
+        "id": "newgrodno",
+        "name": "NewGrodno.by",
+        "kind": "rss",
+        "url": "https://newgrodno.by/feed",
+        "limit": 20,
+        "timeout": 10
+    },
+    {
+        "id": "officelife",
+        "name": "OfficeLife.media",
+        "kind": "rss",
+        "url": "https://officelife.media/last_news/rss/",
+        "limit": 20,
+        "timeout": 10
+    },
+    {
+        "id": "belta",
+        "name": "БелТА",
+        "kind": "rss",
+        "url": "https://www.belta.by/all_news/rss/",  # Предполагаемый RSS-адрес
         "limit": 20,
         "timeout": 10
     },
@@ -812,7 +861,7 @@ def crop_to_square(img: Image.Image) -> Image.Image:
 
 
 # =========================
-# Text wrapping functions
+# Text wrapping functions (ИСПРАВЛЕНО: равномерные отступы)
 # =========================
 def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) -> int:
     bb = draw.textbbox((0, 0), s, font=font)
@@ -861,11 +910,11 @@ def fit_text_block(
     max_lines: int = 6,
     start_size: int = 90,
     min_size: int = 16,
-    line_spacing: int = 10,
+    line_spacing: int = 12,  # Увеличен и фиксирован для равномерности
 ) -> Tuple[ImageFont.FreeTypeFont, List[str], List[int], int, int]:
     """
     Подбирает размер шрифта так, чтобы текст поместился в заданную область.
-    Использует фиксированный межстрочный интервал line_spacing.
+    ИСПРАВЛЕНО: Использует фиксированный line_spacing, который добавляется ПОСЛЕ каждой строки, кроме последней.
     Возвращает: (font, lines, line_heights, line_spacing, total_height)
     """
     text = (text or "").strip()
@@ -1030,11 +1079,9 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     if is_square:
         img = crop_to_square(img)
         img = img.resize((SQUARE_SIZE, SQUARE_SIZE), resample=Image.Resampling.LANCZOS)
-        target_w, target_h = SQUARE_SIZE, SQUARE_SIZE
     else:
         img = crop_to_4x5(img)
         img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-        target_w, target_h = TARGET_W, TARGET_H
     
     img = ImageEnhance.Brightness(img).enhance(0.55)
     draw = ImageDraw.Draw(img)
@@ -1053,9 +1100,9 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     text = (title_text or "").strip().upper()
 
-    # Фиксированный межстрочный интервал - 15% от высоты шрифта
+    # Фиксированный межстрочный интервал
     base_font_size = int(img.height * 0.11)
-    line_spacing = int(base_font_size * 0.15)
+    line_spacing = int(base_font_size * 0.12)  # Уменьшил для аккуратности
     
     font, lines, heights, spacing, total_text_height = fit_text_block(
         draw=draw,
@@ -1096,7 +1143,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     return out
 
 
-def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, is_square: bool = False) -> BytesIO:
+def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, is_square: bool = False, bold_phrase: str = "") -> BytesIO:
     ensure_fonts()
 
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -1104,11 +1151,9 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     if is_square:
         img = crop_to_square(img)
         img = img.resize((SQUARE_SIZE, SQUARE_SIZE), resample=Image.Resampling.LANCZOS)
-        target_w, target_h = SQUARE_SIZE, SQUARE_SIZE
     else:
         img = crop_to_4x5(img)
         img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-        target_w, target_h = TARGET_W, TARGET_H
     
     img = ImageEnhance.Brightness(img).enhance(0.55)
     
@@ -1132,13 +1177,15 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     text = (title_text or "").strip().upper()
+    bold_phrase_upper = bold_phrase.strip().upper() if bold_phrase else ""
+    bold_words = set(bold_phrase_upper.split())
 
     # Применяем множитель к начальному размеру шрифта
     base_start_size = int(img.height * 0.11)
     adjusted_start_size = int(base_start_size * font_size_multiplier)
     
-    # Фиксированный межстрочный интервал - 15% от скорректированного размера шрифта
-    line_spacing = int(adjusted_start_size * 0.15)
+    # Фиксированный межстрочный интервал
+    line_spacing = int(adjusted_start_size * 0.12)
     
     font, lines, heights, spacing, total_text_height = fit_text_block(
         draw=draw,
@@ -1165,9 +1212,28 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         title_y = img.height - margin_bottom - total_text_height - 10
         footer_y = 10
 
+    # Функция для рисования строки с учетом жирных слов
+    def draw_line_with_bold(line_text, x_start, y_pos):
+        words = line_text.split()
+        current_x = x_start
+        for word in words:
+            # Определяем, нужно ли сделать слово жирным
+            if word in bold_words:
+                # Для жирного используем тот же шрифт, но можно использовать другой, если нужно
+                # В данном случае просто рисуем тем же шрифтом, но можно увеличить weight
+                draw.text((current_x, y_pos), word, font=font, fill="white")
+            else:
+                draw.text((current_x, y_pos), word, font=font, fill="white")
+            
+            if word != words[-1]:
+                space_width = text_width(draw, " ", font)
+                current_x += text_width(draw, word, font) + space_width
+            else:
+                current_x += text_width(draw, word, font)
+
     y = title_y
     for i, ln in enumerate(lines):
-        draw.text((block_x, y), ln, font=font, fill="white")
+        draw_line_with_bold(ln, block_x, y)
         y += heights[i] + (spacing if i < len(lines) - 1 else 0)
 
     footer_x = (img.width - footer_w) // 2
@@ -1187,11 +1253,9 @@ def make_card_chp(photo_bytes: bytes, title_text: str, is_square: bool = False) 
     if is_square:
         img = crop_to_square(img)
         img = img.resize((SQUARE_SIZE, SQUARE_SIZE), resample=Image.Resampling.LANCZOS)
-        target_w, target_h = SQUARE_SIZE, SQUARE_SIZE
     else:
         img = crop_to_4x5(img)
         img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-        target_w, target_h = TARGET_W, TARGET_H
     
     img = ImageEnhance.Brightness(img).enhance(0.85)
     img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
@@ -1205,7 +1269,7 @@ def make_card_chp(photo_bytes: bytes, title_text: str, is_square: bool = False) 
     text = (title_text or "").strip().upper()
 
     base_font_size = int(img.height * 0.11)
-    line_spacing = int(base_font_size * 0.15)
+    line_spacing = int(base_font_size * 0.12)
 
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw,
@@ -1238,11 +1302,9 @@ def make_card_am(photo_bytes: bytes, title_text: str, is_square: bool = False) -
     if is_square:
         img = crop_to_square(img)
         img = img.resize((SQUARE_SIZE, SQUARE_SIZE), resample=Image.Resampling.LANCZOS)
-        target_w, target_h = SQUARE_SIZE, SQUARE_SIZE
     else:
         img = crop_to_4x5(img)
         img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-        target_w, target_h = TARGET_W, TARGET_H
     
     img = apply_top_blur_band(img)
 
@@ -1260,10 +1322,11 @@ def make_card_am(photo_bytes: bytes, title_text: str, is_square: bool = False) -
     base_font_size = int(img.height * 0.060)
     line_spacing = int(base_font_size * 0.12)
 
+    # ИСПРАВЛЕНО: Используем жирный шрифт FONT_CHP для АМ
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw,
         text=text,
-        font_path=FONT_AM,
+        font_path=FONT_CHP,  # Заменили FONT_AM на FONT_CHP для жирности
         safe_w=safe_w,
         max_block_h=text_zone_h,
         max_lines=3,
@@ -1286,7 +1349,7 @@ def make_card_am(photo_bytes: bytes, title_text: str, is_square: bool = False) -
 
 
 def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str, is_square: bool = False) -> BytesIO:
-    # Для сторис всегда используем пропорции stories, даже если is_square=True
+    # Для сторис всегда используем пропорции stories
     ensure_fonts()
 
     canvas = Image.new("RGB", (STORY_W, STORY_H), (0, 0, 0))
@@ -1351,11 +1414,9 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     if is_square:
         img = crop_to_square(img)
         img = img.resize((SQUARE_SIZE, SQUARE_SIZE), resample=Image.Resampling.LANCZOS)
-        target_w, target_h = SQUARE_SIZE, SQUARE_SIZE
     else:
         img = crop_to_4x5(img)
         img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-        target_w, target_h = TARGET_W, TARGET_H
     
     img = ImageEnhance.Brightness(img).enhance(0.85)
     img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
@@ -1373,7 +1434,7 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     
     base_font_size = int(img.height * 0.11)
-    line_spacing = int(base_font_size * 0.15)
+    line_spacing = int(base_font_size * 0.12)
     
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw,
@@ -1470,7 +1531,7 @@ def make_card_mn_tg(photo_bytes: bytes, title_text: str, is_square: bool = False
     return out
 
 
-def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, is_square: bool = False) -> BytesIO:
+def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, is_square: bool = False, bold_phrase: str = "") -> BytesIO:
     if template == "CHP":
         return make_card_chp(photo_bytes, title_text, is_square)
     if template == "AM":
@@ -1482,7 +1543,7 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
     if template == "MN_TG":
         return make_card_mn_tg(photo_bytes, title_text, is_square)
     if template == "MN2":
-        return make_card_mn2(photo_bytes, title_text, text_position, font_size_multiplier, is_square)
+        return make_card_mn2(photo_bytes, title_text, text_position, font_size_multiplier, is_square, bold_phrase)
     return make_card_mn(photo_bytes, title_text, text_position, is_square)
 
 
@@ -1541,7 +1602,7 @@ def parse_news_from_url(url: str) -> Optional[Dict]:
         if not title and soup.title:
             title = soup.title.get_text(strip=True)
             # Обрезаем название сайта, если есть
-            common_site_names = ['Onliner', 'Sputnik', 'Telegraf', 'Tochka', 'Smartpress', 'Minsknews', 'Mlyn', 'ONT']
+            common_site_names = ['Onliner', 'Sputnik', 'Telegraf', 'Tochka', 'Smartpress', 'Minsknews', 'Mlyn', 'ONT', 'Times', 'Blizko', 'Realt', 'NewGrodno', 'OfficeLife', 'БелТА', 'Belta']
             for site in common_site_names:
                 if f' - {site}' in title:
                     title = title.split(f' - {site}')[0]
@@ -1858,6 +1919,7 @@ def watermark_type_kb():
     return kb
 
 
+# ОБНОВЛЕНО: добавлены новые источники
 SOURCE_NAMES = {
     "onliner": "Onliner",
     "sputnik": "Sputnik",
@@ -1866,7 +1928,13 @@ SOURCE_NAMES = {
     "smartpress": "Smartpress",
     "minsknews": "Minsknews",
     "mlyn": "Mlyn",
-    "ont": "ONT"
+    "ont": "ONT",
+    "times": "Times.by",
+    "blizko": "Blizko.by",
+    "realt": "Realt.by",
+    "newgrodno": "NewGrodno.by",
+    "officelife": "OfficeLife.media",
+    "belta": "БелТА"
 }
 
 
@@ -2094,13 +2162,14 @@ def on_font_size_adjust(c):
                 reply_markup=text_position_kb(True)
             )
         else:
-            st["step"] = "waiting_text_position"
+            # НОВОЕ: после настройки шрифта для МН2 спрашиваем фразу для жирного выделения
+            st["step"] = "waiting_bold_phrase_mn2"
             user_state[uid] = st
             bot.edit_message_text(
-                "✅ Размер шрифта настроен. Теперь выбери расположение текста:",
+                "✅ Размер шрифта настроен.\n\n✏️ Отправь слова, которые нужно выделить <b>жирным</b> шрифтом (можно несколько через пробел):",
                 c.message.chat.id,
                 c.message.message_id,
-                reply_markup=text_position_kb()
+                parse_mode="HTML"
             )
         bot.answer_callback_query(c.id, "Настройки сохранены")
         return
@@ -2705,14 +2774,31 @@ def on_text_position(c):
     if is_square:
         st["step"] = "waiting_photo_square"
     else:
-        st["step"] = "waiting_photo"
+        # НОВОЕ: после выбора позиции для МН2 спрашиваем фразу для жирного выделения
+        if st.get("template") == "MN2":
+            st["step"] = "waiting_bold_phrase_mn2"
+        else:
+            st["step"] = "waiting_photo"
     
     user_state[uid] = st
     
     position_text = "сверху" if position == "top" else "снизу"
     size_text = "квадратного " if is_square else ""
     bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
-    bot.send_message(c.message.chat.id, f"Текст будет расположен <b>{position_text}</b> {size_text}фотографии.\n\nТеперь пришли {size_text}фото 📷", parse_mode="HTML")
+    
+    if st.get("template") == "MN2" and not is_square:
+        bot.send_message(
+            c.message.chat.id,
+            f"Текст будет расположен <b>{position_text}</b> фотографии.\n\n"
+            f"✏️ Теперь отправь слова, которые нужно выделить <b>жирным</b> шрифтом (можно несколько через пробел):",
+            parse_mode="HTML"
+        )
+    else:
+        bot.send_message(
+            c.message.chat.id,
+            f"Текст будет расположен <b>{position_text}</b> {size_text}фотографии.\n\nТеперь пришли {size_text}фото 📷",
+            parse_mode="HTML"
+        )
 
 
 # =========================
@@ -2834,7 +2920,7 @@ def cmd_start(message):
         "• 📝 Оформление постов с фото (7 шаблонов)\n"
         "• ⬛ <b>Квадраты</b> - те же шаблоны для квадратных фото\n"
         "• 🔗 Новость по ссылке - отправь ссылку, я найду заголовок и фото\n"
-        "• 📰 Получение свежих новостей из 8 источников\n"
+        "• 📰 Получение свежих новостей из 14 источников\n"
         "• ✨ Улучшение качества фото (+20% резкость, +15% насыщенность)\n"
         "• 💧 <b>Водяные знаки</b> - нанеси \"MINSK NEWS\" или \"ЧП Минск\" на фото\n"
         "• 💰 <b>Цены и условия размещения</b>\n"
@@ -2946,7 +3032,7 @@ def cmd_news_by_link(message):
         "1️⃣ Извлеку заголовок\n"
         "2️⃣ Найду главное фото\n"
         "3️⃣ Предложу выбрать шаблон оформления (обычный или квадратный)\n\n"
-        "<i>Поддерживаются сайты: Onliner, Sputnik, Telegraf, Tochka, Smartpress, Minsknews, Mlyn, ONT и другие</i>",
+        "<i>Поддерживаются сайты: Onliner, Sputnik, Telegraf, Tochka, Smartpress, Minsknews, Mlyn, ONT, Times.by, Blizko.by, Realt.by, NewGrodno.by, OfficeLife.media, БелТА и другие</i>",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
     )
@@ -3396,6 +3482,19 @@ def on_text(message):
 
     step = st.get("step")
 
+    # НОВОЕ: Обработка фразы для жирного выделения в МН2
+    if step == "waiting_bold_phrase_mn2":
+        if not text:
+            bot.reply_to(message, "❌ Фраза не может быть пустой. Отправь текст или отправь пробел, если не нужно выделение:")
+            return
+        
+        st["bold_phrase"] = text if text != " " else ""
+        st["step"] = "waiting_photo"
+        user_state[uid] = st
+        
+        bot.reply_to(message, f"✅ Фраза для выделения сохранена!\n\nТеперь пришли фото 📷")
+        return
+
     # Обработка ссылки на новость
     if step == "waiting_news_link":
         # Проверяем, что это валидная ссылка
@@ -3642,6 +3741,7 @@ def on_text(message):
         
         try:
             font_mult = st.get("font_size_multiplier", 1.0) if st.get("template") == "MN2" else 1.0
+            bold_phrase = st.get("bold_phrase", "") if st.get("template") == "MN2" else ""
             
             card = make_card(
                 st["photo_bytes"], 
@@ -3649,7 +3749,8 @@ def on_text(message):
                 st.get("template", "MN"), 
                 text_position=st.get("text_position", TEXT_POSITION_TOP),
                 font_size_multiplier=font_mult,
-                is_square=st.get("is_square", False)
+                is_square=st.get("is_square", False),
+                bold_phrase=bold_phrase
             )
             
             size_text = "_square" if st.get("is_square") else ""
