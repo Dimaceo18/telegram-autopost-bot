@@ -1268,7 +1268,7 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         max_lines=6,
         start_size=adjusted_start_size,
         min_size=16,
-        line_spacing_ratio=0.22
+        line_spacing_ratio=0.30
     )
 
     block_w = 0
