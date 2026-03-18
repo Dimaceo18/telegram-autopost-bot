@@ -1259,7 +1259,7 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     base_start_size = int(img.height * 0.11)
     adjusted_start_size = int(base_start_size * font_size_multiplier)
     
-    # Используем увеличенный межстрочный интервал только для МН 2
+    # Уменьшенный межстрочный интервал для МН 2
     font, lines, heights, spacing, total_text_height = fit_text_block(
         draw=draw,
         text=text,
@@ -1269,7 +1269,7 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         max_lines=6,
         start_size=adjusted_start_size,
         min_size=16,
-        line_spacing_ratio=0.30  # Увеличенный интервал для МН 2
+        line_spacing_ratio=0.25  # Уменьшил с 0.30 до 0.25
     )
 
     block_w = 0
@@ -1306,14 +1306,13 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     for i, ln in enumerate(lines):
         draw_line_with_bold(ln, block_x, y)
         
-        # Для всех строк, кроме последней, добавляем одинаковый отступ
+        # Для всех строк, кроме последней, добавляем отступ
         if i < len(lines) - 1:
-            # Используем размер шрифта как базовую высоту строки + интервал
-            # Это гарантирует одинаковое расстояние между ВСЕМИ строками
-            line_height = font.size  # Используем номинальный размер шрифта
+            # Используем среднее между фактической высотой и размером шрифта
+            # для более естественного расстояния
+            line_height = max(heights[i], int(font.size * 0.9))
             y += line_height + spacing
         else:
-            # Для последней строки просто добавляем её фактическую высоту
             y += heights[i]
 
     footer_x = (img.width - footer_w) // 2
