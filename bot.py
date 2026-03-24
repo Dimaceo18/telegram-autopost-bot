@@ -1154,6 +1154,13 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
         img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
     
     img = ImageEnhance.Brightness(img).enhance(0.55)
+    
+    # Добавляем градиент как в МН 2
+    if text_position == TEXT_POSITION_TOP:
+        img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
+    else:
+        img = apply_bottom_gradient_soft(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
+    
     draw = ImageDraw.Draw(img)
 
     margin_x = int(img.width * 0.06)
@@ -2783,11 +2790,14 @@ def on_news_action(c):
     if action == "news_cancel":
         st.pop("step", None)
         user_state[uid] = st
-        bot.edit_message_text(
-            "❌ Отменено",
-            c.message.chat.id,
-            c.message.message_id
-        )
+        try:
+            bot.edit_message_text(
+                "❌ Отменено",
+                c.message.chat.id,
+                c.message.message_id
+            )
+        except:
+            bot.send_message(c.message.chat.id, "❌ Отменено")
         bot.answer_callback_query(c.id, "Отменено")
         return
     
@@ -2795,26 +2805,46 @@ def on_news_action(c):
         text = st.get("news_text", "")
         if text:
             if len(text) <= 4000:
-                bot.edit_message_text(
-                    f"📄 <b>Текст статьи:</b>\n\n{html.escape(text)}",
-                    c.message.chat.id,
-                    c.message.message_id,
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup().add(
-                        InlineKeyboardButton("◀️ Назад", callback_data="news_back")
+                try:
+                    bot.edit_message_text(
+                        f"📄 <b>Текст статьи:</b>\n\n{html.escape(text)}",
+                        c.message.chat.id,
+                        c.message.message_id,
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup().add(
+                            InlineKeyboardButton("◀️ Назад", callback_data="news_back")
+                        )
                     )
-                )
+                except:
+                    bot.send_message(
+                        c.message.chat.id,
+                        f"📄 <b>Текст статьи:</b>\n\n{html.escape(text)}",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup().add(
+                            InlineKeyboardButton("◀️ Назад", callback_data="news_back")
+                        )
+                    )
             else:
                 parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
-                bot.edit_message_text(
-                    f"📄 <b>Текст статьи (часть 1/{len(parts)}):</b>\n\n{html.escape(parts[0])}",
-                    c.message.chat.id,
-                    c.message.message_id,
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup().add(
-                        InlineKeyboardButton("➡️ Далее", callback_data=f"news_text_next:1")
+                try:
+                    bot.edit_message_text(
+                        f"📄 <b>Текст статьи (часть 1/{len(parts)}):</b>\n\n{html.escape(parts[0])}",
+                        c.message.chat.id,
+                        c.message.message_id,
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup().add(
+                            InlineKeyboardButton("➡️ Далее", callback_data=f"news_text_next:1")
+                        )
                     )
-                )
+                except:
+                    bot.send_message(
+                        c.message.chat.id,
+                        f"📄 <b>Текст статьи (часть 1/{len(parts)}):</b>\n\n{html.escape(parts[0])}",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup().add(
+                            InlineKeyboardButton("➡️ Далее", callback_data=f"news_text_next:1")
+                        )
+                    )
         else:
             bot.answer_callback_query(c.id, "Текст не найден", show_alert=True)
         return
@@ -2865,14 +2895,22 @@ def on_news_action(c):
             InlineKeyboardButton("⬛ МН 2 (квадрат)", callback_data="square:MN2"),
         )
         
-        bot.edit_message_text(
-            "📝 <b>Выбери шаблон оформления:</b>\n\n"
-            "Выбери шаблон для оформления новости:",
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+        try:
+            bot.edit_message_text(
+                "📝 <b>Выбери шаблон оформления:</b>\n\n"
+                "Выбери шаблон для оформления новости:",
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                "📝 <b>Выбери шаблон оформления:</b>\n\nВыбери шаблон для оформления новости:",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
         return
 
 
@@ -2893,13 +2931,21 @@ def on_news_text_next(c):
             kb.add(InlineKeyboardButton("◀️ Назад", callback_data=f"news_text_next:{part_index - 1}"))
         kb.add(InlineKeyboardButton("🔙 В меню", callback_data="news_back"))
         
-        bot.edit_message_text(
-            f"📄 <b>Текст статьи (часть {part_index + 1}/{len(parts)}):</b>\n\n{html.escape(parts[part_index])}",
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+        try:
+            bot.edit_message_text(
+                f"📄 <b>Текст статьи (часть {part_index + 1}/{len(parts)}):</b>\n\n{html.escape(parts[part_index])}",
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                f"📄 <b>Текст статьи (часть {part_index + 1}/{len(parts)}):</b>\n\n{html.escape(parts[part_index])}",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
     bot.answer_callback_query(c.id)
 
 
@@ -2933,13 +2979,21 @@ def on_news_back(c):
     
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="news_cancel"))
     
-    bot.edit_message_text(
-        info_text,
-        c.message.chat.id,
-        c.message.message_id,
-        parse_mode="HTML",
-        reply_markup=kb
-    )
+    try:
+        bot.edit_message_text(
+            info_text,
+            c.message.chat.id,
+            c.message.message_id,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+    except:
+        bot.send_message(
+            c.message.chat.id,
+            info_text,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
     bot.answer_callback_query(c.id)
 
 
@@ -2969,24 +3023,40 @@ def show_news_image(chat_id: int, uid: int, msg_id: int, index: int):
     try:
         photo_bytes = http_get_bytes(image_url, timeout=10)
         if photo_bytes:
-            bot.edit_message_media(
-                telebot.types.InputMediaPhoto(
-                    media=photo_bytes,
+            try:
+                bot.edit_message_media(
+                    telebot.types.InputMediaPhoto(
+                        media=photo_bytes,
+                        caption=f"🖼️ <b>Изображение {index + 1} из {len(images)}</b>",
+                        parse_mode="HTML"
+                    ),
+                    chat_id,
+                    msg_id,
+                    reply_markup=kb
+                )
+            except:
+                bot.send_photo(
+                    chat_id,
+                    photo=photo_bytes,
                     caption=f"🖼️ <b>Изображение {index + 1} из {len(images)}</b>",
-                    parse_mode="HTML"
-                ),
+                    parse_mode="HTML",
+                    reply_markup=kb
+                )
+    except Exception as e:
+        logger.error(f"Error showing image: {e}")
+        try:
+            bot.edit_message_text(
+                f"❌ Не удалось загрузить изображение {index + 1}",
                 chat_id,
                 msg_id,
                 reply_markup=kb
             )
-    except Exception as e:
-        logger.error(f"Error showing image: {e}")
-        bot.edit_message_text(
-            f"❌ Не удалось загрузить изображение {index + 1}",
-            chat_id,
-            msg_id,
-            reply_markup=kb
-        )
+        except:
+            bot.send_message(
+                chat_id,
+                f"❌ Не удалось загрузить изображение {index + 1}",
+                reply_markup=kb
+            )
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("news_image_prev:") or c.data.startswith("news_image_next:"))
