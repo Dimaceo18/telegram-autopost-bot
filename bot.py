@@ -38,18 +38,30 @@ from apscheduler.triggers.cron import CronTrigger
 import pytz
 
 
-# Проверка на единственный экземпляр
+# =========================
+# Проверка на единственный экземпляр - УЛУЧШЕННАЯ ВЕРСИЯ
+# =========================
 lock_file = '/tmp/bot_instance.lock'
+lock_fd = None
 
 def check_single_instance():
+    global lock_fd
     try:
-        fd = open(lock_file, 'w')
-        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Пробуем открыть файл блокировки
+        lock_fd = open(lock_file, 'w')
+        
+        # Пробуем получить эксклюзивную блокировку (неблокирующую)
+        fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        
+        # Если получили блокировку, записываем PID
+        lock_fd.write(str(os.getpid()))
+        lock_fd.flush()
         
         def unlock():
             try:
-                fcntl.lockf(fd, fcntl.LOCK_UN)
-                fd.close()
+                if lock_fd:
+                    fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+                    lock_fd.close()
                 if os.path.exists(lock_file):
                     os.unlink(lock_file)
             except:
@@ -57,9 +69,17 @@ def check_single_instance():
         
         atexit.register(unlock)
         return True
+        
     except IOError:
+        # Не удалось получить блокировку - другой экземпляр уже запущен
+        if lock_fd:
+            lock_fd.close()
         return False
+    except Exception as e:
+        logger.error(f"Error checking single instance: {e}")
+        return True  # В случае ошибки всё равно запускаемся
 
+# Проверяем единственный экземпляр
 if not check_single_instance():
     print("Another instance is already running. Exiting.")
     sys.exit(1)
@@ -340,8 +360,14 @@ user_state: Dict[int, Dict] = {}
 def signal_handler(sig, frame):
     logger.info("Shutting down gracefully...")
     if AUTO_NEWS_CHAT_ID and 'news_publisher' in globals():
-        news_publisher.stop()
-    bot.stop_polling()
+        try:
+            news_publisher.stop()
+        except:
+            pass
+    try:
+        bot.stop_polling()
+    except:
+        pass
     try:
         if os.path.exists(lock_file):
             os.unlink(lock_file)
@@ -2194,24 +2220,41 @@ def on_prices_callback(c):
     action = c.data.split(":", 1)[1]
     
     if action == "list":
-        bot.edit_message_text(
-            get_prices_text(),
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-            reply_markup=prices_menu_kb()
-        )
+        try:
+            bot.edit_message_text(
+                get_prices_text(),
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=prices_menu_kb()
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                get_prices_text(),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=prices_menu_kb()
+            )
         bot.answer_callback_query(c.id)
     
     elif action == "terms":
-        bot.edit_message_text(
-            get_terms_text(),
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML",
-            reply_markup=prices_menu_kb()
-        )
+        try:
+            bot.edit_message_text(
+                get_terms_text(),
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML",
+                reply_markup=prices_menu_kb()
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                get_terms_text(),
+                parse_mode="HTML",
+                reply_markup=prices_menu_kb()
+            )
         bot.answer_callback_query(c.id)
     
     elif action == "close":
@@ -2228,11 +2271,14 @@ def on_watermark_type(c):
     if wm_type == "cancel":
         st.pop("step", None)
         user_state[uid] = st
-        bot.edit_message_text(
-            "❌ Отменено",
-            c.message.chat.id,
-            c.message.message_id
-        )
+        try:
+            bot.edit_message_text(
+                "❌ Отменено",
+                c.message.chat.id,
+                c.message.message_id
+            )
+        except:
+            bot.send_message(c.message.chat.id, "❌ Отменено")
         bot.answer_callback_query(c.id, "Отменено")
         return
     
@@ -2243,14 +2289,23 @@ def on_watermark_type(c):
     wm_names = {"mn": "MINSK NEWS", "chp": "ЧП Минск"}
     wm_name = wm_names.get(wm_type, wm_type)
     
-    bot.edit_message_text(
-        f"✅ Выбран водяной знак: <b>{wm_name}</b>\n\n"
-        f"📸 Теперь отправь фото, на которое нужно нанести водяной знак.\n\n"
-        f"<i>Знак будет расположен по центру с прозрачностью 25%</i>",
-        c.message.chat.id,
-        c.message.message_id,
-        parse_mode="HTML"
-    )
+    try:
+        bot.edit_message_text(
+            f"✅ Выбран водяной знак: <b>{wm_name}</b>\n\n"
+            f"📸 Теперь отправь фото, на которое нужно нанести водяной знак.\n\n"
+            f"<i>Знак будет расположен по центру с прозрачностью 25%</i>",
+            c.message.chat.id,
+            c.message.message_id,
+            parse_mode="HTML"
+        )
+    except:
+        bot.send_message(
+            c.message.chat.id,
+            f"✅ Выбран водяной знак: <b>{wm_name}</b>\n\n"
+            f"📸 Теперь отправь фото, на которое нужно нанести водяной знак.\n\n"
+            f"<i>Знак будет расположен по центру с прозрачностью 25%</i>",
+            parse_mode="HTML"
+        )
     bot.answer_callback_query(c.id, f"Выбран {wm_name}")
 
 
@@ -2261,12 +2316,19 @@ def on_show_squares(c):
     st["step"] = "waiting_template_square"
     user_state[uid] = st
     
-    bot.edit_message_text(
-        "⬛ Выбери шаблон для квадратного фото:",
-        c.message.chat.id,
-        c.message.message_id,
-        reply_markup=template_kb(True)
-    )
+    try:
+        bot.edit_message_text(
+            "⬛ Выбери шаблон для квадратного фото:",
+            c.message.chat.id,
+            c.message.message_id,
+            reply_markup=template_kb(True)
+        )
+    except:
+        bot.send_message(
+            c.message.chat.id,
+            "⬛ Выбери шаблон для квадратного фото:",
+            reply_markup=template_kb(True)
+        )
     bot.answer_callback_query(c.id)
 
 
@@ -2276,15 +2338,21 @@ def on_news_source_select(c):
     source_id = c.data.split(":", 1)[1]
     
     if source_id == "cancel":
-        bot.edit_message_text("❌ Отменено", c.message.chat.id, c.message.message_id)
+        try:
+            bot.edit_message_text("❌ Отменено", c.message.chat.id, c.message.message_id)
+        except:
+            bot.send_message(c.message.chat.id, "❌ Отменено")
         bot.answer_callback_query(c.id, "Отменено")
         return
     
-    bot.edit_message_text(
-        f"⏳ Загружаю новости...",
-        c.message.chat.id,
-        c.message.message_id
-    )
+    try:
+        bot.edit_message_text(
+            f"⏳ Загружаю новости...",
+            c.message.chat.id,
+            c.message.message_id
+        )
+    except:
+        bot.send_message(c.message.chat.id, f"⏳ Загружаю новости...")
     
     if source_id == "all":
         source_name = "всех источников"
@@ -2294,11 +2362,17 @@ def on_news_source_select(c):
         items = fetch_news_from_source(source_id)
     
     if not items:
-        bot.edit_message_text(
-            f"😕 Не удалось загрузить новости с {source_name}.\nПопробуйте позже.",
-            c.message.chat.id,
-            c.message.message_id
-        )
+        try:
+            bot.edit_message_text(
+                f"😕 Не удалось загрузить новости с {source_name}.\nПопробуйте позже.",
+                c.message.chat.id,
+                c.message.message_id
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                f"😕 Не удалось загрузить новости с {source_name}.\nПопробуйте позже."
+            )
         bot.answer_callback_query(c.id, "Ошибка загрузки")
         return
     
@@ -2534,12 +2608,19 @@ def on_tpl(c):
     if tpl == "back" and is_square:
         st["step"] = "waiting_template"
         user_state[uid] = st
-        bot.edit_message_text(
-            "📝 Выбери шаблон оформления:",
-            c.message.chat.id,
-            c.message.message_id,
-            reply_markup=template_kb(False)
-        )
+        try:
+            bot.edit_message_text(
+                "📝 Выбери шаблон оформления:",
+                c.message.chat.id,
+                c.message.message_id,
+                reply_markup=template_kb(False)
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                "📝 Выбери шаблон оформления:",
+                reply_markup=template_kb(False)
+            )
         bot.answer_callback_query(c.id)
         return
     
@@ -2552,24 +2633,39 @@ def on_tpl(c):
             user_state[uid] = st
             bot.answer_callback_query(c.id, f"Шаблон МН 2 выбран ✅")
             size_text = "квадратного " if is_square else ""
-            bot.edit_message_text(
-                f"🔤 Настрой размер шрифта для {size_text}заголовка:",
-                c.message.chat.id,
-                c.message.message_id,
-                reply_markup=font_size_kb(1.0, is_square)
-            )
+            try:
+                bot.edit_message_text(
+                    f"🔤 Настрой размер шрифта для {size_text}заголовка:",
+                    c.message.chat.id,
+                    c.message.message_id,
+                    reply_markup=font_size_kb(1.0, is_square)
+                )
+            except:
+                bot.send_message(
+                    c.message.chat.id,
+                    f"🔤 Настрой размер шрифта для {size_text}заголовка:",
+                    reply_markup=font_size_kb(1.0, is_square)
+                )
         else:
             st["step"] = "waiting_text_position"
             user_state[uid] = st
             bot.answer_callback_query(c.id, f"Шаблон МН ТГ выбран ✅")
             size_text = "квадратный " if is_square else ""
-            bot.edit_message_text(
-                f"📱 Выбран {size_text}шаблон <b>МН ТГ</b>\n\nГде разместить текст?",
-                c.message.chat.id,
-                c.message.message_id,
-                parse_mode="HTML",
-                reply_markup=text_position_kb(is_square)
-            )
+            try:
+                bot.edit_message_text(
+                    f"📱 Выбран {size_text}шаблон <b>МН ТГ</b>\n\nГде разместить текст?",
+                    c.message.chat.id,
+                    c.message.message_id,
+                    parse_mode="HTML",
+                    reply_markup=text_position_kb(is_square)
+                )
+            except:
+                bot.send_message(
+                    c.message.chat.id,
+                    f"📱 Выбран {size_text}шаблон <b>МН ТГ</b>\n\nГде разместить текст?",
+                    parse_mode="HTML",
+                    reply_markup=text_position_kb(is_square)
+                )
     elif tpl in ["MN", "CHP", "AM"]:
         st["step"] = "waiting_text_position"
         user_state[uid] = st
@@ -2577,34 +2673,56 @@ def on_tpl(c):
         template_names = {"MN": "МН", "CHP": "ЧП ВМ", "AM": "АМ"}
         template_name = template_names.get(tpl, tpl)
         size_text = "квадратный " if is_square else ""
-        bot.edit_message_text(
-            f"📰 Выбран {size_text}шаблон <b>{template_name}</b>\n\nГде разместить текст?",
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML",
-            reply_markup=text_position_kb(is_square)
-        )
+        try:
+            bot.edit_message_text(
+                f"📰 Выбран {size_text}шаблон <b>{template_name}</b>\n\nГде разместить текст?",
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML",
+                reply_markup=text_position_kb(is_square)
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                f"📰 Выбран {size_text}шаблон <b>{template_name}</b>\n\nГде разместить текст?",
+                parse_mode="HTML",
+                reply_markup=text_position_kb(is_square)
+            )
     elif tpl == "FDR_POST":
         st["step"] = "waiting_photo_fdr_post"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
         size_text = "квадратное " if is_square else ""
-        bot.edit_message_text(
-            f"💜 Выбран {size_text}шаблон <b>Пост ФДР</b>\n\n📸 Пришли {size_text}фото для поста.\n\n<i>Дальше нужно будет:</i>\n1️⃣ Отправить полный заголовок\n2️⃣ Отправить фразу для фиолетовой плашки",
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML"
-        )
+        try:
+            bot.edit_message_text(
+                f"💜 Выбран {size_text}шаблон <b>Пост ФДР</b>\n\n📸 Пришли {size_text}фото для поста.\n\n<i>Дальше нужно будет:</i>\n1️⃣ Отправить полный заголовок\n2️⃣ Отправить фразу для фиолетовой плашки",
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML"
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                f"💜 Выбран {size_text}шаблон <b>Пост ФДР</b>\n\n📸 Пришли {size_text}фото для поста.\n\n<i>Дальше нужно будет:</i>\n1️⃣ Отправить полный заголовок\n2️⃣ Отправить фразу для фиолетовой плашки",
+                parse_mode="HTML"
+            )
     elif tpl == "FDR_STORY" and not is_square:
         st["step"] = "waiting_photo_fdr_story"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Шаблон 'Сторис ФДР' выбран ✅")
-        bot.edit_message_text(
-            "📱 Выбран шаблон <b>Сторис ФДР</b>\n\n📸 Пришли фото для сторис.\n\n<i>Дальше нужно будет:</i>\n1️⃣ Отправить заголовок\n2️⃣ Отправить основной текст",
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML"
-        )
+        try:
+            bot.edit_message_text(
+                "📱 Выбран шаблон <b>Сторис ФДР</b>\n\n📸 Пришли фото для сторис.\n\n<i>Дальше нужно будет:</i>\n1️⃣ Отправить заголовок\n2️⃣ Отправить основной текст",
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML"
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                "📱 Выбран шаблон <b>Сторис ФДР</b>\n\n📸 Пришли фото для сторис.\n\n<i>Дальше нужно будет:</i>\n1️⃣ Отправить заголовок\n2️⃣ Отправить основной текст",
+                parse_mode="HTML"
+            )
     else:
         bot.answer_callback_query(c.id, "Этот шаблон недоступен для квадратного фото")
         return
@@ -2628,12 +2746,19 @@ def on_text_position(c):
         
         position_text = "сверху" if position == "top" else "снизу"
         size_text = "квадратное " if is_square else ""
-        bot.edit_message_text(
-            f"Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли {size_text}фото 📷",
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML"
-        )
+        try:
+            bot.edit_message_text(
+                f"Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли {size_text}фото 📷",
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML"
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                f"Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли {size_text}фото 📷",
+                parse_mode="HTML"
+            )
         bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
     else:
         st["step"] = "waiting_photo"
@@ -2641,12 +2766,19 @@ def on_text_position(c):
         
         position_text = "сверху" if position == "top" else "снизу"
         size_text = "квадратное " if is_square else ""
-        bot.edit_message_text(
-            f"Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли {size_text}фото 📷",
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML"
-        )
+        try:
+            bot.edit_message_text(
+                f"Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли {size_text}фото 📷",
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML"
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                f"Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли {size_text}фото 📷",
+                parse_mode="HTML"
+            )
         bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
 
 
@@ -2664,12 +2796,19 @@ def on_font_size_adjust(c):
     if action == "done":
         st["step"] = "waiting_text_position"
         user_state[uid] = st
-        bot.edit_message_text(
-            "✅ Размер шрифта настроен. Теперь выбери расположение текста:",
-            c.message.chat.id,
-            c.message.message_id,
-            reply_markup=text_position_kb(is_square)
-        )
+        try:
+            bot.edit_message_text(
+                "✅ Размер шрифта настроен. Теперь выбери расположение текста:",
+                c.message.chat.id,
+                c.message.message_id,
+                reply_markup=text_position_kb(is_square)
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                "✅ Размер шрифта настроен. Теперь выбери расположение текста:",
+                reply_markup=text_position_kb(is_square)
+            )
         bot.answer_callback_query(c.id, "Настройки сохранены")
         return
     
@@ -2687,15 +2826,25 @@ def on_font_size_adjust(c):
     user_state[uid] = st
     
     template_name = "квадратного МН 2" if is_square else "МН 2"
-    bot.edit_message_text(
-        f"🔤 Настройка размера шрифта для {template_name}\n\n"
-        f"Текущий размер: {int(new_mult*100)}%\n"
-        f"Используй кнопки + и - для регулировки.\n"
-        f"Нажми «Готово» когда закончишь.",
-        c.message.chat.id,
-        c.message.message_id,
-        reply_markup=font_size_kb(new_mult, is_square)
-    )
+    try:
+        bot.edit_message_text(
+            f"🔤 Настройка размера шрифта для {template_name}\n\n"
+            f"Текущий размер: {int(new_mult*100)}%\n"
+            f"Используй кнопки + и - для регулировки.\n"
+            f"Нажми «Готово» когда закончишь.",
+            c.message.chat.id,
+            c.message.message_id,
+            reply_markup=font_size_kb(new_mult, is_square)
+        )
+    except:
+        bot.send_message(
+            c.message.chat.id,
+            f"🔤 Настройка размера шрифта для {template_name}\n\n"
+            f"Текущий размер: {int(new_mult*100)}%\n"
+            f"Используй кнопки + и - для регулировки.\n"
+            f"Нажми «Готово» когда закончишь.",
+            reply_markup=font_size_kb(new_mult, is_square)
+        )
     
     bot.answer_callback_query(c.id)
 
@@ -3091,19 +3240,28 @@ def on_video_menu_callback(c):
     if action == "cancel":
         st.pop("step", None)
         user_state[uid] = st
-        bot.edit_message_text("❌ Отменено", c.message.chat.id, c.message.message_id)
+        try:
+            bot.edit_message_text("❌ Отменено", c.message.chat.id, c.message.message_id)
+        except:
+            bot.send_message(c.message.chat.id, "❌ Отменено")
         bot.answer_callback_query(c.id, "Отменено")
         
     elif action == "gif":
         st["step"] = "waiting_video_for_gif"
         user_state[uid] = st
-        bot.edit_message_text("🎬 Отправь видео, и я конвертирую его в GIF.\n\nВидео будет обрезано до 10 секунд.", c.message.chat.id, c.message.message_id)
+        try:
+            bot.edit_message_text("🎬 Отправь видео, и я конвертирую его в GIF.\n\nВидео будет обрезано до 10 секунд.", c.message.chat.id, c.message.message_id)
+        except:
+            bot.send_message(c.message.chat.id, "🎬 Отправь видео, и я конвертирую его в GIF.\n\nВидео будет обрезано до 10 секунд.")
         bot.answer_callback_query(c.id, "Ожидаю видео")
         
     elif action == "edit":
         st["step"] = "waiting_video_for_edit"
         user_state[uid] = st
-        bot.edit_message_text("📝 Отправь видео для оформления.", c.message.chat.id, c.message.message_id)
+        try:
+            bot.edit_message_text("📝 Отправь видео для оформления.", c.message.chat.id, c.message.message_id)
+        except:
+            bot.send_message(c.message.chat.id, "📝 Отправь видео для оформления.")
         bot.answer_callback_query(c.id, "Ожидаю видео")
 
 
@@ -3117,7 +3275,10 @@ def on_video_template_select(c):
         st.pop("step", None)
         st.pop("video_bytes", None)
         user_state[uid] = st
-        bot.edit_message_text("❌ Оформление видео отменено", c.message.chat.id, c.message.message_id)
+        try:
+            bot.edit_message_text("❌ Оформление видео отменено", c.message.chat.id, c.message.message_id)
+        except:
+            bot.send_message(c.message.chat.id, "❌ Оформление видео отменено")
         bot.answer_callback_query(c.id, "Отменено")
         return
     
@@ -3125,24 +3286,36 @@ def on_video_template_select(c):
     user_state[uid] = st
     
     if action in ["MN", "MN2"]:
-        bot.edit_message_text("📐 Выбери расположение текста:", c.message.chat.id, c.message.message_id, reply_markup=video_text_position_kb())
+        try:
+            bot.edit_message_text("📐 Выбери расположение текста:", c.message.chat.id, c.message.message_id, reply_markup=video_text_position_kb())
+        except:
+            bot.send_message(c.message.chat.id, "📐 Выбери расположение текста:", reply_markup=video_text_position_kb())
         bot.answer_callback_query(c.id, "Выбери позицию")
     
     elif action == "FDR_POST":
         st["step"] = "waiting_video_highlight"
         user_state[uid] = st
-        bot.edit_message_text("💜 Отправь фразу, которую нужно выделить фиолетовой плашкой:", c.message.chat.id, c.message.message_id)
+        try:
+            bot.edit_message_text("💜 Отправь фразу, которую нужно выделить фиолетовой плашкой:", c.message.chat.id, c.message.message_id)
+        except:
+            bot.send_message(c.message.chat.id, "💜 Отправь фразу, которую нужно выделить фиолетовой плашкой:")
         bot.answer_callback_query(c.id, "Ожидаю фразу")
     
     elif action == "MN_TG":
-        processing_msg = bot.edit_message_text("⏳ Обрабатываю видео... Это может занять некоторое время.", c.message.chat.id, c.message.message_id)
+        try:
+            processing_msg = bot.edit_message_text("⏳ Обрабатываю видео... Это может занять некоторое время.", c.message.chat.id, c.message.message_id)
+        except:
+            processing_msg = bot.send_message(c.message.chat.id, "⏳ Обрабатываю видео... Это может занять некоторое время.")
         
         try:
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
             bot.send_message(c.message.chat.id, "⚠️ Обработка видео временно недоступна")
         except Exception as e:
             logger.error(f"Error processing video: {e}")
-            bot.edit_message_text(f"❌ Ошибка при обработке видео: {e}", c.message.chat.id, c.message.message_id)
+            try:
+                bot.edit_message_text(f"❌ Ошибка при обработке видео: {e}", c.message.chat.id, c.message.message_id)
+            except:
+                bot.send_message(c.message.chat.id, f"❌ Ошибка при обработке видео: {e}")
         
         st.pop("step", None)
         st.pop("video_bytes", None)
@@ -3151,7 +3324,10 @@ def on_video_template_select(c):
     else:
         st["step"] = "waiting_video_title"
         user_state[uid] = st
-        bot.edit_message_text("📝 Отправь заголовок для видео:", c.message.chat.id, c.message.message_id)
+        try:
+            bot.edit_message_text("📝 Отправь заголовок для видео:", c.message.chat.id, c.message.message_id)
+        except:
+            bot.send_message(c.message.chat.id, "📝 Отправь заголовок для видео:")
         bot.answer_callback_query(c.id, "Ожидаю заголовок")
 
 
@@ -3166,14 +3342,20 @@ def on_video_position_select(c):
         st.pop("video_bytes", None)
         st.pop("video_template", None)
         user_state[uid] = st
-        bot.edit_message_text("❌ Оформление видео отменено", c.message.chat.id, c.message.message_id)
+        try:
+            bot.edit_message_text("❌ Оформление видео отменено", c.message.chat.id, c.message.message_id)
+        except:
+            bot.send_message(c.message.chat.id, "❌ Оформление видео отменено")
         bot.answer_callback_query(c.id, "Отменено")
         return
     
     st["video_text_position"] = action
     st["step"] = "waiting_video_title"
     user_state[uid] = st
-    bot.edit_message_text("📝 Отправь заголовок для видео:", c.message.chat.id, c.message.message_id)
+    try:
+        bot.edit_message_text("📝 Отправь заголовок для видео:", c.message.chat.id, c.message.message_id)
+    except:
+        bot.send_message(c.message.chat.id, "📝 Отправь заголовок для видео:")
     bot.answer_callback_query(c.id, "Ожидаю заголовок")
 
 
