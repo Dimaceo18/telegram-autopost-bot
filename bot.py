@@ -162,7 +162,7 @@ def prices_menu_kb():
 FONT_MN = "CaviarDreams.ttf"
 FONT_MN_BOLD = "CaviarDreams_Bold.ttf"
 FONT_CHP = "Montserrat-Black.ttf"
-FONT_AM = "IntroInline.ttf"  # Оригинальный шрифт для АМ
+FONT_AM = "IntroInline.ttf"
 FONT_MONTSERRAT_BLACK = "Montserrat-Black.ttf"
 
 FOOTER_TEXT = "MINSK NEWS"
@@ -756,9 +756,6 @@ def enhance_image_simple(image_bytes: bytes) -> BytesIO:
 # Watermark functions
 # =========================
 def apply_watermark_mn(photo_bytes: bytes) -> BytesIO:
-    """
-    Наносит водяной знак "MINSK NEWS" по центру фото с прозрачностью 25%
-    """
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
         
@@ -798,9 +795,6 @@ def apply_watermark_mn(photo_bytes: bytes) -> BytesIO:
 
 
 def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
-    """
-    Наносит водяной знак "ЧП Минск" по центру фото с прозрачностью 25%
-    """
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
         
@@ -941,9 +935,6 @@ def crop_to_4x5(img: Image.Image) -> Image.Image:
 
 
 def crop_to_square(img: Image.Image) -> Image.Image:
-    """
-    Обрезает изображение до квадрата 1:1
-    """
     w, h = img.size
     size = min(w, h)
     left = (w - size) // 2
@@ -952,7 +943,7 @@ def crop_to_square(img: Image.Image) -> Image.Image:
 
 
 # =========================
-# Text wrapping functions - ИСПРАВЛЕНО: настройки из bot (20) (1).py
+# Text wrapping functions
 # =========================
 def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) -> int:
     bb = draw.textbbox((0, 0), s, font=font)
@@ -1001,9 +992,8 @@ def fit_text_block(
     max_lines: int = 6,
     start_size: int = 90,
     min_size: int = 16,
-    line_spacing_ratio: float = 0.22,  # ИЗ bot (20) (1).py - такое же значение
+    line_spacing_ratio: float = 0.22,
 ) -> Tuple[ImageFont.FreeTypeFont, List[str], List[int], int, int]:
-    """Функция подбора размера шрифта с отступами как в bot (20) (1).py"""
     text = (text or "").strip()
     if not text:
         text = " "
@@ -1149,7 +1139,7 @@ def _draw_story_text(draw, text, box, font, fill=(255, 255, 255), align="center"
 
 
 # =========================
-# Card making functions - С ПОДДЕРЖКОЙ КВАДРАТОВ и правильными отступами
+# Card making functions
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, is_square: bool = False) -> BytesIO:
     ensure_fonts()
@@ -1259,7 +1249,6 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     base_start_size = int(img.height * 0.11)
     adjusted_start_size = int(base_start_size * font_size_multiplier)
     
-    # Уменьшенный межстрочный интервал для МН 2
     font, lines, heights, spacing, total_text_height = fit_text_block(
         draw=draw,
         text=text,
@@ -1269,7 +1258,7 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         max_lines=6,
         start_size=adjusted_start_size,
         min_size=16,
-        line_spacing_ratio=0.25  # Уменьшил с 0.30 до 0.25
+        line_spacing_ratio=0.25
     )
 
     block_w = 0
@@ -1301,15 +1290,11 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
             else:
                 current_x += text_width(draw, word, font)
 
-    # Отрисовка строк с РАВНОМЕРНЫМ межстрочным интервалом
     y = title_y
     for i, ln in enumerate(lines):
         draw_line_with_bold(ln, block_x, y)
         
-        # Для всех строк, кроме последней, добавляем отступ
         if i < len(lines) - 1:
-            # Используем среднее между фактической высотой и размером шрифта
-            # для более естественного расстояния
             line_height = max(heights[i], int(font.size * 0.9))
             y += line_height + spacing
         else:
@@ -1320,6 +1305,46 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
 
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
+    out.seek(0)
+    return out
+
+
+def make_card_mn_tg(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, is_square: bool = False) -> BytesIO:
+    ensure_fonts()
+
+    img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+    
+    if is_square:
+        img = crop_to_square(img)
+        img = img.resize((SQUARE_SIZE, SQUARE_SIZE), resample=Image.Resampling.LANCZOS)
+    else:
+        img = crop_to_4x5(img)
+        img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
+    
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    font_size = int(img.width * 0.08)
+    font = ImageFont.truetype(FONT_MN, font_size)
+    
+    text_bbox = draw.textbbox((0, 0), FOOTER_TEXT, font=font)
+    text_width_val = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
+    
+    x = (img.width - text_width_val) // 2
+    
+    if text_position == TEXT_POSITION_TOP:
+        y = int(img.height * 0.2) - (text_height // 2)
+    else:
+        y = int(img.height * 0.8) - (text_height // 2)
+    
+    draw.text((x, y), FOOTER_TEXT, font=font, fill=(255, 255, 255, 38))
+    
+    result = Image.alpha_composite(img.convert("RGBA"), overlay)
+    result = result.convert("RGB")
+    
+    out = BytesIO()
+    result.save(out, format="JPEG", quality=95, optimize=True)
     out.seek(0)
     return out
 
@@ -1564,35 +1589,6 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     return out
 
 
-def make_card_mn_tg(photo_bytes: bytes, title_text: str) -> BytesIO:
-    ensure_fonts()
-
-    img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
-    
-    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    
-    font_size = int(img.width * 0.08)
-    font = ImageFont.truetype(FONT_MN, font_size)
-    
-    text_bbox = draw.textbbox((0, 0), FOOTER_TEXT, font=font)
-    text_width_val = text_bbox[2] - text_bbox[0]
-    text_height = text_bbox[3] - text_bbox[1]
-    
-    x = (img.width - text_width_val) // 2
-    y = int(img.height * 0.2) - (text_height // 2)
-    
-    draw.text((x, y), FOOTER_TEXT, font=font, fill=(255, 255, 255, 38))
-    
-    result = Image.alpha_composite(img, overlay)
-    result = result.convert("RGB")
-    
-    out = BytesIO()
-    result.save(out, format="JPEG", quality=95, optimize=True)
-    out.seek(0)
-    return out
-
-
 def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, is_square: bool = False, bold_phrase: str = "") -> BytesIO:
     if template == "CHP":
         return make_card_chp(photo_bytes, title_text, is_square)
@@ -1603,7 +1599,7 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
     if template == "FDR_POST":
         return make_card_fdr_post(photo_bytes, title_text, highlight_phrase, is_square)
     if template == "MN_TG":
-        return make_card_mn_tg(photo_bytes, title_text)
+        return make_card_mn_tg(photo_bytes, title_text, text_position, is_square)
     if template == "MN2":
         return make_card_mn2(photo_bytes, title_text, text_position, font_size_multiplier, is_square, bold_phrase)
     return make_card_mn(photo_bytes, title_text, text_position, is_square)
@@ -1614,7 +1610,7 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
 # =========================
 def parse_news_from_url(url: str) -> Optional[Dict]:
     """
-    Парсит новость по ссылке, извлекает заголовок и изображение
+    Парсит новость по ссылке, извлекает заголовок, текст статьи и изображения
     """
     try:
         html_content = http_get(url, timeout=REQUEST_TIMEOUT)
@@ -1626,6 +1622,7 @@ def parse_news_from_url(url: str) -> Optional[Dict]:
         for tag in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside', 'iframe']):
             tag.decompose()
         
+        # Извлекаем заголовок
         title = None
         
         title_selectors = [
@@ -1665,45 +1662,87 @@ def parse_news_from_url(url: str) -> Optional[Dict]:
                     title = title.split(f' | {site}')[0]
                     break
         
-        image_url = None
+        # Извлекаем текст статьи
+        article_text = fetch_article_text_fast(url)
         
+        # Извлекаем изображения из статьи
+        images = []
+        
+        # Пробуем найти главное изображение через meta
         og_image = soup.find('meta', property='og:image')
         if og_image and og_image.get('content'):
-            image_url = og_image['content']
+            img_url = normalize_url(url, og_image['content'])
+            images.append(img_url)
         
-        if not image_url:
-            twitter_image = soup.find('meta', attrs={'name': 'twitter:image'})
-            if twitter_image and twitter_image.get('content'):
-                image_url = twitter_image['content']
+        twitter_image = soup.find('meta', attrs={'name': 'twitter:image'})
+        if twitter_image and twitter_image.get('content'):
+            img_url = normalize_url(url, twitter_image['content'])
+            if img_url not in images:
+                images.append(img_url)
         
-        if not image_url:
-            article = soup.find('article') or soup.find(class_=re.compile(r'(content|article|post|news)', re.I))
-            if article:
-                img = article.find('img', src=True)
-                if img and img.get('src'):
-                    image_url = normalize_url(url, img['src'])
-            
-            if not image_url:
-                for img in soup.find_all('img', src=True):
-                    src = img.get('src', '')
-                    if any(x in src.lower() for x in ['photo', 'image', 'picture', 'news', 'article', 'post']):
-                        if not any(x in src.lower() for x in ['icon', 'logo', 'avatar', 'profile', 'comment']):
-                            image_url = normalize_url(url, src)
-                            try:
-                                img_data = http_get_bytes(image_url, timeout=3)
-                                if img_data:
-                                    img_pil = Image.open(BytesIO(img_data))
-                                    if img_pil.width > 300 and img_pil.height > 200:
-                                        break
-                            except:
-                                continue
+        # Ищем изображения в статье
+        article = soup.find('article') or soup.find(class_=re.compile(r'(content|article|post|news)', re.I))
+        
+        if article:
+            # Ищем все img в статье
+            for img in article.find_all('img', src=True):
+                src = img.get('src', '')
+                if not src:
+                    continue
+                
+                # Пропускаем маленькие иконки
+                if any(x in src.lower() for x in ['icon', 'logo', 'avatar', 'profile', 'comment', 'pixel', 'blank']):
+                    continue
+                
+                img_url = normalize_url(url, src)
+                
+                # Проверяем, что изображение нормального размера
+                try:
+                    img_data = http_get_bytes(img_url, timeout=3)
+                    if img_data:
+                        img_pil = Image.open(BytesIO(img_data))
+                        if img_pil.width > 300 and img_pil.height > 200:
+                            if img_url not in images:
+                                images.append(img_url)
+                except:
+                    continue
+                
+                if len(images) >= 5:
+                    break
+        
+        # Если не нашли изображений в статье, ищем по всей странице
+        if not images:
+            for img in soup.find_all('img', src=True):
+                src = img.get('src', '')
+                if not src:
+                    continue
+                
+                if any(x in src.lower() for x in ['icon', 'logo', 'avatar', 'profile', 'comment', 'pixel', 'blank']):
+                    continue
+                
+                img_url = normalize_url(url, src)
+                
+                try:
+                    img_data = http_get_bytes(img_url, timeout=3)
+                    if img_data:
+                        img_pil = Image.open(BytesIO(img_data))
+                        if img_pil.width > 400 and img_pil.height > 300:
+                            if img_url not in images:
+                                images.append(img_url)
+                except:
+                    continue
+                
+                if len(images) >= 3:
+                    break
         
         if not title:
             title = "Новость"
         
         return {
             "title": title,
-            "image_url": image_url,
+            "images": images,
+            "main_image": images[0] if images else None,
+            "text": article_text,
             "url": url
         }
         
@@ -1752,7 +1791,7 @@ def get_prices_text() -> str:
 
 Публикации во всех 11 городских медиа со сторис в minsk_news, afishaminsk, minskchp, tvoyminsk, vestiminska, xxminsk.
 
-🔻 <b>Пакет «ПРЕМИУМ»</b> (более 1 700.000 подписчиков):
+🔻 <b>Пакет «ПРЕМИУМ»</b> (более 1 700.000 подписчиков): <b>905 рублей</b>.
 
 <b>Instagram:</b>
 
@@ -1906,15 +1945,34 @@ def build_caption_tg(full_text: str) -> str:
     return f"<b>{title_safe}</b>\n\n{body_text}{links}"
 
 
+def preview_kb(source_url: str = ""):
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("✅ Опубликовать", callback_data="publish"),
+        InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_body"),
+        InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title"),
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel")
+    )
+    if source_url:
+        kb.add(InlineKeyboardButton("🔗 Источник", url=source_url))
+    return kb
+
+
+def channel_kb():
+    kb = InlineKeyboardMarkup()
+    if SUGGEST_URL:
+        kb.add(InlineKeyboardButton("📝 Предложить новость", url=SUGGEST_URL))
+    return kb
+
+
 # =========================
-# Keyboard layouts - ПОЛНОЕ МЕНЮ
+# Keyboard layouts
 # =========================
 def template_kb(is_square: bool = False):
     kb = InlineKeyboardMarkup()
     prefix = "square:" if is_square else "tpl:"
     
     if is_square:
-        # Только выбранные шаблоны для квадратов
         kb.row(
             InlineKeyboardButton("📰 МН", callback_data=f"{prefix}MN"),
             InlineKeyboardButton("🚨 ЧП ВМ", callback_data=f"{prefix}CHP"),
@@ -1925,10 +1983,10 @@ def template_kb(is_square: bool = False):
         )
         kb.row(
             InlineKeyboardButton("🆕 МН 2", callback_data=f"{prefix}MN2"),
+            InlineKeyboardButton("📱 МН ТГ", callback_data=f"{prefix}MN_TG"),
         )
         kb.row(InlineKeyboardButton("◀️ Назад к оформлению", callback_data="square:back"))
     else:
-        # Все шаблоны для обычных постов
         kb.row(
             InlineKeyboardButton("📰 МН", callback_data=f"{prefix}MN"),
             InlineKeyboardButton("🚨 ЧП ВМ", callback_data=f"{prefix}CHP"),
@@ -2481,17 +2539,30 @@ def on_tpl(c):
     st["is_square"] = is_square
     st["template"] = tpl
     
-    if tpl == "MN2":
-        st["step"] = "waiting_font_size"
-        user_state[uid] = st
-        bot.answer_callback_query(c.id, f"Шаблон МН 2 выбран ✅")
-        size_text = "квадратного " if is_square else ""
-        bot.edit_message_text(
-            f"🔤 Настрой размер шрифта для {size_text}заголовка:",
-            c.message.chat.id,
-            c.message.message_id,
-            reply_markup=font_size_kb(1.0, is_square)
-        )
+    if tpl in ["MN_TG", "MN2"]:
+        if tpl == "MN2":
+            st["step"] = "waiting_font_size"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, f"Шаблон МН 2 выбран ✅")
+            size_text = "квадратного " if is_square else ""
+            bot.edit_message_text(
+                f"🔤 Настрой размер шрифта для {size_text}заголовка:",
+                c.message.chat.id,
+                c.message.message_id,
+                reply_markup=font_size_kb(1.0, is_square)
+            )
+        else:
+            st["step"] = "waiting_text_position"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, f"Шаблон МН ТГ выбран ✅")
+            size_text = "квадратный " if is_square else ""
+            bot.edit_message_text(
+                f"📱 Выбран {size_text}шаблон <b>МН ТГ</b>\n\nГде разместить текст?",
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML",
+                reply_markup=text_position_kb(is_square)
+            )
     elif tpl in ["MN", "CHP", "AM"]:
         st["step"] = "waiting_text_position"
         user_state[uid] = st
@@ -2527,16 +2598,6 @@ def on_tpl(c):
             c.message.message_id,
             parse_mode="HTML"
         )
-    elif tpl == "MN_TG" and not is_square:
-        st["step"] = "waiting_photo_mn_tg"
-        user_state[uid] = st
-        bot.answer_callback_query(c.id, "Шаблон 'МН ТГ' выбран ✅")
-        bot.edit_message_text(
-            "📱 Выбран шаблон <b>МН ТГ</b>\n\n📸 Пришли фото для поста.\n\n<i>После фото нужно будет отправить заголовок.</i>",
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML"
-        )
     else:
         bot.answer_callback_query(c.id, "Этот шаблон недоступен для квадратного фото")
         return
@@ -2554,7 +2615,7 @@ def on_text_position(c):
     
     st["text_position"] = position
     
-    if st.get("template") == "MN2":
+    if st.get("template") in ["MN_TG", "MN2"]:
         st["step"] = "waiting_photo"
         user_state[uid] = st
         
@@ -2711,6 +2772,244 @@ def on_action(call):
 
 
 # =========================
+# News action callbacks (для новости по ссылке)
+# =========================
+@bot.callback_query_handler(func=lambda c: c.data in ["news_make_post", "news_show_text", "news_show_images", "news_cancel"])
+def on_news_action(c):
+    uid = c.from_user.id
+    action = c.data
+    st = user_state.get(uid) or {}
+    
+    if action == "news_cancel":
+        st.pop("step", None)
+        user_state[uid] = st
+        bot.edit_message_text(
+            "❌ Отменено",
+            c.message.chat.id,
+            c.message.message_id
+        )
+        bot.answer_callback_query(c.id, "Отменено")
+        return
+    
+    elif action == "news_show_text":
+        text = st.get("news_text", "")
+        if text:
+            if len(text) <= 4000:
+                bot.edit_message_text(
+                    f"📄 <b>Текст статьи:</b>\n\n{html.escape(text)}",
+                    c.message.chat.id,
+                    c.message.message_id,
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("◀️ Назад", callback_data="news_back")
+                    )
+                )
+            else:
+                parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+                bot.edit_message_text(
+                    f"📄 <b>Текст статьи (часть 1/{len(parts)}):</b>\n\n{html.escape(parts[0])}",
+                    c.message.chat.id,
+                    c.message.message_id,
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("➡️ Далее", callback_data=f"news_text_next:1")
+                    )
+                )
+        else:
+            bot.answer_callback_query(c.id, "Текст не найден", show_alert=True)
+        return
+    
+    elif action == "news_show_images":
+        images = st.get("news_images", [])
+        if not images:
+            bot.answer_callback_query(c.id, "Изображения не найдены", show_alert=True)
+            return
+        
+        st["news_image_index"] = 0
+        user_state[uid] = st
+        
+        show_news_image(c.message.chat.id, uid, c.message.message_id, 0)
+        return
+    
+    elif action == "news_make_post":
+        st["step"] = "waiting_template_for_news"
+        user_state[uid] = st
+        
+        kb = InlineKeyboardMarkup()
+        kb.row(
+            InlineKeyboardButton("📰 МН", callback_data="tpl:MN"),
+            InlineKeyboardButton("⬛ МН (квадрат)", callback_data="square:MN"),
+        )
+        kb.row(
+            InlineKeyboardButton("🚨 ЧП ВМ", callback_data="tpl:CHP"),
+            InlineKeyboardButton("⬛ ЧП ВМ (квадрат)", callback_data="square:CHP"),
+        )
+        kb.row(
+            InlineKeyboardButton("✨ АМ", callback_data="tpl:AM"),
+            InlineKeyboardButton("⬛ АМ (квадрат)", callback_data="square:AM"),
+        )
+        kb.row(
+            InlineKeyboardButton("📱 Сторис ФДР", callback_data="tpl:FDR_STORY"),
+            InlineKeyboardButton("⬛ Сторис ФДР (квадрат)", callback_data="square:FDR_STORY"),
+        )
+        kb.row(
+            InlineKeyboardButton("💜 Пост ФДР", callback_data="tpl:FDR_POST"),
+            InlineKeyboardButton("⬛ Пост ФДР (квадрат)", callback_data="square:FDR_POST"),
+        )
+        kb.row(
+            InlineKeyboardButton("📱 МН ТГ", callback_data="tpl:MN_TG"),
+            InlineKeyboardButton("⬛ МН ТГ (квадрат)", callback_data="square:MN_TG"),
+        )
+        kb.row(
+            InlineKeyboardButton("🆕 МН 2", callback_data="tpl:MN2"),
+            InlineKeyboardButton("⬛ МН 2 (квадрат)", callback_data="square:MN2"),
+        )
+        
+        bot.edit_message_text(
+            "📝 <b>Выбери шаблон оформления:</b>\n\n"
+            "Выбери шаблон для оформления новости:",
+            c.message.chat.id,
+            c.message.message_id,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        return
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("news_text_next:"))
+def on_news_text_next(c):
+    uid = c.from_user.id
+    part_index = int(c.data.split(":")[1])
+    st = user_state.get(uid) or {}
+    text = st.get("news_text", "")
+    
+    parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+    
+    if part_index < len(parts):
+        kb = InlineKeyboardMarkup()
+        if part_index + 1 < len(parts):
+            kb.add(InlineKeyboardButton("➡️ Далее", callback_data=f"news_text_next:{part_index + 1}"))
+        if part_index > 0:
+            kb.add(InlineKeyboardButton("◀️ Назад", callback_data=f"news_text_next:{part_index - 1}"))
+        kb.add(InlineKeyboardButton("🔙 В меню", callback_data="news_back"))
+        
+        bot.edit_message_text(
+            f"📄 <b>Текст статьи (часть {part_index + 1}/{len(parts)}):</b>\n\n{html.escape(parts[part_index])}",
+            c.message.chat.id,
+            c.message.message_id,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+    bot.answer_callback_query(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "news_back")
+def on_news_back(c):
+    uid = c.from_user.id
+    st = user_state.get(uid) or {}
+    
+    info_text = (
+        f"🔍 <b>Найдена новость:</b>\n\n"
+        f"📰 <b>Заголовок:</b>\n{html.escape(st.get('news_title', ''))}\n\n"
+    )
+    
+    if st.get("news_text"):
+        text_preview = st["news_text"][:300] + "..." if len(st["news_text"]) > 300 else st["news_text"]
+        info_text += f"📄 <b>Текст статьи:</b>\n{html.escape(text_preview)}\n\n"
+    
+    if st.get("news_images"):
+        info_text += f"🖼️ <b>Найдено изображений:</b> {len(st['news_images'])}\n\n"
+    
+    info_text += f"<b>Выбери действие:</b>"
+    
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("📝 Оформить пост", callback_data="news_make_post"),
+        InlineKeyboardButton("📄 Показать текст", callback_data="news_show_text")
+    )
+    
+    if st.get("news_images"):
+        kb.add(InlineKeyboardButton("🖼️ Показать все фото", callback_data="news_show_images"))
+    
+    kb.add(InlineKeyboardButton("❌ Отмена", callback_data="news_cancel"))
+    
+    bot.edit_message_text(
+        info_text,
+        c.message.chat.id,
+        c.message.message_id,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+    bot.answer_callback_query(c.id)
+
+
+def show_news_image(chat_id: int, uid: int, msg_id: int, index: int):
+    st = user_state.get(uid) or {}
+    images = st.get("news_images", [])
+    
+    if not images or index >= len(images):
+        return
+    
+    image_url = images[index]
+    
+    kb = InlineKeyboardMarkup(row_width=3)
+    
+    nav_buttons = []
+    if index > 0:
+        nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"news_image_prev:{index}"))
+    nav_buttons.append(InlineKeyboardButton(f"{index + 1}/{len(images)}", callback_data="news_image_info"))
+    if index + 1 < len(images):
+        nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"news_image_next:{index}"))
+    
+    if nav_buttons:
+        kb.row(*nav_buttons)
+    
+    kb.add(InlineKeyboardButton("🔙 В меню", callback_data="news_back"))
+    
+    try:
+        photo_bytes = http_get_bytes(image_url, timeout=10)
+        if photo_bytes:
+            bot.edit_message_media(
+                telebot.types.InputMediaPhoto(
+                    media=photo_bytes,
+                    caption=f"🖼️ <b>Изображение {index + 1} из {len(images)}</b>",
+                    parse_mode="HTML"
+                ),
+                chat_id,
+                msg_id,
+                reply_markup=kb
+            )
+    except Exception as e:
+        logger.error(f"Error showing image: {e}")
+        bot.edit_message_text(
+            f"❌ Не удалось загрузить изображение {index + 1}",
+            chat_id,
+            msg_id,
+            reply_markup=kb
+        )
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("news_image_prev:") or c.data.startswith("news_image_next:"))
+def on_news_image_navigate(c):
+    uid = c.from_user.id
+    action, current_index = c.data.split(":")
+    current_index = int(current_index)
+    
+    if action == "news_image_prev":
+        new_index = current_index - 1
+    else:
+        new_index = current_index + 1
+    
+    show_news_image(c.message.chat.id, uid, c.message.message_id, new_index)
+    bot.answer_callback_query(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "news_image_info")
+def on_news_image_info(c):
+    bot.answer_callback_query(c.id, "Используй стрелки для навигации по фото")
+
+
+# =========================
 # Video callbacks
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("video:"))
@@ -2824,7 +3123,7 @@ def cmd_start(message):
         "👋 <b>Привет! Я бот для оформления постов</b>\n\n"
         "<b>📝 Основные функции:</b>\n"
         "• 📝 Оформление постов с фото (7 шаблонов, включая Квадраты)\n"
-        "• 🔗 Новость по ссылке - отправь ссылку, я найду заголовок и фото\n"
+        "• 🔗 Новость по ссылке - отправь ссылку, я найду заголовок, текст и фото\n"
         "• 📰 Получение свежих новостей из 14 источников\n"
         "• ✨ Улучшение качества фото (+20% резкость, +15% насыщенность)\n"
         "• 💧 Водяные знаки - нанеси \"MINSK NEWS\" или \"ЧП Минск\" на фото\n"
@@ -2872,8 +3171,9 @@ def cmd_news_by_link(message):
         "🔗 <b>Новость по ссылке</b>\n\n"
         "Отправь ссылку на новость, и я:\n"
         "1️⃣ Извлеку заголовок\n"
-        "2️⃣ Найду главное фото\n"
-        "3️⃣ Предложу выбрать шаблон оформления (обычный или квадратный)\n\n"
+        "2️⃣ Найду все фото из статьи\n"
+        "3️⃣ Извлеку текст статьи\n"
+        "4️⃣ Предложу выбрать шаблон оформления\n\n"
         "<i>Поддерживаются 14 сайтов</i>",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
@@ -3125,30 +3425,6 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
 
-    if st.get("step") == "waiting_photo_mn_tg":
-        try:
-            if message.content_type == "photo":
-                file_id = message.photo[-1].file_id
-            else:
-                file_id = message.document.file_id
-            
-            photo_bytes = tg_file_bytes(file_id)
-
-            if not check_file_size(photo_bytes):
-                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
-                return
-
-            st["photo_bytes"] = photo_bytes
-            st["step"] = "waiting_title"
-            user_state[uid] = st
-
-            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
-            return
-        except Exception as e:
-            logger.error(f"Error processing photo for MN_TG: {e}")
-            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
-            return
-
     if st.get("step") == "waiting_photo":
         try:
             if message.content_type == "photo":
@@ -3261,7 +3537,7 @@ def on_text(message):
             bot.reply_to(message, "❌ Это не похоже на валидную ссылку. Попробуй ещё раз или нажми /stop для отмены.")
             return
         
-        processing_msg = bot.reply_to(message, "⏳ Анализирую ссылку и ищу фото...")
+        processing_msg = bot.reply_to(message, "⏳ Анализирую ссылку, извлекаю заголовок, текст и изображения...")
         
         news_data = parse_news_from_url(text)
         
@@ -3275,9 +3551,10 @@ def on_text(message):
             return
         
         st["news_title"] = news_data["title"]
-        st["news_image_url"] = news_data["image_url"]
+        st["news_images"] = news_data.get("images", [])
+        st["news_text"] = news_data.get("text", "")
         st["news_url"] = news_data["url"]
-        st["step"] = "waiting_template_for_news"
+        st["step"] = "waiting_news_action"
         user_state[uid] = st
         
         info_text = (
@@ -3285,42 +3562,43 @@ def on_text(message):
             f"📰 <b>Заголовок:</b>\n{html.escape(news_data['title'])}\n\n"
         )
         
-        if news_data["image_url"]:
-            info_text += f"🖼️ <b>Фото найдено</b>\n\n"
+        if news_data.get("text"):
+            text_preview = news_data["text"][:300] + "..." if len(news_data["text"]) > 300 else news_data["text"]
+            info_text += f"📄 <b>Текст статьи:</b>\n{html.escape(text_preview)}\n\n"
+        
+        if news_data.get("images"):
+            info_text += f"🖼️ <b>Найдено изображений:</b> {len(news_data['images'])}\n\n"
         else:
-            info_text += f"⚠️ <b>Фото не найдено</b> - будешь использовать своё?\n\n"
+            info_text += f"⚠️ <b>Изображения не найдены</b>\n\n"
         
-        info_text += f"📋 <b>Теперь выбери шаблон оформления (обычный или квадратный):</b>"
+        info_text += f"<b>Выбери действие:</b>"
         
-        kb = InlineKeyboardMarkup()
-        kb.row(
-            InlineKeyboardButton("📰 МН", callback_data="tpl:MN"),
-            InlineKeyboardButton("⬛ МН (квадрат)", callback_data="square_tpl:MN"),
+        kb = InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            InlineKeyboardButton("📝 Оформить пост", callback_data="news_make_post"),
+            InlineKeyboardButton("📄 Показать текст", callback_data="news_show_text")
         )
-        kb.row(
-            InlineKeyboardButton("🚨 ЧП ВМ", callback_data="tpl:CHP"),
-            InlineKeyboardButton("⬛ ЧП ВМ (квадрат)", callback_data="square_tpl:CHP"),
-        )
-        kb.row(
-            InlineKeyboardButton("✨ АМ", callback_data="tpl:AM"),
-            InlineKeyboardButton("⬛ АМ (квадрат)", callback_data="square_tpl:AM"),
-        )
-        kb.row(
-            InlineKeyboardButton("📱 Сторис ФДР", callback_data="tpl:FDR_STORY"),
-            InlineKeyboardButton("⬛ Сторис ФДР (квадрат)", callback_data="square_tpl:FDR_STORY"),
-        )
-        kb.row(
-            InlineKeyboardButton("💜 Пост ФДР", callback_data="tpl:FDR_POST"),
-            InlineKeyboardButton("⬛ Пост ФДР (квадрат)", callback_data="square_tpl:FDR_POST"),
-        )
-        kb.row(
-            InlineKeyboardButton("📱 МН ТГ", callback_data="tpl:MN_TG"),
-            InlineKeyboardButton("⬛ МН ТГ (квадрат)", callback_data="square_tpl:MN_TG"),
-        )
-        kb.row(
-            InlineKeyboardButton("🆕 МН 2", callback_data="tpl:MN2"),
-            InlineKeyboardButton("⬛ МН 2 (квадрат)", callback_data="square_tpl:MN2"),
-        )
+        
+        if news_data.get("images"):
+            kb.add(InlineKeyboardButton("🖼️ Показать все фото", callback_data="news_show_images"))
+        
+        kb.add(InlineKeyboardButton("❌ Отмена", callback_data="news_cancel"))
+        
+        if news_data.get("main_image"):
+            try:
+                photo_bytes = http_get_bytes(news_data["main_image"], timeout=5)
+                if photo_bytes:
+                    bot.send_photo(
+                        message.chat.id,
+                        photo=photo_bytes,
+                        caption=info_text,
+                        parse_mode="HTML",
+                        reply_markup=kb
+                    )
+                    bot.delete_message(message.chat.id, processing_msg.message_id)
+                    return
+            except:
+                pass
         
         bot.edit_message_text(
             info_text,
@@ -3329,159 +3607,6 @@ def on_text(message):
             parse_mode="HTML",
             reply_markup=kb
         )
-        return
-
-    # Обработка выделенной фразы для FDR_POST в режиме новости
-    if step == "waiting_highlight_for_news":
-        if not text:
-            bot.reply_to(message, "❌ Фраза не может быть пустой. Отправь текст:")
-            return
-        
-        st["highlight_phrase"] = text
-        
-        try:
-            card = make_card(
-                st["photo_bytes"],
-                st.get("news_title", ""),
-                "FDR_POST",
-                highlight_phrase=text,
-                is_square=st.get("is_square", False)
-            )
-            
-            size_text = "_square" if st.get("is_square") else ""
-            bot.send_document(
-                chat_id=message.chat.id,
-                document=BytesIO(card.getvalue()),
-                visible_file_name=f"news_fdr_post{size_text}.jpg",
-                caption=f"✅ Новость готова!\n\n🔗 <a href='{st.get('news_url', '')}'>Источник</a>",
-                parse_mode="HTML"
-            )
-            
-            clear_state(uid)
-            
-        except Exception as e:
-            logger.error(f"Error creating FDR_POST for news: {e}")
-            bot.reply_to(message, f"❌ Ошибка: {e}")
-        return
-
-    # Обработка основного текста для FDR_STORY в режиме новости
-    if step == "waiting_body_for_news_story":
-        if not text:
-            bot.reply_to(message, "❌ Текст не может быть пустым. Отправь текст:")
-            return
-        
-        try:
-            card = make_card(
-                st["photo_bytes"],
-                st.get("news_title", ""),
-                "FDR_STORY",
-                body_text=text,
-                is_square=st.get("is_square", False)
-            )
-            
-            size_text = "_square" if st.get("is_square") else ""
-            bot.send_document(
-                chat_id=message.chat.id,
-                document=BytesIO(card.getvalue()),
-                visible_file_name=f"news_story{size_text}.jpg",
-                caption=f"✅ Сторис готова!\n\n🔗 <a href='{st.get('news_url', '')}'>Источник</a>",
-                parse_mode="HTML"
-            )
-            
-            clear_state(uid)
-            
-        except Exception as e:
-            logger.error(f"Error creating story for news: {e}")
-            bot.reply_to(message, f"❌ Ошибка: {e}")
-        return
-
-    # Обработка заголовка для FDR_STORY
-    if step == "waiting_title_fdr":
-        if not text:
-            bot.reply_to(message, "❌ Заголовок не может быть пустым. Отправь текст:")
-            return
-        
-        st["title"] = text
-        st["step"] = "waiting_body_fdr"
-        user_state[uid] = st
-        
-        bot.reply_to(message, f"✅ Заголовок сохранён!\n\nТеперь отправь <b>ОСНОВНОЙ ТЕКСТ</b> для сторис:", parse_mode="HTML")
-        return
-
-    # Обработка основного текста для FDR_STORY
-    if step == "waiting_body_fdr":
-        if not st.get("photo_bytes"):
-            bot.reply_to(message, "❌ Фото потерялось. Начни заново с /post")
-            clear_state(uid)
-            return
-
-        try:
-            card = make_card(
-                st["photo_bytes"], 
-                st["title"], 
-                "FDR_STORY", 
-                body_text=text,
-                is_square=st.get("is_square", False)
-            )
-            
-            size_text = "_square" if st.get("is_square") else ""
-            bot.send_document(
-                chat_id=message.chat.id,
-                document=BytesIO(card.getvalue()),
-                visible_file_name=f"story{size_text}.jpg",
-                caption="✅ Сторис готова!"
-            )
-            
-            clear_state(uid)
-            
-        except Exception as e:
-            logger.error(f"Error creating story: {e}")
-            bot.reply_to(message, f"❌ Ошибка при создании сторис: {e}")
-        return
-
-    # Обработка полного заголовка для FDR_POST
-    if step == "waiting_title_fdr_post":
-        if not text:
-            bot.reply_to(message, "❌ Заголовок не может быть пустым. Отправь текст:")
-            return
-        
-        st["full_title"] = text
-        st["step"] = "waiting_highlight_fdr_post"
-        user_state[uid] = st
-        
-        bot.reply_to(message, f"✅ Заголовок сохранён!\n\n<b>{html.escape(text)}</b>\n\n🎯 Теперь отправь <b>ФРАЗУ</b>, которую нужно выделить фиолетовой плашкой:\n\n<i>(можно скопировать часть заголовка или написать свою)</i>", parse_mode="HTML")
-        return
-
-    # Обработка выделенной фразы для FDR_POST
-    if step == "waiting_highlight_fdr_post":
-        if not text:
-            bot.reply_to(message, "❌ Фраза не может быть пустой. Отправь текст:")
-            return
-        
-        st["highlight_phrase"] = text
-        
-        try:
-            card = make_card(
-                st["photo_bytes"], 
-                st["full_title"], 
-                "FDR_POST", 
-                highlight_phrase=st["highlight_phrase"],
-                is_square=st.get("is_square", False)
-            )
-            
-            size_text = "_square" if st.get("is_square") else ""
-            bot.send_document(
-                chat_id=message.chat.id,
-                document=BytesIO(card.getvalue()),
-                visible_file_name=f"post{size_text}.jpg",
-                caption="✅ Пост готов!"
-            )
-            
-            clear_state(uid)
-            
-        except Exception as e:
-            logger.error(f"Error creating FDR_POST: {e}")
-            bot.reply_to(message, f"❌ Ошибка при создании поста: {e}")
         return
 
     # Обработка заголовка для МН2
@@ -3530,6 +3655,43 @@ def on_text(message):
             
         except Exception as e:
             logger.error(f"Error creating MN2 card: {e}")
+            bot.reply_to(message, f"❌ Ошибка при создании карточки: {e}")
+        return
+
+    # Обработка текста для МН ТГ
+    if step == "waiting_title_mn_tg":
+        if not text:
+            bot.reply_to(message, "❌ Текст не может быть пустым. Отправь текст:")
+            return
+        
+        try:
+            card = make_card(
+                st["photo_bytes"], 
+                text,
+                "MN_TG", 
+                text_position=st.get("text_position", TEXT_POSITION_TOP),
+                is_square=st.get("is_square", False)
+            )
+            
+            st["card_bytes"] = card.getvalue()
+            st["full_text"] = text
+            st["title"] = text.split('\n\n')[0] if '\n\n' in text else text[:100]
+            st["step"] = "waiting_action"
+            user_state[uid] = st
+            
+            caption = build_caption_tg(text)
+            
+            bot.send_photo(
+                chat_id=message.chat.id, 
+                photo=BytesIO(st["card_bytes"]), 
+                caption=caption, 
+                parse_mode="HTML", 
+                reply_markup=preview_kb(st.get("source_url", ""))
+            )
+            bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
+            
+        except Exception as e:
+            logger.error(f"Error creating MN_TG card: {e}")
             bot.reply_to(message, f"❌ Ошибка при создании карточки: {e}")
         return
 
