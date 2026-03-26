@@ -131,7 +131,7 @@ MAX_FILE_SIZE = 20 * 1024 * 1024
 MAX_VIDEO_SIZE = 50 * 1024 * 1024
 CACHE_TTL = 3600
 REQUEST_TIMEOUT = 15
-MAX_RETRIES = 1
+MAX_RETRIES = 3  # Увеличил количество попыток
 
 FDR_POST_PURPLE_COLOR = (122, 58, 240)
 FDR_POST_PLATE_HEIGHT_PCT = 0.15
@@ -145,6 +145,53 @@ VIDEO_BITRATE = "2000k"
 
 # Размеры для квадратных фото
 SQUARE_SIZE = 1080  # 1:1 квадрат
+
+
+# =========================
+# Данные для графика аккаунтов
+# =========================
+ACCOUNTS_SCHEDULE = [
+    {"name": "minsk_news", "url": "https://instagram.com/minsk_news/", "subscribers": "478,000"},
+    {"name": "minskchp", "url": "https://instagram.com/minskchp/", "subscribers": "~120,000"},
+    {"name": "afishaminsk", "url": "https://instagram.com/afishaminsk/", "subscribers": "~100,000"},
+    {"name": "tvoyminsk", "url": "https://instagram.com/tvoyminsk/", "subscribers": "~80,000"},
+    {"name": "vestiminska", "url": "https://instagram.com/vestiminska/", "subscribers": "~75,000"},
+    {"name": "minskpress", "url": "https://instagram.com/minskpress/", "subscribers": "~65,000"},
+    {"name": "xxminsk", "url": "https://instagram.com/xxminsk/", "subscribers": "~60,000"},
+    {"name": "minskgood", "url": "https://instagram.com/minskgood/", "subscribers": "~55,000"},
+    {"name": "novostiminska", "url": "https://instagram.com/novostiminska/", "subscribers": "~50,000"},
+    {"name": "minskhot", "url": "https://instagram.com/minskhot/", "subscribers": "~45,000"},
+    {"name": "minsksmile", "url": "https://instagram.com/minsksmile/", "subscribers": "~40,000"},
+]
+
+
+# =========================
+# Функция для скачивания файлов с повторными попытками
+# =========================
+def download_file_with_retry(file_id: str, max_retries: int = 3, delay: float = 1.0) -> Optional[bytes]:
+    """Скачивает файл из Telegram с повторными попытками при ошибках"""
+    for attempt in range(max_retries):
+        try:
+            file_info = bot.get_file(file_id)
+            file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+            
+            # Используем сессию с таймаутом
+            r = SESSION.get(file_url, timeout=30)
+            r.raise_for_status()
+            return r.content
+            
+        except Exception as e:
+            logger.warning(f"Download attempt {attempt + 1}/{max_retries} failed for {file_id}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(delay * (attempt + 1))  # Экспоненциальная задержка
+            else:
+                logger.error(f"All download attempts failed for {file_id}: {e}")
+                raise
+
+
+def tg_file_bytes(file_id: str) -> bytes:
+    """Обертка для скачивания файла с повторными попытками"""
+    return download_file_with_retry(file_id)
 
 
 # =========================
@@ -170,7 +217,8 @@ def prices_menu_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("💰 Наши цены", callback_data="prices:list"),
-        InlineKeyboardButton("📋 Условия размещения", callback_data="prices:terms")
+        InlineKeyboardButton("📋 Условия размещения", callback_data="prices:terms"),
+        InlineKeyboardButton("📊 График аккаунтов", callback_data="prices:schedule")
     )
     kb.add(InlineKeyboardButton("❌ Закрыть", callback_data="prices:close"))
     return kb
@@ -330,16 +378,17 @@ NEWS_SOURCES = [
 # =========================
 bot = telebot.TeleBot(TOKEN)
 
+# Настройка сессии с повторными попытками
 SESSION = requests.Session()
 retry_strategy = Retry(
-    total=0,
-    backoff_factor=0,
-    status_forcelist=[],
+    total=3,  # Увеличил количество повторных попыток
+    backoff_factor=0.5,
+    status_forcelist=[429, 500, 502, 503, 504],
 )
 adapter = HTTPAdapter(
     max_retries=retry_strategy,
-    pool_connections=10,
-    pool_maxsize=10
+    pool_connections=20,
+    pool_maxsize=20
 )
 SESSION.mount("http://", adapter)
 SESSION.mount("https://", adapter)
@@ -458,18 +507,6 @@ def clear_state(user_id: int):
         template = user_state[user_id].get("template", "MN")
         user_state[user_id] = {"template": template, "step": "idle"}
         logger.info(f"Cleared state for user {user_id}")
-
-
-def tg_file_bytes(file_id: str) -> bytes:
-    try:
-        file_info = bot.get_file(file_id)
-        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-        r = SESSION.get(file_url, timeout=30)
-        r.raise_for_status()
-        return r.content
-    except Exception as e:
-        logger.error(f"Failed to download file {file_id}: {e}")
-        raise
 
 
 # =========================
@@ -1382,7 +1419,8 @@ def make_card_mn_tg(photo_bytes: bytes, title_text: str, text_position: str = TE
     return out
 
 
-def make_card_chp(photo_bytes: bytes, title_text: str, is_square: bool = False) -> BytesIO:
+def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, is_square: bool = False) -> BytesIO:
+    """Шаблон ЧП ВМ с поддержкой выбора положения текста (сверху/снизу)"""
     ensure_fonts()
 
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -1395,11 +1433,20 @@ def make_card_chp(photo_bytes: bytes, title_text: str, is_square: bool = False) 
         img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
     
     img = ImageEnhance.Brightness(img).enhance(0.85)
-    img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+    
+    # Применяем градиент в зависимости от положения текста
+    if text_position == TEXT_POSITION_TOP:
+        # Если текст сверху - затемнение сверху
+        img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+    else:
+        # Если текст снизу - затемнение снизу
+        img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+    
     draw = ImageDraw.Draw(img)
 
     margin_x = int(img.width * 0.06)
     margin_bottom = int(img.height * 0.08)
+    margin_top = int(img.height * 0.08)
     safe_w = img.width - 2 * margin_x
 
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
@@ -1417,7 +1464,12 @@ def make_card_chp(photo_bytes: bytes, title_text: str, is_square: bool = False) 
         line_spacing_ratio=0.22
     )
 
-    y = img.height - margin_bottom - total_h
+    # Располагаем текст в зависимости от выбранной позиции
+    if text_position == TEXT_POSITION_TOP:
+        y = margin_top
+    else:
+        y = img.height - margin_bottom - total_h
+    
     for i, ln in enumerate(lines):
         draw.text((margin_x, y), ln, font=font, fill="white")
         y += heights[i] + spacing
@@ -1624,7 +1676,7 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
 
 def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, is_square: bool = False, bold_phrase: str = "") -> BytesIO:
     if template == "CHP":
-        return make_card_chp(photo_bytes, title_text, is_square)
+        return make_card_chp(photo_bytes, title_text, text_position, is_square)
     if template == "AM":
         return make_card_am(photo_bytes, title_text, is_square)
     if template == "FDR_STORY":
@@ -1877,6 +1929,18 @@ def get_terms_text() -> str:
 
 🔔 <b>ВАЖНЫЙ МОМЕНТ:</b> Все рекламные посты мы размещаем в новостной стилистике от третьего лица, как обычная новость. Фотографии для публикаций мы используем живые и тематические, рекламные баннеры - мы не размещаем.
 """
+
+
+def get_schedule_text() -> str:
+    """Возвращает текст с графиком аккаунтов и их аудиторией"""
+    text = "📊 <b>ГРАФИК АККАУНТОВ</b>\n\n"
+    text += "Список наших Instagram-аккаунтов и их аудитория:\n\n"
+    
+    for acc in ACCOUNTS_SCHEDULE:
+        text += f"• <a href='{acc['url']}'>{acc['name']}</a> — {acc['subscribers']} подписчиков\n"
+    
+    text += "\n<i>Аккаунты расположены в порядке убывания аудитории</i>"
+    return text
 
 
 # =========================
@@ -2257,6 +2321,26 @@ def on_prices_callback(c):
             )
         bot.answer_callback_query(c.id)
     
+    elif action == "schedule":
+        try:
+            bot.edit_message_text(
+                get_schedule_text(),
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=prices_menu_kb()
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                get_schedule_text(),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=prices_menu_kb()
+            )
+        bot.answer_callback_query(c.id)
+    
     elif action == "close":
         bot.delete_message(c.message.chat.id, c.message.message_id)
         bot.answer_callback_query(c.id, "Меню закрыто")
@@ -2595,6 +2679,9 @@ def on_read_full_news(c):
         bot.send_message(c.message.chat.id, "❌ Не удалось загрузить текст статьи")
 
 
+# =========================
+# Обработчик выбора шаблона
+# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:") or c.data.startswith("square:"))
 def on_tpl(c):
     uid = c.from_user.id
@@ -2627,7 +2714,8 @@ def on_tpl(c):
     st["is_square"] = is_square
     st["template"] = tpl
     
-    if tpl in ["MN_TG", "MN2"]:
+    # Для шаблонов, требующих выбора положения текста (включая CHP)
+    if tpl in ["MN_TG", "MN2", "CHP"]:  # Добавил CHP в этот список
         if tpl == "MN2":
             st["step"] = "waiting_font_size"
             user_state[uid] = st
@@ -2649,11 +2737,13 @@ def on_tpl(c):
         else:
             st["step"] = "waiting_text_position"
             user_state[uid] = st
-            bot.answer_callback_query(c.id, f"Шаблон МН ТГ выбран ✅")
+            template_names = {"MN_TG": "МН ТГ", "CHP": "ЧП ВМ"}  # Добавил CHP
+            template_name = template_names.get(tpl, tpl)
             size_text = "квадратный " if is_square else ""
+            bot.answer_callback_query(c.id, f"Шаблон {template_name} выбран ✅")
             try:
                 bot.edit_message_text(
-                    f"📱 Выбран {size_text}шаблон <b>МН ТГ</b>\n\nГде разместить текст?",
+                    f"📰 Выбран {size_text}шаблон <b>{template_name}</b>\n\nГде разместить текст?",
                     c.message.chat.id,
                     c.message.message_id,
                     parse_mode="HTML",
@@ -2662,17 +2752,17 @@ def on_tpl(c):
             except:
                 bot.send_message(
                     c.message.chat.id,
-                    f"📱 Выбран {size_text}шаблон <b>МН ТГ</b>\n\nГде разместить текст?",
+                    f"📰 Выбран {size_text}шаблон <b>{template_name}</b>\n\nГде разместить текст?",
                     parse_mode="HTML",
                     reply_markup=text_position_kb(is_square)
                 )
-    elif tpl in ["MN", "CHP", "AM"]:
+    elif tpl in ["MN", "AM"]:  # Остальные шаблоны также требуют выбора положения
         st["step"] = "waiting_text_position"
         user_state[uid] = st
-        bot.answer_callback_query(c.id, f"Шаблон {tpl} выбран ✅")
-        template_names = {"MN": "МН", "CHP": "ЧП ВМ", "AM": "АМ"}
+        template_names = {"MN": "МН", "AM": "АМ"}
         template_name = template_names.get(tpl, tpl)
         size_text = "квадратный " if is_square else ""
+        bot.answer_callback_query(c.id, f"Шаблон {template_name} выбран ✅")
         try:
             bot.edit_message_text(
                 f"📰 Выбран {size_text}шаблон <b>{template_name}</b>\n\nГде разместить текст?",
@@ -2740,7 +2830,7 @@ def on_text_position(c):
     
     st["text_position"] = position
     
-    if st.get("template") in ["MN_TG", "MN2"]:
+    if st.get("template") in ["MN_TG", "MN2", "CHP"]:  # Добавил CHP
         st["step"] = "waiting_photo"
         user_state[uid] = st
         
