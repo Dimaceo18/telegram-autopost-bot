@@ -151,17 +151,17 @@ SQUARE_SIZE = 1080  # 1:1 квадрат
 # Данные для графика аккаунтов
 # =========================
 ACCOUNTS_SCHEDULE = [
-    {"name": "minsk_news", "url": "https://instagram.com/minsk_news/", "subscribers": "478,000"},
-    {"name": "minskchp", "url": "https://instagram.com/minskchp/", "subscribers": "~120,000"},
-    {"name": "afishaminsk", "url": "https://instagram.com/afishaminsk/", "subscribers": "~100,000"},
-    {"name": "tvoyminsk", "url": "https://instagram.com/tvoyminsk/", "subscribers": "~80,000"},
-    {"name": "vestiminska", "url": "https://instagram.com/vestiminska/", "subscribers": "~75,000"},
-    {"name": "minskpress", "url": "https://instagram.com/minskpress/", "subscribers": "~65,000"},
-    {"name": "xxminsk", "url": "https://instagram.com/xxminsk/", "subscribers": "~60,000"},
-    {"name": "minskgood", "url": "https://instagram.com/minskgood/", "subscribers": "~55,000"},
-    {"name": "novostiminska", "url": "https://instagram.com/novostiminska/", "subscribers": "~50,000"},
-    {"name": "minskhot", "url": "https://instagram.com/minskhot/", "subscribers": "~45,000"},
-    {"name": "minsksmile", "url": "https://instagram.com/minsksmile/", "subscribers": "~40,000"},
+    {"name": "minsk_news"},
+    {"name": "minskchp"},
+    {"name": "afishaminsk"},
+    {"name": "tvoyminsk"},
+    {"name": "vestiminska"},
+    {"name": "minskpress"},
+    {"name": "xxminsk"},
+    {"name": "minskgood"},
+    {"name": "novostiminska"},
+    {"name": "minskhot"},
+    {"name": "minsksmile"},
 ]
 
 
@@ -1932,14 +1932,21 @@ def get_terms_text() -> str:
 
 
 def get_schedule_text() -> str:
-    """Возвращает текст с графиком аккаунтов и их аудиторией"""
-    text = "📊 <b>ГРАФИК АККАУНТОВ</b>\n\n"
-    text += "Список наших Instagram-аккаунтов и их аудитория:\n\n"
+    """Возвращает список аккаунтов с активными ссылками"""
+    text = "📊 График аккаунтов:\n\n"
     
-    for acc in ACCOUNTS_SCHEDULE:
-        text += f"• <a href='{acc['url']}'>{acc['name']}</a> — {acc['subscribers']} подписчиков\n"
+    text += "<a href='https://instagram.com/minsk_news'>instagram.com/minsk_news</a> -\n"
+    text += "<a href='https://instagram.com/minskchp'>instagram.com/minskchp</a> -\n"
+    text += "<a href='https://instagram.com/afishaminsk'>instagram.com/afishaminsk</a> -\n"
+    text += "<a href='https://instagram.com/tvoyminsk'>instagram.com/tvoyminsk</a> -\n"
+    text += "<a href='https://instagram.com/vestiminska'>instagram.com/vestiminska</a> -\n"
+    text += "<a href='https://instagram.com/minskpress'>instagram.com/minskpress</a> -\n"
+    text += "<a href='https://instagram.com/xxminsk'>instagram.com/xxminsk</a> -\n"
+    text += "<a href='https://instagram.com/minskgood'>instagram.com/minskgood</a> -\n"
+    text += "<a href='https://instagram.com/novostiminska'>instagram.com/novostiminska</a> -\n"
+    text += "<a href='https://instagram.com/minskhot'>instagram.com/minskhot</a> -\n"
+    text += "<a href='https://instagram.com/minsksmile'>instagram.com/minsksmile</a> -"
     
-    text += "\n<i>Аккаунты расположены в порядке убывания аудитории</i>"
     return text
 
 
