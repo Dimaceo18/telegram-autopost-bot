@@ -131,6 +131,9 @@ FONT_MN_BOLD = "CaviarDreams_Bold.ttf"
 FONT_CHP = "Montserrat-Black.ttf"
 FONT_AM = "IntroInline.ttf"
 FONT_MONTSERRAT_BLACK = "Montserrat-Black.ttf"
+FONT_PATH = "Inter-ExtraBold.ttf"
+FONT_FALLBACK = "Montserrat-Black.ttf"
+FONT_REGULAR = "Inter-Regular.ttf"
 
 FOOTER_TEXT = "MINSK NEWS"
 
@@ -140,6 +143,35 @@ CHP_GRADIENT_PCT = 0.48
 AM_TOP_BLUR_PCT = 0.20
 AM_BLUR_RADIUS = 18
 AM_BLUR_BLEND = 0.50
+
+# Параметры для АМ 2 (афиша)
+BRIGHTNESS_FACTOR = 0.85
+GRADIENT_HEIGHT_PCT = 0.48
+GRADIENT_MAX_ALPHA = 220
+MARGIN_TOP_PCT = 0.15
+TEXT_MAX_WIDTH_PCT = 0.80
+LINE_SPACING_RATIO = 0.22
+DATE_PLACE_BOTTOM_MARGIN = 180
+DATE_PLACE_TOP_MARGIN = 130
+DATE_PLACE_LINE_SPACING = 15
+DATE_PLACE_LEFT_MARGIN = 45
+RUBRIC_TOP_MARGIN = 40
+RUBRIC_PADDING = 20
+RUBRIC_RADIUS = 25
+DATE_PLACE_PADDING = 15
+DATE_PLACE_RADIUS = 25
+
+# Цвета
+TEXT_COLOR = (255, 255, 255)
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+
+# Цвета для выделения
+HIGHLIGHT_COLORS = {
+    "red": (255, 80, 80),
+    "yellow": (255, 220, 80),
+    "blue": (80, 150, 255)
+}
 
 
 # =========================
@@ -222,6 +254,33 @@ def channel_kb():
     kb = InlineKeyboardMarkup()
     if SUGGEST_URL:
         kb.add(InlineKeyboardButton("📝 Предложить новость", url=SUGGEST_URL))
+    return kb
+
+# Клавиатуры для шаблона АМ 2 (как в боте афиш)
+def text_position_kb_am2():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("⬆️ Текст сверху", callback_data="am2_pos:top"),
+        InlineKeyboardButton("⬇️ Текст снизу", callback_data="am2_pos:bottom")
+    )
+    return kb
+
+def add_date_place_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("✅ Да, добавить", callback_data="am2_date_place:yes"),
+        InlineKeyboardButton("➖ Нет, пропустить", callback_data="am2_date_place:no")
+    )
+    return kb
+
+def color_kb_am2():
+    kb = InlineKeyboardMarkup(row_width=3)
+    kb.add(
+        InlineKeyboardButton("🔴 Красный", callback_data="am2_color:red"),
+        InlineKeyboardButton("🟡 Желтый", callback_data="am2_color:yellow"),
+        InlineKeyboardButton("🔵 Голубой", callback_data="am2_color:blue")
+    )
+    kb.add(InlineKeyboardButton("➖ Без выделения", callback_data="am2_color:none"))
     return kb
 
 
@@ -322,7 +381,7 @@ def clear_state(user_id: int):
         user_state[user_id] = {"template": template, "step": "idle"}
 
 def ensure_fonts():
-    fonts = [FONT_MN, FONT_MN_BOLD, FONT_CHP, FONT_AM, FONT_MONTSERRAT_BLACK]
+    fonts = [FONT_MN, FONT_MN_BOLD, FONT_CHP, FONT_AM, FONT_MONTSERRAT_BLACK, FONT_PATH, FONT_REGULAR]
     for font in fonts:
         if not os.path.exists(font):
             logger.warning(f"Font not found: {font}")
@@ -333,6 +392,8 @@ def download_fonts():
         "CaviarDreams_Bold.ttf": "https://github.com/paullang/evil-icons/raw/master/assets/fonts/CaviarDreams_Bold.ttf",
         "Montserrat-Black.ttf": "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat-Black.ttf",
         "IntroInline.ttf": "https://github.com/paullang/evil-icons/raw/master/assets/fonts/IntroInline.ttf",
+        "Inter-ExtraBold.ttf": "https://github.com/rsms/inter/raw/master/docs/fonts/Inter-ExtraBold.otf",
+        "Inter-Regular.ttf": "https://github.com/rsms/inter/raw/master/docs/fonts/Inter-Regular.otf",
     }
     
     for font_name, url in fonts_urls.items():
@@ -349,6 +410,81 @@ def download_fonts():
 def extract_source_url(text: str) -> str:
     m = URL_RE.search(text or "")
     return m.group(1) if m else ""
+
+def load_font(font_name: str, size: int):
+    try:
+        return ImageFont.truetype(font_name, size=size)
+    except Exception:
+        try:
+            return ImageFont.truetype(FONT_FALLBACK, size=size)
+        except:
+            return ImageFont.load_default()
+
+def text_width(draw, s: str, font) -> int:
+    bbox = draw.textbbox((0, 0), s, font=font)
+    return bbox[2] - bbox[0]
+
+def wrap_text_center(draw, text: str, font, max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
+    words = text.split()
+    if not words:
+        return [""], True
+
+    lines = []
+    current = words[0]
+    
+    for word in words[1:]:
+        test = current + " " + word
+        if text_width(draw, test, font) <= max_width:
+            current = test
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    
+    return lines, True
+
+def fit_text_block_center(draw, text: str, font_path: str, safe_w: int, max_block_h: int,
+                          max_lines: int = 6, start_size: int = 90, min_size: int = 16,
+                          line_spacing_ratio: float = 0.22):
+    text = (text or "").strip()
+    if not text:
+        text = " "
+
+    size = start_size
+    while size >= min_size:
+        font = load_font(font_path, size)
+        lines, ok = wrap_text_center(draw, text, font, safe_w, max_lines=max_lines)
+        spacing = int(size * line_spacing_ratio)
+
+        heights = []
+        total_h = 0
+        max_w = 0
+        for ln in lines:
+            bb = draw.textbbox((0, 0), ln, font=font)
+            lw = bb[2] - bb[0]
+            lh = bb[3] - bb[1]
+            heights.append(lh)
+            total_h += lh
+            max_w = max(max_w, lw)
+        total_h += spacing * (len(lines) - 1)
+
+        if ok and max_w <= safe_w and total_h <= max_block_h:
+            return font, lines, heights, spacing, total_h
+
+        size -= 2
+
+    font = load_font(font_path, min_size)
+    lines, _ = wrap_text_center(draw, text, font, safe_w, max_lines=max_lines)
+    spacing = int(min_size * line_spacing_ratio)
+    heights = []
+    total_h = 0
+    for ln in lines:
+        bb = draw.textbbox((0, 0), ln, font=font)
+        lh = bb[3] - bb[1]
+        heights.append(lh)
+        total_h += lh
+    total_h += spacing * (len(lines) - 1)
+    return font, lines, heights, spacing, total_h
 
 
 # =========================
@@ -414,6 +550,35 @@ def apply_bottom_gradient_soft(img: Image.Image, height_pct: float, max_alpha: i
     out = Image.alpha_composite(base, overlay)
     return out.convert("RGB")
 
+def apply_gradient_direction(img: Image.Image, direction: str, height_pct: float, max_alpha: int = 220) -> Image.Image:
+    w, h = img.size
+    gh = int(h * height_pct)
+    if gh <= 0:
+        return img
+    
+    overlay_alpha = Image.new("L", (w, h), 0)
+    grad = Image.new("L", (1, gh), 0)
+    
+    for y in range(gh):
+        if direction == "top":
+            a = int(max_alpha * (1 - y / max(1, gh - 1)))
+        else:
+            a = int(max_alpha * (y / max(1, gh - 1)))
+        grad.putpixel((0, y), a)
+    
+    grad = grad.resize((w, gh))
+    
+    if direction == "top":
+        overlay_alpha.paste(grad, (0, 0))
+    else:
+        overlay_alpha.paste(grad, (0, h - gh))
+    
+    black = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    base = img.convert("RGBA")
+    overlay = Image.composite(black, Image.new("RGBA", (w, h), (0, 0, 0, 0)), overlay_alpha)
+    out = Image.alpha_composite(base, overlay)
+    return out.convert("RGB")
+
 def apply_top_blur_band(img: Image.Image, band_pct: float = AM_TOP_BLUR_PCT, radius: int = AM_BLUR_RADIUS, blend: float = AM_BLUR_BLEND) -> Image.Image:
     w, h = img.size
     band_h = max(1, int(h * band_pct))
@@ -459,10 +624,6 @@ def crop_to_square(img: Image.Image) -> Image.Image:
 # =========================
 # Text wrapping functions
 # =========================
-def text_width(draw: ImageDraw.ImageDraw, s: str, font: ImageFont.FreeTypeFont) -> int:
-    bb = draw.textbbox((0, 0), s, font=font)
-    return bb[2] - bb[0]
-
 def wrap_no_truncate(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
                      max_width: int, max_lines: int = 6) -> Tuple[List[str], bool]:
     words = [w for w in (text or "").split() if w.strip()]
@@ -645,6 +806,207 @@ def _draw_story_text(draw, text, box, font, fill=(255, 255, 255), align="center"
             x = x2 - line_w
         draw.text((x, y), line, font=font, fill=fill)
         y += line_h + line_gap
+
+
+# =========================
+# Функции для шаблона АМ 2 (как в боте афиш)
+# =========================
+def draw_highlighted_text_am2(draw, text: str, highlight_word: str, color, font, x, y):
+    if not highlight_word:
+        draw.text((x, y), text, font=font, fill=TEXT_COLOR)
+        return
+    
+    text_lower = text.lower()
+    word_lower = highlight_word.lower()
+    
+    if word_lower not in text_lower:
+        draw.text((x, y), text, font=font, fill=TEXT_COLOR)
+        return
+    
+    pos = text_lower.find(word_lower)
+    
+    before = text[:pos]
+    word_part = text[pos:pos + len(highlight_word)]
+    after = text[pos + len(highlight_word):]
+    
+    current_x = x
+    if before:
+        draw.text((current_x, y), before, font=font, fill=TEXT_COLOR)
+        current_x += text_width(draw, before, font)
+    
+    if word_part:
+        draw.text((current_x, y), word_part, font=font, fill=color)
+        current_x += text_width(draw, word_part, font)
+    
+    if after:
+        draw.text((current_x, y), after, font=font, fill=TEXT_COLOR)
+
+def draw_rounded_rect_with_text_am2(draw, text: str, bg_color, text_color, x: int, y: int, padding: int, radius: int):
+    if not text:
+        return y
+    
+    font = load_font(FONT_REGULAR, 24)
+    text_upper = text.upper()
+    
+    text_w = draw.textlength(text_upper, font=font)
+    bbox = draw.textbbox((0, 0), text_upper, font=font)
+    text_h = bbox[3] - bbox[1]
+    
+    rect_w = int(text_w + padding * 2)
+    rect_h = int(text_h + padding * 2)
+    
+    draw.rounded_rectangle(
+        [x, y, x + rect_w, y + rect_h],
+        radius=radius,
+        fill=bg_color
+    )
+    
+    text_x = x + (rect_w - text_w) / 2
+    text_y = y + (rect_h - text_h) / 2 - bbox[1]
+    draw.text((text_x, text_y), text_upper, font=font, fill=text_color)
+    
+    return y + rect_h + 15
+
+def draw_rubric_top_center_am2(draw, rubric: str, highlight_color, is_yellow: bool):
+    if not rubric:
+        return 0
+    
+    font_rubric = load_font(FONT_PATH, 30)
+    rubric_text = rubric.upper()
+    
+    text_w = draw.textlength(rubric_text, font=font_rubric)
+    bbox = draw.textbbox((0, 0), rubric_text, font=font_rubric)
+    text_h = bbox[3] - bbox[1]
+    
+    rect_w = int(text_w + RUBRIC_PADDING * 2)
+    rect_h = int(text_h + RUBRIC_PADDING * 2)
+    
+    rect_x = (TARGET_W - rect_w) // 2
+    rect_y = RUBRIC_TOP_MARGIN
+    
+    if is_yellow:
+        bg_color = highlight_color
+        text_color = BLACK
+    else:
+        bg_color = WHITE
+        text_color = highlight_color
+    
+    draw.rounded_rectangle(
+        [rect_x, rect_y, rect_x + rect_w, rect_y + rect_h],
+        radius=RUBRIC_RADIUS,
+        fill=bg_color
+    )
+    
+    text_x = rect_x + (rect_w - text_w) / 2
+    text_y = rect_y + (rect_h - text_h) / 2 - bbox[1]
+    draw.text((text_x, text_y), rubric_text, font=font_rubric, fill=text_color)
+    
+    return rect_y + rect_h
+
+def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
+                      date: str = "", place: str = "", rubric: str = "",
+                      highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
+    
+    if highlight_color is None:
+        highlight_color = HIGHLIGHT_COLORS["yellow"]
+        is_yellow = True
+    
+    img = Image.open(BytesIO(image_bytes)).convert("RGB")
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+    
+    if text_position == "top":
+        img = apply_gradient_direction(img, "top", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
+    else:
+        img = apply_gradient_direction(img, "bottom", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
+    
+    draw = ImageDraw.Draw(img)
+    
+    rubric_bottom = 0
+    if rubric:
+        rubric_bottom = draw_rubric_top_center_am2(draw, rubric, highlight_color, is_yellow)
+    
+    margin_top = int(TARGET_H * MARGIN_TOP_PCT)
+    if rubric_bottom > 0:
+        margin_top = rubric_bottom + 40
+    else:
+        margin_top = 130
+    
+    max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)
+    
+    text = (title_text or "").strip().upper()
+    title_max_h = int(TARGET_H * 0.23)
+    
+    font, lines, heights, spacing, total_h = fit_text_block_center(
+        draw=draw,
+        text=text,
+        font_path=FONT_PATH,
+        safe_w=max_text_width,
+        max_block_h=title_max_h,
+        max_lines=6,
+        start_size=int(TARGET_H * 0.11),
+        min_size=24,
+        line_spacing_ratio=LINE_SPACING_RATIO
+    )
+    
+    if is_yellow:
+        date_place_text_color = BLACK
+    else:
+        date_place_text_color = WHITE
+    
+    if text_position == "top":
+        y = margin_top
+        for i, ln in enumerate(lines):
+            line_w = text_width(draw, ln, font)
+            x = (TARGET_W - line_w) // 2
+            draw_highlighted_text_am2(draw, ln, highlight_word, highlight_color, font, x, y)
+            y += heights[i] + spacing
+        
+        if date or place:
+            date_place_y = TARGET_H - DATE_PLACE_BOTTOM_MARGIN
+            if date:
+                date_place_y = draw_rounded_rect_with_text_am2(
+                    draw, f"ДАТА: {date}", highlight_color, date_place_text_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y,
+                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS
+                )
+            if place:
+                draw_rounded_rect_with_text_am2(
+                    draw, f"МЕСТО: {place}", highlight_color, date_place_text_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y,
+                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS
+                )
+    
+    else:
+        date_place_y = DATE_PLACE_TOP_MARGIN
+        if date or place:
+            if date:
+                date_place_y = draw_rounded_rect_with_text_am2(
+                    draw, f"ДАТА: {date}", highlight_color, date_place_text_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y,
+                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS
+                )
+            if place:
+                draw_rounded_rect_with_text_am2(
+                    draw, f"МЕСТО: {place}", highlight_color, date_place_text_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y,
+                    DATE_PLACE_PADDING, DATE_PLACE_RADIUS
+                )
+            y = date_place_y + 65
+        else:
+            y = margin_top
+        
+        for i, ln in enumerate(lines):
+            line_w = text_width(draw, ln, font)
+            x = (TARGET_W - line_w) // 2
+            draw_highlighted_text_am2(draw, ln, highlight_word, highlight_color, font, x, y)
+            y += heights[i] + spacing
+    
+    out = BytesIO()
+    img.save(out, format="JPEG", quality=95, subsampling=0)
+    out.seek(0)
+    return out
 
 
 # =========================
@@ -965,65 +1327,53 @@ def make_card_am(photo_bytes: bytes, title_text: str, is_square: bool = False) -
     out.seek(0)
     return out
 
-# НОВЫЙ ШАБЛОН АМ 2 (как в "создать афишу")
-def make_card_am2(photo_bytes: bytes, title_text: str, is_square: bool = False) -> BytesIO:
-    ensure_fonts()
-
-    img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-    
+def make_card_am2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP,
+                  date: str = "", place: str = "", rubric: str = "",
+                  highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False,
+                  is_square: bool = False) -> BytesIO:
+    """Шаблон АМ 2 - как в боте создания афиш"""
     if is_square:
+        img = Image.open(BytesIO(photo_bytes)).convert("RGB")
         img = crop_to_square(img)
         img = img.resize((SQUARE_SIZE, SQUARE_SIZE), resample=Image.Resampling.LANCZOS)
+        
+        img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+        
+        if text_position == "top":
+            img = apply_gradient_direction(img, "top", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
+        else:
+            img = apply_gradient_direction(img, "bottom", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
+        
+        draw = ImageDraw.Draw(img)
+        
+        margin_x = int(img.width * 0.06)
+        margin_top = int(img.height * 0.15)
+        safe_w = img.width - 2 * margin_x
+        
+        text = (title_text or "").strip().upper()
+        title_max_h = int(img.height * 0.23)
+        
+        font, lines, heights, spacing, total_h = fit_text_block_center(
+            draw=draw, text=text, font_path=FONT_PATH,
+            safe_w=safe_w, max_block_h=title_max_h,
+            max_lines=6, start_size=int(img.height * 0.11),
+            min_size=24, line_spacing_ratio=LINE_SPACING_RATIO
+        )
+        
+        y = margin_top
+        for i, ln in enumerate(lines):
+            line_w = text_width(draw, ln, font)
+            x = (img.width - line_w) // 2
+            draw.text((x, y), ln, font=font, fill="white")
+            y += heights[i] + spacing
+        
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=95, subsampling=0)
+        out.seek(0)
+        return out
     else:
-        img = crop_to_4x5(img)
-        img = img.resize((TARGET_W, TARGET_H), resample=Image.Resampling.LANCZOS)
-    
-    # Затемнение как в афише
-    img = ImageEnhance.Brightness(img).enhance(0.85)
-    
-    # Градиент сверху
-    img = apply_top_gradient(img, height_pct=0.48, max_alpha=220)
-    
-    draw = ImageDraw.Draw(img)
-
-    # Отступы для текста
-    margin_x = int(img.width * 0.06)
-    margin_top = int(img.height * 0.15)
-    safe_w = img.width - 2 * margin_x
-
-    # Заголовок
-    title_max_h = int(img.height * 0.23)
-    text = (title_text or "").strip().upper()
-
-    font, lines, heights, spacing, total_h = fit_text_block(
-        draw=draw,
-        text=text,
-        font_path=FONT_MN,
-        safe_w=safe_w,
-        max_block_h=title_max_h,
-        max_lines=6,
-        start_size=int(img.height * 0.11),
-        min_size=16,
-        line_spacing_ratio=0.22
-    )
-
-    # Центрируем блок текста
-    block_w = 0
-    for ln in lines:
-        block_w = max(block_w, text_width(draw, ln, font))
-    block_x = (img.width - block_w) // 2
-    block_x = max(margin_x, block_x)
-
-    # Располагаем текст сверху
-    y = margin_top
-    for i, ln in enumerate(lines):
-        draw.text((block_x, y), ln, font=font, fill="white")
-        y += heights[i] + spacing
-
-    out = BytesIO()
-    img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
-    out.seek(0)
-    return out
+        return create_poster_am2(photo_bytes, title_text, text_position, date, place, rubric,
+                                 highlight_word, highlight_color, is_yellow)
 
 def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> BytesIO:
     ensure_fonts()
@@ -1167,13 +1517,17 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     out.seek(0)
     return out
 
-def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, is_square: bool = False, bold_phrase: str = "") -> BytesIO:
+def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", 
+              text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, is_square: bool = False, 
+              bold_phrase: str = "", date: str = "", place: str = "", rubric: str = "",
+              highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
     if template == "CHP":
         return make_card_chp(photo_bytes, title_text, text_position, is_square)
     if template == "AM":
         return make_card_am(photo_bytes, title_text, is_square)
     if template == "AM2":
-        return make_card_am2(photo_bytes, title_text, is_square)
+        return make_card_am2(photo_bytes, title_text, text_position, date, place, rubric,
+                            highlight_word, highlight_color, is_yellow, is_square)
     if template == "FDR_STORY":
         return make_card_fdr_story(photo_bytes, title_text, body_text)
     if template == "FDR_POST":
@@ -1230,10 +1584,10 @@ def apply_watermark_mn(photo_bytes: bytes) -> BytesIO:
         watermark_text = "MINSK NEWS"
         
         bbox = draw.textbbox((0, 0), watermark_text, font=font)
-        text_width = bbox[2] - bbox[0]
+        text_width_val = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
         
-        x = (img.width - text_width) // 2
+        x = (img.width - text_width_val) // 2
         y = (img.height - text_height) // 2
         
         draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 64))
@@ -1268,10 +1622,10 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
         watermark_text = "ЧП Минск"
         
         bbox = draw.textbbox((0, 0), watermark_text, font=font)
-        text_width = bbox[2] - bbox[0]
+        text_width_val = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
         
-        x = (img.width - text_width) // 2
+        x = (img.width - text_width_val) // 2
         y = (img.height - text_height) // 2
         
         draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 64))
@@ -1734,8 +2088,23 @@ def on_tpl(c):
     st["is_square"] = is_square
     st["template"] = tpl
     
-    # Для шаблонов, требующих выбора положения текста
-    if tpl in ["MN_TG", "MN2", "CHP"]:
+    if tpl == "AM2":
+        st["step"] = "waiting_photo_am2"
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, "Шаблон АМ 2 выбран ✅")
+        size_text = "квадратное " if is_square else ""
+        bot.send_message(
+            c.message.chat.id,
+            f"🎨 Выбран {size_text}шаблон <b>АМ 2</b>\n\n📸 Пришли {size_text}фото:",
+            parse_mode="HTML"
+        )
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+        return
+    
+    elif tpl in ["MN_TG", "MN2", "CHP"]:
         if tpl == "MN2":
             st["step"] = "waiting_font_size"
             user_state[uid] = st
@@ -1776,10 +2145,10 @@ def on_tpl(c):
                     parse_mode="HTML",
                     reply_markup=text_position_kb(is_square)
                 )
-    elif tpl in ["MN", "AM", "AM2"]:
+    elif tpl in ["MN", "AM"]:
         st["step"] = "waiting_text_position"
         user_state[uid] = st
-        template_names = {"MN": "МН", "AM": "АМ", "AM2": "АМ 2"}
+        template_names = {"MN": "МН", "AM": "АМ"}
         template_name = template_names.get(tpl, tpl)
         size_text = "квадратный " if is_square else ""
         bot.answer_callback_query(c.id, f"Шаблон {template_name} выбран ✅")
@@ -1837,478 +2206,103 @@ def on_tpl(c):
         bot.answer_callback_query(c.id, "Этот шаблон недоступен для квадратного фото")
         return
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("text_pos:") or c.data.startswith("square_pos:"))
-def on_text_position(c):
+# Callbacks для шаблона АМ 2
+@bot.callback_query_handler(func=lambda c: c.data.startswith("am2_pos:"))
+def on_am2_text_position(c):
     uid = c.from_user.id
-    parts = c.data.split(":", 1)
-    prefix = parts[0]
-    position = parts[1]
-    
-    is_square = (prefix == "square_pos")
+    position = c.data.split(":")[1]
     st = user_state.get(uid) or {}
-    
     st["text_position"] = position
-    st["step"] = "waiting_photo"
+    st["step"] = "waiting_title_am2"
     user_state[uid] = st
     
-    position_text = "сверху" if position == "top" else "снизу"
-    size_text = "квадратное " if is_square else ""
+    pos_text = "сверху" if position == "top" else "снизу"
+    bot.answer_callback_query(c.id, f"Текст будет {pos_text} ✅")
+    bot.send_message(
+        c.message.chat.id,
+        f"✅ Текст будет расположен <b>{pos_text}</b>\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:",
+        parse_mode="HTML"
+    )
     try:
-        bot.edit_message_text(
-            f"Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли {size_text}фото 📷",
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML"
-        )
+        bot.delete_message(c.message.chat.id, c.message.message_id)
     except:
-        bot.send_message(
-            c.message.chat.id,
-            f"Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли {size_text}фото 📷",
-            parse_mode="HTML"
-        )
-    bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
+        pass
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("font_size:") or c.data.startswith("square_font:"))
-def on_font_size_adjust(c):
+@bot.callback_query_handler(func=lambda c: c.data.startswith("am2_date_place:"))
+def on_am2_date_place_choice(c):
     uid = c.from_user.id
-    parts = c.data.split(":")
-    prefix = parts[0]
-    action = parts[1]
-    
-    is_square = (prefix == "square_font")
-    
+    choice = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
-    if action == "done":
-        st["step"] = "waiting_text_position"
+    if choice == "yes":
+        st["step"] = "waiting_date_am2"
         user_state[uid] = st
-        try:
-            bot.edit_message_text(
-                "✅ Размер шрифта настроен. Теперь выбери расположение текста:",
-                c.message.chat.id,
-                c.message.message_id,
-                reply_markup=text_position_kb(is_square)
-            )
-        except:
-            bot.send_message(
-                c.message.chat.id,
-                "✅ Размер шрифта настроен. Теперь выбери расположение текста:",
-                reply_markup=text_position_kb(is_square)
-            )
-        bot.answer_callback_query(c.id, "Настройки сохранены")
-        return
-    
-    current = float(parts[2]) if len(parts) > 2 else st.get("font_size_multiplier", 1.0)
-    
-    if action == "plus":
-        new_mult = min(2.0, current + 0.1)
-    elif action == "minus":
-        new_mult = max(0.5, current - 0.1)
-    else:
-        bot.answer_callback_query(c.id)
-        return
-    
-    st["font_size_multiplier"] = new_mult
-    user_state[uid] = st
-    
-    template_name = "квадратного МН 2" if is_square else "МН 2"
-    try:
-        bot.edit_message_text(
-            f"🔤 Настройка размера шрифта для {template_name}\n\n"
-            f"Текущий размер: {int(new_mult*100)}%\n"
-            f"Используй кнопки + и - для регулировки.\n"
-            f"Нажми «Готово» когда закончишь.",
-            c.message.chat.id,
-            c.message.message_id,
-            reply_markup=font_size_kb(new_mult, is_square)
-        )
-    except:
+        bot.answer_callback_query(c.id, "Добавляем дату и место ✅")
         bot.send_message(
             c.message.chat.id,
-            f"🔤 Настройка размера шрифта для {template_name}\n\n"
-            f"Текущий размер: {int(new_mult*100)}%\n"
-            f"Используй кнопки + и - для регулировки.\n"
-            f"Нажми «Готово» когда закончишь.",
-            reply_markup=font_size_kb(new_mult, is_square)
+            f"✏️ <b>Введи ДАТУ</b>:",
+            parse_mode="HTML"
         )
-    
-    bot.answer_callback_query(c.id)
-
-@bot.callback_query_handler(func=lambda c: c.data in ["publish", "edit_body", "edit_title", "cancel"])
-def on_action(call):
-    uid = call.from_user.id
-    st = user_state.get(uid)
-
-    if not st or st.get("step") != "waiting_action":
-        bot.answer_callback_query(call.id, "Нет активного превью. Начни с «Оформить пост».")
-        return
-
-    if call.data == "publish":
         try:
-            if st.get("template") == "MN_TG" and "full_text" in st:
-                caption = build_caption_tg(st["full_text"])
-            else:
-                title_to_use = st["full_title"] if st.get("template") == "FDR_POST" and "full_title" in st else st.get("title", "")
-                caption = build_caption_html(title_to_use, st["body_raw"])
-                
-            bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=channel_kb())
-            bot.answer_callback_query(call.id, "Опубликовано ✅")
-            bot.send_message(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
-            tpl = st.get("template", "MN")
-            user_state[uid] = {"step": "idle", "template": tpl}
-        except Exception as e:
-            logger.error(f"Error publishing: {e}")
-            bot.answer_callback_query(call.id, "Ошибка публикации")
-            bot.send_message(call.message.chat.id, f"Не смог опубликовать: {e}", reply_markup=main_menu_kb())
-
-    elif call.data == "edit_body":
-        if st.get("template") == "FDR_STORY":
-            st["step"] = "waiting_body_fdr"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ для сторис.", reply_markup=main_menu_kb())
-        elif st.get("template") == "FDR_POST":
-            st["step"] = "waiting_body_fdr_post"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
-        elif st.get("template") == "MN_TG":
-            st["step"] = "waiting_text_mn_tg"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком. Первый абзац станет заголовком.", reply_markup=main_menu_kb())
-        else:
-            st["step"] = "waiting_body"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
-
-    elif call.data == "edit_title":
-        if st.get("template") == "FDR_STORY":
-            st["step"] = "waiting_title_fdr"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК для сторис.", reply_markup=main_menu_kb())
-        elif st.get("template") == "FDR_POST":
-            st["step"] = "waiting_title_fdr_post"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ПОЛНЫЙ ЗАГОЛОВОК.", reply_markup=main_menu_kb())
-        elif st.get("template") == "MN_TG":
-            st["step"] = "waiting_text_mn_tg"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком. Первый абзац станет заголовком.", reply_markup=main_menu_kb())
-        else:
-            st["step"] = "waiting_title"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК.", reply_markup=main_menu_kb())
-
-    elif call.data == "cancel":
-        bot.answer_callback_query(call.id, "Отменено")
-        tpl = st.get("template", "MN")
-        user_state[uid] = {"step": "idle", "template": tpl}
-        bot.send_message(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
-
-
-# =========================
-# Message handlers
-# =========================
-@bot.message_handler(commands=["start", "help"])
-def cmd_start(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    st.setdefault("template", "MN")
-    st["step"] = "idle"
-    user_state[uid] = st
-
-    bot.send_message(
-        message.chat.id,
-        "👋 <b>Привет! Я бот для оформления постов</b>\n\n"
-        "<b>📝 Основные функции:</b>\n"
-        "• 📝 Оформление постов с фото (7 шаблонов, включая Квадраты)\n"
-        "• ✨ Улучшение качества фото (+20% резкость, +15% насыщенность)\n"
-        "• 💧 Водяные знаки - нанеси \"MINSK NEWS\" или \"ЧП Минск\" на фото\n"
-        "• 🤖 Текст в ИИ - отправь текст, ИИ сократит его до 650 символов\n"
-        "• 💰 Цены и условия размещения\n\n"
-        "Выбери действие 👇",
-        parse_mode="HTML",
-        reply_markup=main_menu_kb()
-    )
-
-@bot.message_handler(commands=["post"])
-def cmd_post(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    st.setdefault("template", "MN")
-    st["step"] = "waiting_template"
-    user_state[uid] = st
-    bot.send_message(message.chat.id, "📝 Выбери шаблон оформления:", reply_markup=template_kb())
-
-@bot.message_handler(commands=["enhance"])
-def cmd_enhance(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    st["step"] = "waiting_enhance_photo"
-    user_state[uid] = st
-    
-    bot.send_message(
-        message.chat.id,
-        "✨ <b>Улучшение качества фото</b>\n\n"
-        "Отправь фото, и я увеличу резкость на +20% и насыщенность на +15%",
-        parse_mode="HTML",
-        reply_markup=main_menu_kb()
-    )
-
-@bot.message_handler(commands=["watermark"])
-def cmd_watermark(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    st["step"] = "waiting_watermark_type"
-    user_state[uid] = st
-    
-    bot.send_message(
-        message.chat.id,
-        "💧 <b>Водяные знаки</b>\n\n"
-        "Выбери тип водяного знака:",
-        parse_mode="HTML",
-        reply_markup=watermark_type_kb()
-    )
-
-@bot.message_handler(commands=["prices"])
-def cmd_prices(message):
-    bot.send_message(
-        message.chat.id,
-        "💰 <b>Цены и условия размещения</b>\n\n"
-        "Выбери интересующий раздел:",
-        parse_mode="HTML",
-        reply_markup=prices_menu_kb()
-    )
-
-@bot.message_handler(commands=["ai_text"])
-def cmd_ai_text(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    st["step"] = "waiting_ai_text"
-    user_state[uid] = st
-    
-    bot.send_message(
-        message.chat.id,
-        "🤖 <b>Текст в ИИ</b>\n\n"
-        "Отправь текст новости, и я сокращу его до 650 символов,\n"
-        "сохраняя все главные факты в новостном формате.\n\n"
-        "<i>Обработка может занять до 30 секунд...</i>",
-        parse_mode="HTML",
-        reply_markup=main_menu_kb()
-    )
-
-@bot.message_handler(commands=["stop"])
-def cmd_stop(message):
-    uid = message.from_user.id
-    clear_state(uid)
-    bot.send_message(message.chat.id, "🛑 Бот сброшен в исходное состояние.", reply_markup=main_menu_kb())
-
-@bot.message_handler(func=lambda message: message.text == BTN_POST)
-def handle_post_button(message):
-    cmd_post(message)
-
-@bot.message_handler(func=lambda message: message.text == BTN_ENHANCE)
-def handle_enhance_button(message):
-    cmd_enhance(message)
-
-@bot.message_handler(func=lambda message: message.text == BTN_WATERMARK)
-def handle_watermark_button(message):
-    cmd_watermark(message)
-
-@bot.message_handler(func=lambda message: message.text == BTN_PRICES)
-def handle_prices_button(message):
-    cmd_prices(message)
-
-@bot.message_handler(func=lambda message: message.text == BTN_AI_TEXT)
-def handle_ai_text_button(message):
-    cmd_ai_text(message)
-
-@bot.message_handler(content_types=["photo", "document"])
-def on_photo_or_document(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    
-    if st.get("step") == "waiting_enhance_photo":
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+    else:
+        st["date"] = ""
+        st["place"] = ""
+        st["step"] = "waiting_highlight_word_am2"
+        user_state[uid] = st
+        
         try:
-            if message.content_type == "photo":
-                file_id = message.photo[-1].file_id
-            else:
-                doc = message.document
-                if not doc.mime_type or not doc.mime_type.startswith("image/"):
-                    bot.reply_to(message, "❌ Это не изображение. Отправь JPG или PNG файл.")
-                    return
-                file_id = doc.file_id
-            
-            photo_bytes = tg_file_bytes(file_id)
-            
-            if not check_file_size(photo_bytes):
-                bot.reply_to(message, "❌ Файл слишком большой. Максимум 20MB.")
-                return
-            
-            processing_msg = bot.reply_to(message, "⏳ Улучшаю качество...")
-            
-            enhanced = enhance_image_simple(photo_bytes)
-            
-            bot.send_document(
-                message.chat.id,
-                document=enhanced,
-                visible_file_name="enhanced_photo.jpg",
-                caption="✨ Фото улучшено!\n\n• Резкость +20%\n• Насыщенность +15%"
+            card = create_poster_am2(
+                st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
+                "", "", "", "", None, False
             )
-            
-            bot.delete_message(message.chat.id, processing_msg.message_id)
-            st["step"] = "idle"
+            st["preview_bytes"] = card.getvalue()
             user_state[uid] = st
-            return
             
+            bot.send_photo(c.message.chat.id, photo=BytesIO(st["preview_bytes"]),
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши СЛОВО для выделения цветом</b>\n(или «-» чтобы пропустить):",
+                parse_mode="HTML")
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
         except Exception as e:
-            logger.error(f"Error enhancing photo: {e}")
-            bot.reply_to(message, f"❌ Ошибка при улучшении: {e}")
-            return
+            bot.send_message(c.message.chat.id, f"❌ Ошибка: {e}")
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("am2_color:"))
+def on_am2_color_select(c):
+    uid = c.from_user.id
+    color_key = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
     
-    if st.get("step") == "waiting_watermark_photo":
-        try:
-            if message.content_type == "photo":
-                file_id = message.photo[-1].file_id
-            else:
-                doc = message.document
-                if not doc.mime_type or not doc.mime_type.startswith("image/"):
-                    bot.reply_to(message, "❌ Это не изображение. Отправь JPG или PNG файл.")
-                    return
-                file_id = doc.file_id
-            
-            photo_bytes = tg_file_bytes(file_id)
-            
-            if not check_file_size(photo_bytes):
-                bot.reply_to(message, "❌ Файл слишком большой. Максимум 20MB.")
-                return
-            
-            processing_msg = bot.reply_to(message, "⏳ Наношу водяной знак...")
-            
-            wm_type = st.get("watermark_type", "mn")
-            
-            if wm_type == "mn":
-                result = apply_watermark_mn(photo_bytes)
-                caption = "💧 Водяной знак <b>MINSK NEWS</b> нанесён!"
-            else:
-                result = apply_watermark_chp(photo_bytes)
-                caption = "💧 Водяной знак <b>ЧП Минск</b> нанесён!"
-            
-            bot.send_document(
-                message.chat.id,
-                document=result,
-                visible_file_name=f"watermark_{wm_type}.jpg",
-                caption=caption,
-                parse_mode="HTML"
-            )
-            
-            bot.delete_message(message.chat.id, processing_msg.message_id)
-            clear_state(uid)
-            return
-            
-        except Exception as e:
-            logger.error(f"Error applying watermark: {e}")
-            bot.reply_to(message, f"❌ Ошибка при нанесении водяного знака: {e}")
-            return
+    if color_key == "none":
+        st["highlight_word"] = ""
+        st["highlight_color"] = None
+        st["is_yellow"] = False
+        bot.answer_callback_query(c.id, "Без выделения ✅")
+    else:
+        st["highlight_word"] = st.get("temp_highlight_word", "")
+        st["highlight_color"] = HIGHLIGHT_COLORS.get(color_key)
+        st["is_yellow"] = (color_key == "yellow")
+        color_names = {"red": "красный", "yellow": "желтый", "blue": "голубой"}
+        bot.answer_callback_query(c.id, f"Выбран {color_names.get(color_key)} цвет ✅")
     
-    if st.get("step") == "waiting_template":
-        bot.send_message(message.chat.id, "Сначала выбери шаблон:", reply_markup=template_kb())
-        return
+    st["step"] = "waiting_rubric_am2"
+    user_state[uid] = st
+    
+    bot.send_message(c.message.chat.id, f"✏️ <b>Введи РУБРИКУ</b>:", parse_mode="HTML")
+    try:
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+    except:
+        pass
 
-    if st.get("step") == "waiting_photo_fdr_post":
-        try:
-            if message.content_type == "photo":
-                file_id = message.photo[-1].file_id
-            else:
-                file_id = message.document.file_id
-            
-            photo_bytes = tg_file_bytes(file_id)
-
-            if not check_file_size(photo_bytes):
-                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
-                return
-
-            st["photo_bytes"] = photo_bytes
-            st["step"] = "waiting_title_fdr_post"
-            user_state[uid] = st
-
-            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ПОЛНЫЙ ЗАГОЛОВОК</b> поста:", parse_mode="HTML")
-            return
-        except Exception as e:
-            logger.error(f"Error processing photo for FDR_POST: {e}")
-            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
-            return
-
-    if st.get("step") == "waiting_photo_fdr_story":
-        try:
-            if message.content_type == "photo":
-                file_id = message.photo[-1].file_id
-            else:
-                file_id = message.document.file_id
-            
-            photo_bytes = tg_file_bytes(file_id)
-
-            if not check_file_size(photo_bytes):
-                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
-                return
-
-            st["photo_bytes"] = photo_bytes
-            st["step"] = "waiting_title_fdr"
-            user_state[uid] = st
-
-            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для сторис:", parse_mode="HTML")
-            return
-        except Exception as e:
-            logger.error(f"Error processing photo for FDR_STORY: {e}")
-            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
-            return
-
-    if st.get("step") == "waiting_photo":
-        try:
-            if message.content_type == "photo":
-                file_id = message.photo[-1].file_id
-            else:
-                file_id = message.document.file_id
-            
-            photo_bytes = tg_file_bytes(file_id)
-
-            if not check_file_size(photo_bytes):
-                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
-                return
-
-            st["photo_bytes"] = photo_bytes
-            is_square = st.get("is_square", False)
-            
-            if st.get("template") == "MN2":
-                st["step"] = "waiting_title_mn2"
-                user_state[uid] = st
-                size_text = "квадратное " if is_square else ""
-                bot.reply_to(message, f"📸 {size_text}Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
-            else:
-                st["step"] = "waiting_title"
-                user_state[uid] = st
-                size_text = "квадратное " if is_square else ""
-                bot.reply_to(message, f"📸 {size_text}Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
-            
-            return
-
-        except Exception as e:
-            logger.error(f"Error processing photo: {e}")
-            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
-            return
-
-    bot.reply_to(message, "Не знаю, что делать с этим фото. Начни с /post")
-
+# Обработчики текстовых сообщений для АМ 2
 @bot.message_handler(content_types=["text"])
 def on_text(message):
     uid = message.from_user.id
-    text = (message.text or "").strip()
+    text = message.text.strip()
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
 
     # Обработка кнопок главного меню
@@ -2347,6 +2341,96 @@ def on_text(message):
             loop.close()
         
         clear_state(uid)
+        return
+
+    # Обработка заголовка для АМ 2
+    if step == "waiting_title_am2":
+        if not text:
+            bot.reply_to(message, "❌ Заголовок не может быть пустым")
+            return
+        
+        st["title"] = text
+        st["step"] = "waiting_date_place_choice_am2"
+        user_state[uid] = st
+        
+        bot.reply_to(message, f"✅ Заголовок: <b>{html.escape(text)}</b>\n\n📅 <b>Добавить дату и место?</b>",
+            parse_mode="HTML", reply_markup=add_date_place_kb())
+        return
+    
+    # Обработка даты для АМ 2
+    if step == "waiting_date_am2":
+        st["date"] = text
+        st["step"] = "waiting_place_am2"
+        user_state[uid] = st
+        bot.reply_to(message, f"✅ Дата: {text}\n\n✏️ <b>Введи МЕСТО</b>:", parse_mode="HTML")
+        return
+    
+    # Обработка места для АМ 2
+    if step == "waiting_place_am2":
+        st["place"] = text
+        st["step"] = "waiting_highlight_word_am2"
+        user_state[uid] = st
+        
+        try:
+            card = create_poster_am2(
+                st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
+                st.get("date", ""), st.get("place", ""), "", "", None, False
+            )
+            st["preview_bytes"] = card.getvalue()
+            user_state[uid] = st
+            
+            bot.send_photo(message.chat.id, photo=BytesIO(st["preview_bytes"]),
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши СЛОВО для выделения цветом</b>\n(или «-» чтобы пропустить):\n\n💡 Желтый цвет: рубрика и эллипсы будут желтыми с черным текстом",
+                parse_mode="HTML")
+        except Exception as e:
+            bot.reply_to(message, f"❌ Ошибка: {e}")
+        return
+    
+    # Обработка выделения слова для АМ 2
+    if step == "waiting_highlight_word_am2":
+        if text == "-":
+            st["highlight_word"] = ""
+            st["highlight_color"] = None
+            st["is_yellow"] = False
+            st["step"] = "waiting_rubric_am2"
+            user_state[uid] = st
+            bot.reply_to(message, f"✏️ <b>Введи РУБРИКУ</b>:", parse_mode="HTML")
+        else:
+            title = st.get("title", "").lower()
+            if text.lower() in title:
+                st["temp_highlight_word"] = text
+                st["step"] = "waiting_color_am2"
+                user_state[uid] = st
+                bot.reply_to(message, f"✅ Слово «{text}» <b>НАЙДЕНО</b>!\n\n🎨 <b>Выбери цвет:</b>",
+                    parse_mode="HTML", reply_markup=color_kb_am2())
+            else:
+                bot.reply_to(message, f"⚠️ Слово «{text}» <b>НЕ НАЙДЕНО</b>!\n\nПопробуй другое слово или «-»",
+                    parse_mode="HTML")
+        return
+    
+    # Обработка рубрики для АМ 2
+    if step == "waiting_rubric_am2":
+        st["rubric"] = text
+        st["step"] = "creating_am2"
+        user_state[uid] = st
+        
+        try:
+            card = create_poster_am2(
+                st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"),
+                st.get("date", ""), st.get("place", ""), st.get("rubric", ""),
+                st.get("highlight_word", ""), st.get("highlight_color"), st.get("is_yellow", False)
+            )
+            
+            st["card_bytes"] = card.getvalue()
+            st["step"] = "waiting_action"
+            user_state[uid] = st
+            
+            bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]),
+                caption="🎉 <b>Афиша готова!</b>\n\nНажми кнопку для публикации:",
+                parse_mode="HTML", reply_markup=preview_kb())
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            bot.reply_to(message, f"❌ Ошибка: {e}")
         return
 
     # Обработка заголовка для МН2
@@ -2464,7 +2548,13 @@ def on_text(message):
                 text_position=st.get("text_position", TEXT_POSITION_TOP),
                 font_size_multiplier=font_mult,
                 is_square=st.get("is_square", False),
-                bold_phrase=st.get("bold_phrase", "")
+                bold_phrase=st.get("bold_phrase", ""),
+                date=st.get("date", ""),
+                place=st.get("place", ""),
+                rubric=st.get("rubric", ""),
+                highlight_word=st.get("highlight_word", ""),
+                highlight_color=st.get("highlight_color"),
+                is_yellow=st.get("is_yellow", False)
             )
             
             st["card_bytes"] = card.getvalue()
@@ -2502,6 +2592,546 @@ def on_text(message):
     else:
         user_state[uid] = st
         bot.send_message(message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
+
+
+# =========================
+# Message handlers для фото
+# =========================
+@bot.message_handler(content_types=["photo", "document"])
+def on_photo_or_document(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    
+    if st.get("step") == "waiting_enhance_photo":
+        try:
+            if message.content_type == "photo":
+                file_id = message.photo[-1].file_id
+            else:
+                doc = message.document
+                if not doc.mime_type or not doc.mime_type.startswith("image/"):
+                    bot.reply_to(message, "❌ Это не изображение. Отправь JPG или PNG файл.")
+                    return
+                file_id = doc.file_id
+            
+            photo_bytes = tg_file_bytes(file_id)
+            
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимум 20MB.")
+                return
+            
+            processing_msg = bot.reply_to(message, "⏳ Улучшаю качество...")
+            
+            enhanced = enhance_image_simple(photo_bytes)
+            
+            bot.send_document(
+                message.chat.id,
+                document=enhanced,
+                visible_file_name="enhanced_photo.jpg",
+                caption="✨ Фото улучшено!\n\n• Резкость +20%\n• Насыщенность +15%"
+            )
+            
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+            st["step"] = "idle"
+            user_state[uid] = st
+            return
+            
+        except Exception as e:
+            logger.error(f"Error enhancing photo: {e}")
+            bot.reply_to(message, f"❌ Ошибка при улучшении: {e}")
+            return
+    
+    if st.get("step") == "waiting_watermark_photo":
+        try:
+            if message.content_type == "photo":
+                file_id = message.photo[-1].file_id
+            else:
+                doc = message.document
+                if not doc.mime_type or not doc.mime_type.startswith("image/"):
+                    bot.reply_to(message, "❌ Это не изображение. Отправь JPG или PNG файл.")
+                    return
+                file_id = doc.file_id
+            
+            photo_bytes = tg_file_bytes(file_id)
+            
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимум 20MB.")
+                return
+            
+            processing_msg = bot.reply_to(message, "⏳ Наношу водяной знак...")
+            
+            wm_type = st.get("watermark_type", "mn")
+            
+            if wm_type == "mn":
+                result = apply_watermark_mn(photo_bytes)
+                caption = "💧 Водяной знак <b>MINSK NEWS</b> нанесён!"
+            else:
+                result = apply_watermark_chp(photo_bytes)
+                caption = "💧 Водяной знак <b>ЧП Минск</b> нанесён!"
+            
+            bot.send_document(
+                message.chat.id,
+                document=result,
+                visible_file_name=f"watermark_{wm_type}.jpg",
+                caption=caption,
+                parse_mode="HTML"
+            )
+            
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+            clear_state(uid)
+            return
+            
+        except Exception as e:
+            logger.error(f"Error applying watermark: {e}")
+            bot.reply_to(message, f"❌ Ошибка при нанесении водяного знака: {e}")
+            return
+    
+    # Обработка фото для АМ 2
+    if st.get("step") == "waiting_photo_am2":
+        try:
+            if message.content_type == "photo":
+                file_id = message.photo[-1].file_id
+            else:
+                file_id = message.document.file_id
+            
+            photo_bytes = tg_file_bytes(file_id)
+
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                return
+
+            st["photo_bytes"] = photo_bytes
+            st["step"] = "waiting_text_position_am2"
+            user_state[uid] = st
+            
+            bot.reply_to(message, "📸 Фото сохранено!\n\n📐 <b>Выбери расположение текста:</b>",
+                parse_mode="HTML", reply_markup=text_position_kb_am2())
+            return
+        except Exception as e:
+            logger.error(f"Error processing photo for AM2: {e}")
+            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
+            return
+    
+    if st.get("step") == "waiting_template":
+        bot.send_message(message.chat.id, "Сначала выбери шаблон:", reply_markup=template_kb())
+        return
+
+    if st.get("step") == "waiting_photo_fdr_post":
+        try:
+            if message.content_type == "photo":
+                file_id = message.photo[-1].file_id
+            else:
+                file_id = message.document.file_id
+            
+            photo_bytes = tg_file_bytes(file_id)
+
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                return
+
+            st["photo_bytes"] = photo_bytes
+            st["step"] = "waiting_title_fdr_post"
+            user_state[uid] = st
+
+            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ПОЛНЫЙ ЗАГОЛОВОК</b> поста:", parse_mode="HTML")
+            return
+        except Exception as e:
+            logger.error(f"Error processing photo for FDR_POST: {e}")
+            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
+            return
+
+    if st.get("step") == "waiting_photo_fdr_story":
+        try:
+            if message.content_type == "photo":
+                file_id = message.photo[-1].file_id
+            else:
+                file_id = message.document.file_id
+            
+            photo_bytes = tg_file_bytes(file_id)
+
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                return
+
+            st["photo_bytes"] = photo_bytes
+            st["step"] = "waiting_title_fdr"
+            user_state[uid] = st
+
+            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для сторис:", parse_mode="HTML")
+            return
+        except Exception as e:
+            logger.error(f"Error processing photo for FDR_STORY: {e}")
+            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
+            return
+
+    if st.get("step") == "waiting_photo":
+        try:
+            if message.content_type == "photo":
+                file_id = message.photo[-1].file_id
+            else:
+                file_id = message.document.file_id
+            
+            photo_bytes = tg_file_bytes(file_id)
+
+            if not check_file_size(photo_bytes):
+                bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                return
+
+            st["photo_bytes"] = photo_bytes
+            is_square = st.get("is_square", False)
+            
+            if st.get("template") == "MN2":
+                st["step"] = "waiting_title_mn2"
+                user_state[uid] = st
+                size_text = "квадратное " if is_square else ""
+                bot.reply_to(message, f"📸 {size_text}Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
+            else:
+                st["step"] = "waiting_title"
+                user_state[uid] = st
+                size_text = "квадратное " if is_square else ""
+                bot.reply_to(message, f"📸 {size_text}Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
+            
+            return
+
+        except Exception as e:
+            logger.error(f"Error processing photo: {e}")
+            bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
+            return
+
+    bot.reply_to(message, "Не знаю, что делать с этим фото. Начни с /post")
+
+
+@bot.callback_query_handler(func=lambda c: c.data in ["publish", "edit_body", "edit_title", "cancel"])
+def on_action(call):
+    uid = call.from_user.id
+    st = user_state.get(uid)
+
+    if not st or st.get("step") != "waiting_action":
+        bot.answer_callback_query(call.id, "Нет активного превью. Начни с «Оформить пост».")
+        return
+
+    if call.data == "publish":
+        try:
+            if st.get("template") == "MN_TG" and "full_text" in st:
+                caption = build_caption_tg(st["full_text"])
+            elif st.get("template") == "AM2":
+                caption = build_caption_html(st["title"], st.get("body_raw", ""))
+            else:
+                caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
+                
+            bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=channel_kb())
+            bot.answer_callback_query(call.id, "Опубликовано ✅")
+            bot.send_message(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
+            tpl = st.get("template", "MN")
+            user_state[uid] = {"step": "idle", "template": tpl}
+        except Exception as e:
+            logger.error(f"Error publishing: {e}")
+            bot.answer_callback_query(call.id, "Ошибка публикации")
+            bot.send_message(call.message.chat.id, f"Не смог опубликовать: {e}", reply_markup=main_menu_kb())
+
+    elif call.data == "edit_body":
+        if st.get("template") == "FDR_STORY":
+            st["step"] = "waiting_body_fdr"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ для сторис.", reply_markup=main_menu_kb())
+        elif st.get("template") == "FDR_POST":
+            st["step"] = "waiting_body_fdr_post"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
+        elif st.get("template") == "MN_TG":
+            st["step"] = "waiting_text_mn_tg"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком. Первый абзац станет заголовком.", reply_markup=main_menu_kb())
+        elif st.get("template") == "AM2":
+            st["step"] = "waiting_body_am2"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
+        else:
+            st["step"] = "waiting_body"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
+
+    elif call.data == "edit_title":
+        if st.get("template") == "FDR_STORY":
+            st["step"] = "waiting_title_fdr"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК для сторис.", reply_markup=main_menu_kb())
+        elif st.get("template") == "FDR_POST":
+            st["step"] = "waiting_title_fdr_post"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ПОЛНЫЙ ЗАГОЛОВОК.", reply_markup=main_menu_kb())
+        elif st.get("template") == "MN_TG":
+            st["step"] = "waiting_text_mn_tg"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком. Первый абзац станет заголовком.", reply_markup=main_menu_kb())
+        elif st.get("template") == "AM2":
+            st["step"] = "waiting_title_am2"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК.", reply_markup=main_menu_kb())
+        else:
+            st["step"] = "waiting_title"
+            user_state[uid] = st
+            bot.answer_callback_query(call.id, "Ок")
+            bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК.", reply_markup=main_menu_kb())
+
+    elif call.data == "cancel":
+        bot.answer_callback_query(call.id, "Отменено")
+        tpl = st.get("template", "MN")
+        user_state[uid] = {"step": "idle", "template": tpl}
+        bot.send_message(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("text_pos:") or c.data.startswith("square_pos:"))
+def on_text_position(c):
+    uid = c.from_user.id
+    parts = c.data.split(":", 1)
+    prefix = parts[0]
+    position = parts[1]
+    
+    is_square = (prefix == "square_pos")
+    st = user_state.get(uid) or {}
+    
+    st["text_position"] = position
+    st["step"] = "waiting_photo"
+    user_state[uid] = st
+    
+    position_text = "сверху" if position == "top" else "снизу"
+    size_text = "квадратное " if is_square else ""
+    try:
+        bot.edit_message_text(
+            f"Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли {size_text}фото 📷",
+            c.message.chat.id,
+            c.message.message_id,
+            parse_mode="HTML"
+        )
+    except:
+        bot.send_message(
+            c.message.chat.id,
+            f"Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли {size_text}фото 📷",
+            parse_mode="HTML"
+        )
+    bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("font_size:") or c.data.startswith("square_font:"))
+def on_font_size_adjust(c):
+    uid = c.from_user.id
+    parts = c.data.split(":")
+    prefix = parts[0]
+    action = parts[1]
+    
+    is_square = (prefix == "square_font")
+    
+    st = user_state.get(uid) or {}
+    
+    if action == "done":
+        st["step"] = "waiting_text_position"
+        user_state[uid] = st
+        try:
+            bot.edit_message_text(
+                "✅ Размер шрифта настроен. Теперь выбери расположение текста:",
+                c.message.chat.id,
+                c.message.message_id,
+                reply_markup=text_position_kb(is_square)
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                "✅ Размер шрифта настроен. Теперь выбери расположение текста:",
+                reply_markup=text_position_kb(is_square)
+            )
+        bot.answer_callback_query(c.id, "Настройки сохранены")
+        return
+    
+    current = float(parts[2]) if len(parts) > 2 else st.get("font_size_multiplier", 1.0)
+    
+    if action == "plus":
+        new_mult = min(2.0, current + 0.1)
+    elif action == "minus":
+        new_mult = max(0.5, current - 0.1)
+    else:
+        bot.answer_callback_query(c.id)
+        return
+    
+    st["font_size_multiplier"] = new_mult
+    user_state[uid] = st
+    
+    template_name = "квадратного МН 2" if is_square else "МН 2"
+    try:
+        bot.edit_message_text(
+            f"🔤 Настройка размера шрифта для {template_name}\n\n"
+            f"Текущий размер: {int(new_mult*100)}%\n"
+            f"Используй кнопки + и - для регулировки.\n"
+            f"Нажми «Готово» когда закончишь.",
+            c.message.chat.id,
+            c.message.message_id,
+            reply_markup=font_size_kb(new_mult, is_square)
+        )
+    except:
+        bot.send_message(
+            c.message.chat.id,
+            f"🔤 Настройка размера шрифта для {template_name}\n\n"
+            f"Текущий размер: {int(new_mult*100)}%\n"
+            f"Используй кнопки + и - для регулировки.\n"
+            f"Нажми «Готово» когда закончишь.",
+            reply_markup=font_size_kb(new_mult, is_square)
+        )
+    
+    bot.answer_callback_query(c.id)
+
+
+# =========================
+# Message handlers для команд и кнопок
+# =========================
+@bot.message_handler(commands=["start", "help"])
+def cmd_start(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    st.setdefault("template", "MN")
+    st["step"] = "idle"
+    user_state[uid] = st
+
+    bot.send_message(
+        message.chat.id,
+        "👋 <b>Привет! Я бот для оформления постов</b>\n\n"
+        "<b>📝 Основные функции:</b>\n"
+        "• 📝 Оформление постов с фото (7 шаблонов, включая Квадраты)\n"
+        "• ✨ Улучшение качества фото (+20% резкость, +15% насыщенность)\n"
+        "• 💧 Водяные знаки - нанеси \"MINSK NEWS\" или \"ЧП Минск\" на фото\n"
+        "• 🤖 Текст в ИИ - отправь текст, ИИ сократит его до 650 символов\n"
+        "• 💰 Цены и условия размещения\n\n"
+        "Выбери действие 👇",
+        parse_mode="HTML",
+        reply_markup=main_menu_kb()
+    )
+
+@bot.message_handler(commands=["post"])
+def cmd_post(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    st.setdefault("template", "MN")
+    st["step"] = "waiting_template"
+    user_state[uid] = st
+    bot.send_message(message.chat.id, "📝 Выбери шаблон оформления:", reply_markup=template_kb())
+
+@bot.message_handler(commands=["enhance"])
+def cmd_enhance(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    st["step"] = "waiting_enhance_photo"
+    user_state[uid] = st
+    
+    bot.send_message(
+        message.chat.id,
+        "✨ <b>Улучшение качества фото</b>\n\n"
+        "Отправь фото, и я увеличу резкость на +20% и насыщенность на +15%",
+        parse_mode="HTML",
+        reply_markup=main_menu_kb()
+    )
+
+@bot.message_handler(commands=["watermark"])
+def cmd_watermark(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    st["step"] = "waiting_watermark_type"
+    user_state[uid] = st
+    
+    bot.send_message(
+        message.chat.id,
+        "💧 <b>Водяные знаки</b>\n\n"
+        "Выбери тип водяного знака:",
+        parse_mode="HTML",
+        reply_markup=watermark_type_kb()
+    )
+
+@bot.message_handler(commands=["prices"])
+def cmd_prices(message):
+    bot.send_message(
+        message.chat.id,
+        "💰 <b>Цены и условия размещения</b>\n\n"
+        "Выбери интересующий раздел:",
+        parse_mode="HTML",
+        reply_markup=prices_menu_kb()
+    )
+
+@bot.message_handler(commands=["ai_text"])
+def cmd_ai_text(message):
+    uid = message.from_user.id
+    st = user_state.get(uid) or {}
+    st["step"] = "waiting_ai_text"
+    user_state[uid] = st
+    
+    bot.send_message(
+        message.chat.id,
+        "🤖 <b>Текст в ИИ</b>\n\n"
+        "Отправь текст новости, и я сокращу его до 650 символов,\n"
+        "сохраняя все главные факты в новостном формате.\n\n"
+        "<i>Обработка может занять до 30 секунд...</i>",
+        parse_mode="HTML",
+        reply_markup=main_menu_kb()
+    )
+
+@bot.message_handler(commands=["stop"])
+def cmd_stop(message):
+    uid = message.from_user.id
+    clear_state(uid)
+    bot.send_message(message.chat.id, "🛑 Бот сброшен в исходное состояние.", reply_markup=main_menu_kb())
+
+@bot.message_handler(func=lambda message: message.text == BTN_POST)
+def handle_post_button(message):
+    cmd_post(message)
+
+@bot.message_handler(func=lambda message: message.text == BTN_ENHANCE)
+def handle_enhance_button(message):
+    cmd_enhance(message)
+
+@bot.message_handler(func=lambda message: message.text == BTN_WATERMARK)
+def handle_watermark_button(message):
+    cmd_watermark(message)
+
+@bot.message_handler(func=lambda message: message.text == BTN_PRICES)
+def handle_prices_button(message):
+    cmd_prices(message)
+
+@bot.message_handler(func=lambda message: message.text == BTN_AI_TEXT)
+def handle_ai_text_button(message):
+    cmd_ai_text(message)
+
+
+# =========================
+# Обработчик текста для АМ 2 (редактирование)
+# =========================
+def handle_am2_body_edit(message):
+    uid = message.from_user.id
+    text = message.text.strip()
+    st = user_state.get(uid) or {}
+    
+    if st.get("step") == "waiting_body_am2":
+        st["body_raw"] = text
+        st["step"] = "waiting_action"
+        user_state[uid] = st
+        
+        caption = build_caption_html(st["title"], st["body_raw"])
+        
+        try:
+            bot.send_photo(
+                chat_id=message.chat.id,
+                photo=BytesIO(st["card_bytes"]),
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=preview_kb(st.get("source_url", ""))
+            )
+            bot.reply_to(message, "Превью обновлено ✅ Нажми кнопку.")
+        except Exception as e:
+            logger.error(f"Error updating preview: {e}")
+            bot.reply_to(message, f"❌ Ошибка при обновлении: {e}")
 
 
 # =========================
