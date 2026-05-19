@@ -96,15 +96,21 @@ SUGGEST_URL = (os.getenv("SUGGEST_URL") or "").strip()
 DEEPSEEK_API_KEY = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
+# Каналы для публикации
+CHANNEL_MN = (os.getenv("CHANNEL_MN") or "").strip()  # MINSK NEWS канал
+CHANNEL_CHP = (os.getenv("CHANNEL_CHP") or "").strip()  # Минск ЧП канал
+
 if CHANNEL and not CHANNEL.startswith("@"):
     CHANNEL = "@" + CHANNEL
+if CHANNEL_MN and not CHANNEL_MN.startswith("@"):
+    CHANNEL_MN = "@" + CHANNEL_MN
+if CHANNEL_CHP and not CHANNEL_CHP.startswith("@"):
+    CHANNEL_CHP = "@" + CHANNEL_CHP
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 if " " in TOKEN:
     raise ValueError("BOT_TOKEN must not contain spaces")
-if not CHANNEL or CHANNEL == "@":
-    raise RuntimeError("CHANNEL_USERNAME is not set")
 
 if not SUGGEST_URL and BOT_USERNAME:
     SUGGEST_URL = f"https://t.me/{BOT_USERNAME}?start=suggest"
@@ -255,10 +261,13 @@ def preview_kb(source_url: str = ""):
 def channel_selection_kb():
     """Клавиатура выбора канала для публикации"""
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        InlineKeyboardButton("📰 MINSK NEWS", callback_data="select_channel:mn"),
-        InlineKeyboardButton("🚨 Минск ЧП", callback_data="select_channel:chp")
-    )
+    
+    # Показываем только те каналы, которые настроены
+    if CHANNEL_MN:
+        kb.add(InlineKeyboardButton("📰 MINSK NEWS", callback_data="select_channel:mn"))
+    if CHANNEL_CHP:
+        kb.add(InlineKeyboardButton("🚨 Минск ЧП", callback_data="select_channel:chp"))
+    
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="select_channel:cancel"))
     return kb
 
@@ -268,22 +277,38 @@ def channel_kb():
         kb.add(InlineKeyboardButton("📝 Предложить новость", url=SUGGEST_URL))
     return kb
 
-def build_caption_with_buttons(title: str, body: str, channel: str) -> Tuple[str, InlineKeyboardMarkup]:
+def get_channel_buttons(channel_type: str) -> Tuple[str, InlineKeyboardMarkup]:
+    """Возвращает caption и клавиатуру для указанного канала"""
+    if channel_type == "mn":
+        caption = ""  # Caption будет передан отдельно
+        kb = InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
+            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/vestiminska")
+        )
+    else:  # chp
+        caption = ""
+        kb = InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
+            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/minskchpidtp")
+        )
+    return caption, kb
+
+def build_caption_with_buttons(title: str, body: str, channel_type: str) -> Tuple[str, InlineKeyboardMarkup]:
     """Создает подпись и кнопки для публикации в выбранном канале"""
     title_safe = html.escape((title or "").strip())
     body_safe = html.escape((body or "").strip())
     
-    if channel == "mn":
-        # MINSK NEWS
-        caption = f"<b>{title_safe}</b>\n\n{body_safe}"
+    caption = f"<b>{title_safe}</b>\n\n{body_safe}"
+    
+    if channel_type == "mn":
         kb = InlineKeyboardMarkup(row_width=1)
         kb.add(
             InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
             InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/vestiminska")
         )
     else:
-        # Минск ЧП
-        caption = f"<b>{title_safe}</b>\n\n{body_safe}"
         kb = InlineKeyboardMarkup(row_width=1)
         kb.add(
             InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
@@ -2338,29 +2363,40 @@ def on_am2_color_select(c):
 @bot.callback_query_handler(func=lambda c: c.data.startswith("select_channel:"))
 def on_select_channel(c):
     uid = c.from_user.id
-    channel = c.data.split(":")[1]
+    channel_type = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
-    if channel == "cancel":
+    if channel_type == "cancel":
         bot.answer_callback_query(c.id, "Отменено")
         bot.send_message(c.message.chat.id, "❌ Публикация отменена", reply_markup=main_menu_kb())
         return
     
-    if channel == "mn":
-        st["target_channel"] = "MINSK NEWS"
+    # Определяем целевой канал
+    if channel_type == "mn":
+        target_channel = CHANNEL_MN
+        channel_name = "MINSK NEWS"
+        if not target_channel:
+            bot.answer_callback_query(c.id, "❌ Канал MINSK NEWS не настроен")
+            bot.send_message(c.message.chat.id, "❌ Канал MINSK NEWS не настроен. Добавьте CHANNEL_MN в переменные окружения.", reply_markup=main_menu_kb())
+            return
     else:
-        st["target_channel"] = "Минск ЧП"
+        target_channel = CHANNEL_CHP
+        channel_name = "Минск ЧП"
+        if not target_channel:
+            bot.answer_callback_query(c.id, "❌ Канал Минск ЧП не настроен")
+            bot.send_message(c.message.chat.id, "❌ Канал Минск ЧП не настроен. Добавьте CHANNEL_CHP в переменные окружения.", reply_markup=main_menu_kb())
+            return
     
     try:
         if st.get("card_bytes"):
             caption, kb = build_caption_with_buttons(
                 st.get("title", ""),
                 st.get("body_raw", ""),
-                channel
+                channel_type
             )
-            bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=kb)
-            bot.answer_callback_query(c.id, f"Опубликовано в {st['target_channel']} ✅")
-            bot.send_message(c.message.chat.id, f"✅ Пост опубликован в канале {st['target_channel']}!", reply_markup=main_menu_kb())
+            bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=kb)
+            bot.answer_callback_query(c.id, f"Опубликовано в {channel_name} ✅")
+            bot.send_message(c.message.chat.id, f"✅ Пост опубликован в канале {channel_name}!", reply_markup=main_menu_kb())
         else:
             bot.answer_callback_query(c.id, "Ошибка: нет сохранённого поста")
     except Exception as e:
@@ -2379,6 +2415,12 @@ def on_publish_to_channel(c):
     
     if not st or st.get("step") != "waiting_action":
         bot.answer_callback_query(c.id, "Нет активного поста. Начни с «Оформить пост».")
+        return
+    
+    # Проверяем, что хотя бы один канал настроен
+    if not CHANNEL_MN and not CHANNEL_CHP:
+        bot.answer_callback_query(c.id, "❌ Каналы не настроены")
+        bot.send_message(c.message.chat.id, "❌ Ни один канал для публикации не настроен. Добавьте CHANNEL_MN и/или CHANNEL_CHP в переменные окружения.", reply_markup=main_menu_kb())
         return
     
     bot.answer_callback_query(c.id, "Выбери канал для публикации")
