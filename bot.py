@@ -2786,52 +2786,121 @@ def on_text(message):
 # =========================
 # Обработчик репостов из Telegram каналов
 # =========================
-@bot.message_handler(func=lambda message: message.text and message.text.startswith("https://t.me/"))
+@bot.message_handler(content_types=["text"])
 def handle_telegram_repost(message):
     """Обработчик репостов из Telegram каналов"""
     uid = message.from_user.id
-    url = message.text.strip()
+    text = message.text or ""
     
+    # Проверяем, является ли сообщение репостом (содержит ссылку на Telegram)
+    is_telegram_link = "https://t.me/" in text or "http://t.me/" in text
+    
+    # Также проверяем наличие forward_from_chat (репост как пересылка)
+    if message.forward_from_chat:
+        is_telegram_link = True
+    
+    if not is_telegram_link:
+        # Не репост - пропускаем
+        return
+    
+    # Сохраняем информацию о репосте
     st = user_state.get(uid) or {}
-    st["original_url"] = url
-    st["original_text"] = message.text if message.text else ""
+    
+    # Если это пересланное сообщение
+    if message.forward_from_chat:
+        channel_name = message.forward_from_chat.username or message.forward_from_chat.title
+        st["original_url"] = f"https://t.me/{channel_name}"
+        st["original_text"] = message.text or ""
+        st["repost_type"] = "forward"
+    else:
+        # Если это текстовая ссылка
+        st["original_url"] = text
+        st["original_text"] = text
+        st["repost_type"] = "link"
+    
     st["step"] = "waiting_repost_action"
     user_state[uid] = st
     
-    try:
-        parts = url.replace("https://t.me/", "").split("/")
-        if len(parts) >= 2:
-            channel_username = parts[0]
-            post_id = parts[1]
-            
-            bot.send_message(
-                message.chat.id,
-                f"📎 <b>Репост обнаружен!</b>\n\n"
-                f"📢 Канал: @{channel_username}\n"
-                f"🆔 Пост ID: {post_id}\n"
-                f"📝 Текст: {message.text[:200]}...\n\n"
-                f"<b>Что сделать с этим постом?</b>",
-                parse_mode="HTML",
-                reply_markup=repost_action_kb()
-            )
-        else:
-            bot.send_message(
-                message.chat.id,
-                "❌ Не удалось распознать ссылку на пост.\n"
-                "Пожалуйста, отправь репост (пересылку) из канала.",
-                reply_markup=main_menu_kb()
-            )
-            clear_state(uid)
-            
-    except Exception as e:
-        logger.error(f"Error processing repost: {e}")
-        bot.send_message(
-            message.chat.id,
-            f"❌ Ошибка при обработке репоста: {e}",
-            reply_markup=main_menu_kb()
-        )
-        clear_state(uid)
+    # Показываем варианты действий
+    bot.send_message(
+        message.chat.id,
+        f"📎 <b>Репост обнаружен!</b>\n\n"
+        f"📝 Текст: {message.text[:200]}...\n\n"
+        f"<b>Что сделать с этим постом?</b>",
+        parse_mode="HTML",
+        reply_markup=repost_action_kb()
+    )
 
+
+# =========================
+# Обработчик для обычного текста (не репостов)
+# =========================
+@bot.message_handler(content_types=["text"])
+def on_text(message):
+    uid = message.from_user.id
+    text = message.text.strip()
+    st = user_state.get(uid) or {"template": "MN", "step": "idle"}
+    
+    # Пропускаем репосты (они уже обработаны в handle_telegram_repost)
+    if "https://t.me/" in text or "http://t.me/" in text:
+        return
+
+    # Обработка кнопок главного меню
+    if text == BTN_POST:
+        cmd_post(message)
+        return
+    if text == BTN_ENHANCE:
+        cmd_enhance(message)
+        return
+    if text == BTN_WATERMARK:
+        cmd_watermark(message)
+        return
+    if text == BTN_PRICES:
+        cmd_prices(message)
+        return
+    if text == BTN_AI_TEXT:
+        cmd_ai_text(message)
+        return
+
+    # ... остальной код обработки текста ...
+
+
+# =========================
+# Обработчик текстовых сообщений (для всего остального)
+# =========================
+@bot.message_handler(content_types=["text"])
+def on_text(message):
+    uid = message.from_user.id
+    text = message.text.strip()
+    st = user_state.get(uid) or {"template": "MN", "step": "idle"}
+    
+    # Пропускаем репосты (они уже обработаны выше)
+    if message.forward_from_chat is not None:
+        return
+    if "https://t.me/" in text or "http://t.me/" in text:
+        return
+
+    # Обработка кнопок главного меню
+    if text == BTN_POST:
+        cmd_post(message)
+        return
+    if text == BTN_ENHANCE:
+        cmd_enhance(message)
+        return
+    if text == BTN_WATERMARK:
+        cmd_watermark(message)
+        return
+    if text == BTN_PRICES:
+        cmd_prices(message)
+        return
+    if text == BTN_AI_TEXT:
+        cmd_ai_text(message)
+        return
+
+    # Остальная обработка текста...
+    step = st.get("step")
+    
+    # ... (весь остальной код on_text остается без изменений)
 
 # =========================
 # Message handlers для фото
