@@ -211,7 +211,7 @@ user_state: Dict[int, Dict] = {}
 
 
 # =========================
-# UI BUTTONS - НОВОЕ МЕНЮ
+# UI BUTTONS
 # =========================
 BTN_POST = "📝 Оформить пост"
 BTN_ENHANCE = "✨ Улучшить качество"
@@ -224,6 +224,24 @@ def main_menu_kb():
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_AI_TEXT))
     kb.row(KeyboardButton(BTN_ENHANCE), KeyboardButton(BTN_WATERMARK))
     kb.row(KeyboardButton(BTN_PRICES))
+    return kb
+
+def repost_action_kb():
+    """Клавиатура для выбора действия с репостом"""
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("📝 Оформить пост", callback_data="repost:design"),
+        InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="repost:ai")
+    )
+    return kb
+
+def after_ai_kb():
+    """Клавиатура после обработки ИИ"""
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton("📝 Оформить пост", callback_data="ai:design"),
+        InlineKeyboardButton("❌ Отмена", callback_data="ai:cancel")
+    )
     return kb
 
 def prices_menu_kb():
@@ -250,8 +268,7 @@ def preview_kb(source_url: str = ""):
     kb.add(
         InlineKeyboardButton("✅ Опубликовать", callback_data="publish"),
         InlineKeyboardButton("📢 Опубликовать в канале", callback_data="publish_to_channel"),
-        InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_body"),
-        InlineKeyboardButton("✏️ Редактировать заголовок", callback_data="edit_title"),
+        InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text"),
         InlineKeyboardButton("❌ Отмена", callback_data="cancel")
     )
     if source_url:
@@ -262,7 +279,6 @@ def channel_selection_kb():
     """Клавиатура выбора канала для публикации"""
     kb = InlineKeyboardMarkup(row_width=1)
     
-    # Показываем только те каналы, которые настроены
     if CHANNEL_MN:
         kb.add(InlineKeyboardButton("📰 MINSK NEWS", callback_data="select_channel:mn"))
     if CHANNEL_CHP:
@@ -276,24 +292,6 @@ def channel_kb():
     if SUGGEST_URL:
         kb.add(InlineKeyboardButton("📝 Предложить новость", url=SUGGEST_URL))
     return kb
-
-def get_channel_buttons(channel_type: str) -> Tuple[str, InlineKeyboardMarkup]:
-    """Возвращает caption и клавиатуру для указанного канала"""
-    if channel_type == "mn":
-        caption = ""  # Caption будет передан отдельно
-        kb = InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
-            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/vestiminska")
-        )
-    else:  # chp
-        caption = ""
-        kb = InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
-            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/minskchpidtp")
-        )
-    return caption, kb
 
 def build_caption_with_buttons(title: str, body: str, channel_type: str) -> Tuple[str, InlineKeyboardMarkup]:
     """Создает подпись и кнопки для публикации в выбранном канале"""
@@ -317,7 +315,7 @@ def build_caption_with_buttons(title: str, body: str, channel_type: str) -> Tupl
     
     return caption, kb
 
-# Клавиатуры для шаблона АМ 2 (как в боте афиш)
+# Клавиатуры для шаблона АМ 2
 def text_position_kb_am2():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -870,7 +868,7 @@ def _draw_story_text(draw, text, box, font, fill=(255, 255, 255), align="center"
 
 
 # =========================
-# Функции для шаблона АМ 2 (как в боте афиш)
+# Функции для шаблона АМ 2
 # =========================
 def draw_highlighted_text_am2(draw, text: str, highlight_word: str, color, font, x, y):
     if not highlight_word:
@@ -1071,7 +1069,7 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
 
 
 # =========================
-# Card making functions - ВСЕ ШАБЛОНЫ С РАЗМЕРОМ 720x900
+# Card making functions
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, is_square: bool = False) -> BytesIO:
     ensure_fonts()
@@ -1392,7 +1390,6 @@ def make_card_am2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
                   date: str = "", place: str = "", rubric: str = "",
                   highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False,
                   is_square: bool = False) -> BytesIO:
-    """Шаблон АМ 2 - как в боте создания афиш"""
     if is_square:
         img = Image.open(BytesIO(photo_bytes)).convert("RGB")
         img = crop_to_square(img)
@@ -2359,6 +2356,73 @@ def on_am2_color_select(c):
     except:
         pass
 
+# Callbacks для репостов и AI
+@bot.callback_query_handler(func=lambda c: c.data.startswith("repost:"))
+def on_repost_action(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
+    
+    if action == "design":
+        st["step"] = "waiting_template"
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, "Выбери шаблон")
+        try:
+            bot.edit_message_text(
+                "📝 Выбери шаблон для оформления поста:",
+                c.message.chat.id,
+                c.message.message_id,
+                reply_markup=template_kb()
+            )
+        except:
+            bot.send_message(
+                c.message.chat.id,
+                "📝 Выбери шаблон для оформления поста:",
+                reply_markup=template_kb()
+            )
+    elif action == "ai":
+        bot.answer_callback_query(c.id, "🤖 Обрабатываю текст...")
+        bot.send_message(c.message.chat.id, "⏳ Отправляю текст на обработку в ИИ... Это может занять до 30 секунд.")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(process_text_with_deepseek(st.get("original_text", "")))
+            st["ai_processed_text"] = result
+            st["step"] = "waiting_after_ai"
+            user_state[uid] = st
+            bot.send_message(
+                c.message.chat.id,
+                f"✍️ <b>Текст обработан:</b>\n\n{result}\n\nЧто дальше?",
+                parse_mode="HTML",
+                reply_markup=after_ai_kb()
+            )
+        except Exception as e:
+            bot.send_message(c.message.chat.id, f"❌ Ошибка при обработке: {e}")
+        finally:
+            loop.close()
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ai:"))
+def on_ai_action(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
+    
+    if action == "design":
+        st["original_text"] = st.get("ai_processed_text", "")
+        st["step"] = "waiting_template"
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, "Выбери шаблон")
+        bot.send_message(
+            c.message.chat.id,
+            "📝 Выбери шаблон для оформления поста:",
+            reply_markup=template_kb()
+        )
+    else:
+        clear_state(uid)
+        bot.answer_callback_query(c.id, "Отменено")
+        bot.send_message(c.message.chat.id, "❌ Отменено", reply_markup=main_menu_kb())
+
 # Callback для выбора канала публикации
 @bot.callback_query_handler(func=lambda c: c.data.startswith("select_channel:"))
 def on_select_channel(c):
@@ -2371,7 +2435,6 @@ def on_select_channel(c):
         bot.send_message(c.message.chat.id, "❌ Публикация отменена", reply_markup=main_menu_kb())
         return
     
-    # Определяем целевой канал
     if channel_type == "mn":
         target_channel = CHANNEL_MN
         channel_name = "MINSK NEWS"
@@ -2407,7 +2470,7 @@ def on_select_channel(c):
     tpl = st.get("template", "MN")
     user_state[uid] = {"step": "idle", "template": tpl}
 
-# Callback для публикации в канал (кнопка "Опубликовать в канале")
+# Callback для публикации в канал
 @bot.callback_query_handler(func=lambda c: c.data == "publish_to_channel")
 def on_publish_to_channel(c):
     uid = c.from_user.id
@@ -2417,10 +2480,9 @@ def on_publish_to_channel(c):
         bot.answer_callback_query(c.id, "Нет активного поста. Начни с «Оформить пост».")
         return
     
-    # Проверяем, что хотя бы один канал настроен
     if not CHANNEL_MN and not CHANNEL_CHP:
         bot.answer_callback_query(c.id, "❌ Каналы не настроены")
-        bot.send_message(c.message.chat.id, "❌ Ни один канал для публикации не настроен. Добавьте CHANNEL_MN и/или CHANNEL_CHP в переменные окружения.", reply_markup=main_menu_kb())
+        bot.send_message(c.message.chat.id, "❌ Ни один канал для публикации не настроен.", reply_markup=main_menu_kb())
         return
     
     bot.answer_callback_query(c.id, "Выбери канал для публикации")
@@ -2431,7 +2493,10 @@ def on_publish_to_channel(c):
         reply_markup=channel_selection_kb()
     )
 
-# Обработчики текстовых сообщений для АМ 2
+
+# =========================
+# Обработчики текстовых сообщений
+# =========================
 @bot.message_handler(content_types=["text"])
 def on_text(message):
     uid = message.from_user.id
@@ -2483,6 +2548,7 @@ def on_text(message):
             return
         
         st["title"] = text
+        st["body_raw"] = text  # Используем заголовок как основной текст
         st["step"] = "waiting_date_place_choice_am2"
         user_state[uid] = st
         
@@ -2513,7 +2579,7 @@ def on_text(message):
             user_state[uid] = st
             
             bot.send_photo(message.chat.id, photo=BytesIO(st["preview_bytes"]),
-                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши СЛОВО для выделения цветом</b>\n(или «-» чтобы пропустить):\n\n💡 Желтый цвет: рубрика и эллипсы будут желтыми с черным текстом",
+                caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши СЛОВО для выделения цветом</b>\n(или «-» чтобы пропустить):",
                 parse_mode="HTML")
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
@@ -2555,7 +2621,6 @@ def on_text(message):
             )
             
             st["card_bytes"] = card.getvalue()
-            st["body_raw"] = f"{st.get('date', '')} {st.get('place', '')} {st.get('rubric', '')}".strip()
             st["step"] = "waiting_action"
             user_state[uid] = st
             
@@ -2570,10 +2635,11 @@ def on_text(message):
     # Обработка заголовка для МН2
     if step == "waiting_title_mn2":
         if not text:
-            bot.reply_to(message, "❌ Заголовок не может быть пустым. Отправь текст:")
+            bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
         
         st["title"] = text
+        st["body_raw"] = text
         st["step"] = "waiting_bold_phrase_mn2"
         user_state[uid] = st
         
@@ -2582,10 +2648,6 @@ def on_text(message):
 
     # Обработка фразы для выделения в МН2
     if step == "waiting_bold_phrase_mn2":
-        if not text:
-            bot.reply_to(message, "❌ Фраза не может быть пустой. Отправь текст или отправь пробел, если не нужно выделение:")
-            return
-        
         st["bold_phrase"] = text if text != " " else ""
         
         try:
@@ -2602,15 +2664,14 @@ def on_text(message):
             )
             
             st["card_bytes"] = card.getvalue()
-            st["body_raw"] = st["title"]
             st["step"] = "waiting_action"
             user_state[uid] = st
             
-            size_text = "_square" if st.get("is_square") else ""
+            caption = build_caption_html(st["title"], st["body_raw"])
             bot.send_photo(
                 chat_id=message.chat.id,
                 photo=BytesIO(card.getvalue()),
-                caption=f"✅ Пост готов!\n\nНажми кнопку для публикации:",
+                caption=caption,
                 parse_mode="HTML",
                 reply_markup=preview_kb()
             )
@@ -2623,7 +2684,7 @@ def on_text(message):
     # Обработка текста для МН ТГ (без запроса основного текста)
     if step == "waiting_title_mn_tg":
         if not text:
-            bot.reply_to(message, "❌ Текст не может быть пустым. Отправь текст:")
+            bot.reply_to(message, "❌ Текст не может быть пустым")
             return
         
         try:
@@ -2658,24 +2719,16 @@ def on_text(message):
             bot.reply_to(message, f"❌ Ошибка при создании карточки: {e}")
         return
 
-    # Обработка заголовка для остальных шаблонов
+    # Обработка заголовка для остальных шаблонов (БЕЗ ЗАПРОСА ОСНОВНОГО ТЕКСТА)
     if step == "waiting_title":
         if not text:
-            bot.reply_to(message, "❌ Заголовок не может быть пустым. Отправь текст:")
+            bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
         
         st["title"] = text
-        st["step"] = "waiting_body"
+        st["body_raw"] = text  # Используем заголовок как основной текст
+        st["step"] = "creating_card"
         user_state[uid] = st
-        
-        bot.reply_to(message, f"✅ Заголовок сохранён!\n\n<b>{html.escape(text)}</b>\n\n✏️ Теперь отправь ОСНОВНОЙ ТЕКСТ:", parse_mode="HTML")
-        return
-
-    if step == "waiting_body":
-        st["body_raw"] = text
-        body_src = extract_source_url(text)
-        if body_src:
-            st["source_url"] = body_src
 
         try:
             font_mult = st.get("font_size_multiplier", 1.0) if st.get("template") == "MN2" else 1.0
@@ -2700,10 +2753,7 @@ def on_text(message):
             st["step"] = "waiting_action"
             user_state[uid] = st
             
-            if st.get("template") == "MN_TG":
-                caption = build_caption_tg(st["body_raw"])
-            else:
-                caption = build_caption_html(st["title"], st["body_raw"])
+            caption = build_caption_html(st["title"], st["body_raw"])
             
             bot.send_photo(
                 chat_id=message.chat.id, 
@@ -2742,54 +2792,42 @@ def handle_telegram_repost(message):
     uid = message.from_user.id
     url = message.text.strip()
     
-    # Сохраняем URL и текст репоста
     st = user_state.get(uid) or {}
     st["original_url"] = url
     st["original_text"] = message.text if message.text else ""
-    st["step"] = "waiting_template_from_repost"
+    st["step"] = "waiting_repost_action"
     user_state[uid] = st
     
-    # Пытаемся извлечь контент из репоста
-    processing_msg = bot.reply_to(message, "🔄 Анализирую репост...")
-    
     try:
-        # Парсим ссылку на пост
-        # Формат: https://t.me/username/post_id
         parts = url.replace("https://t.me/", "").split("/")
         if len(parts) >= 2:
             channel_username = parts[0]
             post_id = parts[1]
             
-            # Получаем информацию о посте через API
-            # Используем forward для получения контента
-            # Отправляем пользователю предложение выбрать шаблон
-            bot.delete_message(message.chat.id, processing_msg.message_id)
             bot.send_message(
                 message.chat.id,
                 f"📎 <b>Репост обнаружен!</b>\n\n"
-                f"Канал: @{channel_username}\n"
-                f"Пост ID: {post_id}\n\n"
-                f"Теперь выбери шаблон для оформления этого поста:",
+                f"📢 Канал: @{channel_username}\n"
+                f"🆔 Пост ID: {post_id}\n"
+                f"📝 Текст: {message.text[:200]}...\n\n"
+                f"<b>Что сделать с этим постом?</b>",
                 parse_mode="HTML",
-                reply_markup=template_kb()
+                reply_markup=repost_action_kb()
             )
         else:
-            bot.delete_message(message.chat.id, processing_msg.message_id)
             bot.send_message(
                 message.chat.id,
                 "❌ Не удалось распознать ссылку на пост.\n"
-                "Пожалуйста, отправь репост (пересылку) из канала, а не просто ссылку.",
+                "Пожалуйста, отправь репост (пересылку) из канала.",
                 reply_markup=main_menu_kb()
             )
             clear_state(uid)
             
     except Exception as e:
         logger.error(f"Error processing repost: {e}")
-        bot.delete_message(message.chat.id, processing_msg.message_id)
         bot.send_message(
             message.chat.id,
-            f"❌ Ошибка при обработке репоста: {e}\n\n"
-            f"Попробуй отправить репост (пересылку) из канала обычным способом.",
+            f"❌ Ошибка при обработке репоста: {e}",
             reply_markup=main_menu_kb()
         )
         clear_state(uid)
@@ -2933,7 +2971,7 @@ def on_photo_or_document(message):
             st["step"] = "waiting_title_fdr_post"
             user_state[uid] = st
 
-            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ПОЛНЫЙ ЗАГОЛОВОК</b> поста:", parse_mode="HTML")
+            bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> поста:", parse_mode="HTML")
             return
         except Exception as e:
             logger.error(f"Error processing photo for FDR_POST: {e}")
@@ -3006,7 +3044,7 @@ def on_photo_or_document(message):
     bot.reply_to(message, "Не знаю, что делать с этим фото. Начни с /post или выбери действие в меню.")
 
 
-@bot.callback_query_handler(func=lambda c: c.data in ["publish", "edit_body", "edit_title", "cancel"])
+@bot.callback_query_handler(func=lambda c: c.data in ["publish", "edit_text", "cancel"])
 def on_action(call):
     uid = call.from_user.id
     st = user_state.get(uid)
@@ -3034,34 +3072,7 @@ def on_action(call):
             bot.answer_callback_query(call.id, "Ошибка публикации")
             bot.send_message(call.message.chat.id, f"Не смог опубликовать: {e}", reply_markup=main_menu_kb())
 
-    elif call.data == "edit_body":
-        if st.get("template") == "FDR_STORY":
-            st["step"] = "waiting_body_fdr"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ для сторис.", reply_markup=main_menu_kb())
-        elif st.get("template") == "FDR_POST":
-            st["step"] = "waiting_body_fdr_post"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
-        elif st.get("template") == "MN_TG":
-            st["step"] = "waiting_text_mn_tg"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком. Первый абзац станет заголовком.", reply_markup=main_menu_kb())
-        elif st.get("template") == "AM2":
-            st["step"] = "waiting_body_am2"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
-        else:
-            st["step"] = "waiting_body"
-            user_state[uid] = st
-            bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ОСНОВНОЙ ТЕКСТ.", reply_markup=main_menu_kb())
-
-    elif call.data == "edit_title":
+    elif call.data == "edit_text":
         if st.get("template") == "FDR_STORY":
             st["step"] = "waiting_title_fdr"
             user_state[uid] = st
@@ -3071,12 +3082,12 @@ def on_action(call):
             st["step"] = "waiting_title_fdr_post"
             user_state[uid] = st
             bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ПОЛНЫЙ ЗАГОЛОВОК.", reply_markup=main_menu_kb())
+            bot.send_message(call.message.chat.id, "Пришли новый ЗАГОЛОВОК.", reply_markup=main_menu_kb())
         elif st.get("template") == "MN_TG":
-            st["step"] = "waiting_text_mn_tg"
+            st["step"] = "waiting_title_mn_tg"
             user_state[uid] = st
             bot.answer_callback_query(call.id, "Ок")
-            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком. Первый абзац станет заголовком.", reply_markup=main_menu_kb())
+            bot.send_message(call.message.chat.id, "Пришли новый ТЕКСТ целиком.", reply_markup=main_menu_kb())
         elif st.get("template") == "AM2":
             st["step"] = "waiting_title_am2"
             user_state[uid] = st
@@ -3194,7 +3205,7 @@ def on_font_size_adjust(c):
 
 
 # =========================
-# Message handlers для команд и кнопок
+# Message handlers для команд
 # =========================
 @bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
