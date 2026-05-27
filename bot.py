@@ -2060,7 +2060,8 @@ def on_repost_action(c):
     
     if action == "design":
         st["step"] = "waiting_template"
-        user_state[uid] = st        bot.answer_callback_query(c.id, "Выбери шаблон для оформления поста ✅")
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, "Выбери шаблон для оформления поста ✅")
         send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления. Фото и текст из репоста будут использованы автоматически! 🎉", reply_markup=template_kb())
         
     elif action == "ai":
