@@ -465,15 +465,23 @@ def extract_title_from_text(text: str) -> str:
     return text[:80]
 
 def clean_markdown(text: str) -> str:
-    """Удаляет маркдаун символы из текста (** жирный, * курсив, __ подчёркнутый и т.д.)"""
+    """Удаляет маркдаун символы из текста (** жирный, * курсив, # заголовок и т.д.)"""
     if not text:
         return text
     
+    # Удаляем # в начале строк (заголовки markdown)
+    text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
+    # Удаляем **жирный**
     text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    # Удаляем *курсив*
     text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    # Удаляем __подчёркнутый__
     text = re.sub(r'__([^_]+)__', r'\1', text)
+    # Удаляем _подчёркнутый_
     text = re.sub(r'_([^_]+)_', r'\1', text)
+    # Удаляем ~~зачёркнутый~~
     text = re.sub(r'~~([^~]+)~~', r'\1', text)
+    # Удаляем `код`
     text = re.sub(r'`([^`]+)`', r'\1', text)
     
     return text.strip()
@@ -501,6 +509,10 @@ def split_title_and_body(text: str) -> Tuple[str, str]:
 
 def format_ai_response(text: str) -> Tuple[str, str, str]:
     """Форматирует ответ ИИ в заголовок (жирный) и основной текст"""
+    # Удаляем символы маркдауна и # из начала
+    text = re.sub(r'^#+\s*', '', text)
+    text = clean_markdown(text)
+    
     title, body = split_title_and_body(text)
     
     formatted_title = f"<b>{html.escape(title)}</b>" if title else ""
@@ -1691,13 +1703,13 @@ def get_schedule_text() -> str:
 
 
 # =========================
-# DeepSeek AI (ИСПРАВЛЕНО)
+# DeepSeek AI (ИСПРАВЛЕНО - убраны # и **)
 # =========================
 async def process_text_with_deepseek(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен. Добавьте DEEPSEEK_API_KEY в переменные окружения."
     
-    prompt = """Ты редактор новостного сайта. Перепиши новость в строгом городском формате, объемом около 650 символов. Убери лишнюю воду, сделай интересный заголовок, никаких смайликов. Сохрани главные факты. Расставь абзацы.
+    prompt = """Ты редактор новостного сайта. Перепиши новость в строгом городском формате, объемом около 650 символов. Убери лишнюю воду, сделай интересный заголовок, никаких смайликов. Не используй символы # и ** в ответе. Сохрани главные факты. Расставь абзацы.
 
 Вот текст:"""
     
@@ -1709,7 +1721,7 @@ async def process_text_with_deepseek(text: str) -> str:
                 json={
                     "model": "deepseek-chat", 
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного сайта. Отвечай только готовым новостным текстом, без пояснений и вступлений. Не добавляй фразы вроде 'Вот обработанный текст'."}, 
+                        {"role": "system", "content": "Ты редактор новостного сайта. Отвечай только готовым новостным текстом, без пояснений и вступлений. Не используй символы # и ** в ответе."}, 
                         {"role": "user", "content": f"{prompt}\n\n{text}"}
                     ], 
                     "temperature": 0.7, 
@@ -1722,6 +1734,8 @@ async def process_text_with_deepseek(text: str) -> str:
                 result = re.sub(r'^Вот обработанный новостной текст.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Вот.*?текст.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                # Удаляем # в начале строк
+                result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
                 result = result.strip()
                 return result
             return f"❌ Ошибка API: {response.status_code}"
@@ -2202,14 +2216,17 @@ def on_select_channel(c):
     
     if channel_type == "cancel":
         bot.answer_callback_query(c.id, "Отменено")
-        title, body, formatted_text = format_ai_response(st.get("original_text", ""))
-        bot.edit_message_text(
-            formatted_text,
-            c.message.chat.id,
-            c.message.message_id,
-            parse_mode="HTML",
-            reply_markup=after_ai_kb()
-        )
+        if st.get("temp_message_id"):
+            title, body, formatted_text = format_ai_response(st.get("original_text", ""))
+            bot.edit_message_text(
+                formatted_text,
+                st.get("temp_chat_id", c.message.chat.id),
+                st["temp_message_id"],
+                parse_mode="HTML",
+                reply_markup=after_ai_kb()
+            )
+        else:
+            send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
         return
     
     if channel_type == "mn":
@@ -2230,35 +2247,42 @@ def on_select_channel(c):
     
     if not target_channel:
         bot.answer_callback_query(c.id, f"❌ Канал {channel_name} не настроен")
-        send_message_with_retry(c.message.chat.id, f"❌ Канал {channel_name} не настроен. Добавьте переменную окружения в Render.", reply_markup=after_ai_kb())
+        send_message_with_retry(c.message.chat.id, f"❌ Канал {channel_name} не настроен. Добавьте переменную окружения в Render.", reply_markup=after_ai_kb() if st.get("temp_message_id") else main_menu_kb())
         return
     
     try:
-        original_text = st.get("original_text", "")
-        if not original_text:
-            send_message_with_retry(c.message.chat.id, "❌ Нет текста для публикации.", reply_markup=after_ai_kb())
+        # Если есть картинка (оформленный пост) - публикуем фото
+        if st.get("card_bytes"):
+            caption, kb = build_caption_with_buttons(st.get("title", ""), st.get("body_raw", ""), channel_type)
+            bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=kb)
+            bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name}")
+        # Если есть только текст (после ИИ без оформления)
+        elif st.get("original_text"):
+            original_text = st.get("original_text", "")
+            title, body = split_title_and_body(original_text)
+            caption = build_caption_html(title, body)
+            bot.send_message(target_channel, caption, parse_mode="HTML", reply_markup=channel_kb())
+            bot.answer_callback_query(c.id, f"✅ Текст опубликован в {channel_name}")
+        else:
+            bot.answer_callback_query(c.id, "❌ Нет контента для публикации")
             return
         
-        title, body = split_title_and_body(original_text)
-        caption = build_caption_html(title, body)
+        # Удаляем сообщение с выбором канала
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
         
-        bot.send_message(target_channel, caption, parse_mode="HTML", reply_markup=channel_kb())
-        bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name}")
+        # Очищаем состояние
+        clear_state(uid)
         
-        bot.delete_message(c.message.chat.id, c.message.message_id)
-        
-        title, body, formatted_text = format_ai_response(st.get("original_text", ""))
-        bot.send_message(
-            st.get("temp_chat_id", c.message.chat.id),
-            formatted_text,
-            parse_mode="HTML",
-            reply_markup=after_ai_kb()
-        )
+        # Отправляем подтверждение
+        send_message_with_retry(c.message.chat.id, f"✅ Пост опубликован в канале {channel_name}!", reply_markup=main_menu_kb())
         
     except Exception as e:
-        logger.error(f"Error publishing text to channel: {e}")
+        logger.error(f"Error publishing to channel: {e}")
         bot.answer_callback_query(c.id, "❌ Ошибка публикации")
-        send_message_with_retry(c.message.chat.id, f"❌ Не удалось опубликовать: {e}", reply_markup=after_ai_kb())
+        send_message_with_retry(c.message.chat.id, f"❌ Не удалось опубликовать: {e}", reply_markup=main_menu_kb())
 
 
 # =========================
