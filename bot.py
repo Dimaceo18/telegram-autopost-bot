@@ -2225,6 +2225,30 @@ def on_ai_action(c):
         bot.answer_callback_query(c.id, "Отменено")
         send_message_with_retry(c.message.chat.id, "❌ Отменено", reply_markup=main_menu_kb())
 
+@bot.callback_query_handler(func=lambda c: c.data == "publish_to_channel")
+def on_publish_to_channel(c):
+    uid = c.from_user.id
+    st = user_state.get(uid) or {}
+    
+    # Разрешаем публикацию из состояния waiting_action (после оформления по шаблону)
+    if not st or st.get("step") not in ["waiting_action", "waiting_after_ai"]:
+        bot.answer_callback_query(c.id, "Нет активного поста. Начни с «Оформить пост» или обработай текст через ИИ.")
+        return
+    
+    if not CHANNEL_MN and not CHANNEL_CHP and not CHANNEL_AFISHA and not CHANNEL_TEST:
+        bot.answer_callback_query(c.id, "❌ Каналы не настроены")
+        send_message_with_retry(c.message.chat.id, "❌ Ни один канал для публикации не настроен.", reply_markup=main_menu_kb())
+        return
+    
+    # Удаляем сообщение с кнопками (превью)
+    try:
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+    except:
+        pass
+    
+    bot.answer_callback_query(c.id, "📢 Выбери канал для публикации")
+    send_message_with_retry(c.message.chat.id, "📢 <b>Выбери канал для публикации:</b>", parse_mode="HTML", reply_markup=channel_selection_kb())
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("select_channel:"))
 def on_select_channel(c):
     uid = c.from_user.id
@@ -2233,18 +2257,18 @@ def on_select_channel(c):
     
     if channel_type == "cancel":
         bot.answer_callback_query(c.id, "Отменено")
-        if st.get("temp_message_id"):
+        # Удаляем сообщение с выбором канала
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+        # Возвращаемся к превью
+        if st.get("card_bytes"):
+            caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
+            bot.send_photo(c.message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb())
+        elif st.get("original_text"):
             title, body, formatted_text = format_ai_response(st.get("original_text", ""))
-            try:
-                bot.edit_message_text(
-                    formatted_text,
-                    st.get("temp_chat_id", c.message.chat.id),
-                    st["temp_message_id"],
-                    parse_mode="HTML",
-                    reply_markup=after_ai_kb()
-                )
-            except:
-                pass
+            bot.send_message(c.message.chat.id, formatted_text, parse_mode="HTML", reply_markup=after_ai_kb())
         else:
             send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
         return
@@ -2311,6 +2335,35 @@ def on_select_channel(c):
         logger.error(f"Error publishing to channel: {e}")
         bot.answer_callback_query(c.id, "❌ Ошибка публикации")
         send_message_with_retry(c.message.chat.id, f"❌ Не удалось опубликовать: {e}", reply_markup=main_menu_kb())
+
+
+@bot.callback_query_handler(func=lambda c: c.data in ["publish", "edit_text", "cancel"])
+def on_action(call):
+    uid = call.from_user.id
+    st = user_state.get(uid)
+    if not st or st.get("step") != "waiting_action":
+        bot.answer_callback_query(call.id, "Нет активного превью. Начни с «Оформить пост».")
+        return
+    if call.data == "publish":
+        try:
+            caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
+            bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=channel_kb())
+            bot.answer_callback_query(call.id, "Опубликовано ✅")
+            send_message_with_retry(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
+            clear_state(uid)
+        except Exception as e:
+            logger.error(f"Error publishing: {e}")
+            bot.answer_callback_query(call.id, "Ошибка публикации")
+            send_message_with_retry(call.message.chat.id, f"Не смог опубликовать: {e}", reply_markup=main_menu_kb())
+    elif call.data == "edit_text":
+        st["step"] = "waiting_title"
+        user_state[uid] = st
+        bot.answer_callback_query(call.id, "Ок")
+        send_message_with_retry(call.message.chat.id, "Пришли новый ЗАГОЛОВОК.", reply_markup=main_menu_kb())
+    elif call.data == "cancel":
+        bot.answer_callback_query(call.id, "Отменено")
+        clear_state(uid)
+        send_message_with_retry(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
 
 
 # =========================
