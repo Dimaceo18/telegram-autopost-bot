@@ -211,6 +211,7 @@ SESSION.headers.update({
 URL_RE = re.compile(r"(https?://[^\s]+)", re.IGNORECASE)
 
 user_state: Dict[int, Dict] = {}
+user_album_cache: Dict[str, Dict] = {}  # Для хранения альбомов
 
 
 # =========================
@@ -1772,6 +1773,42 @@ def on_show_squares(c):
     send_message_with_retry(c.message.chat.id, "⬛ Выбери шаблон для квадратного фото:", reply_markup=template_kb(True))
     bot.answer_callback_query(c.id)
 
+def process_album(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
+    """Обрабатывает собранный альбом"""
+    time.sleep(2)
+    if media_group_id not in user_album_cache:
+        return
+    
+    album_data = user_album_cache.pop(media_group_id)
+    st = user_state.get(uid) or {}
+    
+    # Берём текст из первого сообщения (там обычно подпись)
+    caption = album_data.get("caption", "")
+    
+    # Берём первое фото из альбома
+    photo_bytes = album_data.get("photos", [])[0] if album_data.get("photos") else None
+    
+    if caption:
+        st["original_text"] = caption
+        logger.info(f"Saved caption from album for user {uid}: {caption[:100]}...")
+    
+    if photo_bytes:
+        st["photo_bytes"] = photo_bytes
+        logger.info(f"Saved first photo from album for user {uid}")
+    
+    st["step"] = "waiting_repost_action"
+    user_state[uid] = st
+    
+    text_preview = caption[:200] if caption else "(без текста)"
+    photo_status = "✅ <b>Фото:</b> сохранено (первое из альбома)\n" if photo_bytes else "⚠️ <b>Фото:</b> не найдено\n"
+    
+    send_message_with_retry(
+        chat_id,
+        f"📸 <b>Альбом обнаружен!</b>\n\n{photo_status}📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
+        parse_mode="HTML",
+        reply_markup=repost_action_kb()
+    )
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:") or c.data.startswith("square:"))
 def on_tpl(c):
     uid = c.from_user.id
@@ -1796,7 +1833,6 @@ def on_tpl(c):
     
     if tpl == "AM2":
         if has_photo:
-            st["photo_bytes"] = st["photo_bytes"]
             st["step"] = "waiting_text_position_am2"
             user_state[uid] = st
             bot.answer_callback_query(c.id, "Шаблон АМ 2 выбран ✅")
@@ -2162,6 +2198,94 @@ def on_action(call):
 
 
 # =========================
+# Обработчик пересылаемых сообщений (репостов) с поддержкой альбомов
+# =========================
+@bot.message_handler(content_types=["text", "photo"], func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
+def handle_forwarded_message(message):
+    uid = message.from_user.id
+    
+    # Проверяем, является ли это сообщение частью медиагруппы (альбома)
+    if hasattr(message, 'media_group_id') and message.media_group_id:
+        media_group_id = message.media_group_id
+        
+        if media_group_id not in user_album_cache:
+            user_album_cache[media_group_id] = {
+                "photos": [],
+                "caption": "",
+                "start_time": time.time(),
+                "message_id": message.message_id,
+                "chat_id": message.chat.id
+            }
+        
+        # Сохраняем фото
+        if message.photo:
+            try:
+                file_id = message.photo[-1].file_id
+                photo_bytes = tg_file_bytes(file_id)
+                if check_file_size(photo_bytes):
+                    user_album_cache[media_group_id]["photos"].append(photo_bytes)
+                    logger.info(f"Added photo to album {media_group_id}")
+            except Exception as e:
+                logger.error(f"Error extracting photo from album: {e}")
+        
+        # Сохраняем подпись (обычно только в первом сообщении)
+        if message.caption:
+            user_album_cache[media_group_id]["caption"] = message.caption
+        
+        # Запускаем обработку альбома
+        threading.Thread(target=process_album, args=(uid, media_group_id, message.chat.id, True), daemon=True).start()
+        return
+    
+    # Обычный репост (не альбом)
+    original_text = ""
+    if message.text:
+        original_text = message.text
+    elif message.caption:
+        original_text = message.caption
+    
+    source_info = ""
+    source_url = ""
+    if message.forward_from_chat:
+        channel = message.forward_from_chat
+        source_info = f"@{channel.username}" if channel.username else channel.title
+        if channel.username:
+            source_url = f"https://t.me/{channel.username}"
+    elif message.forward_from:
+        user = message.forward_from
+        source_info = f"@{user.username}" if user.username else f"{user.first_name}"
+    
+    st = user_state.get(uid) or {}
+    st["original_text"] = original_text
+    st["original_url"] = source_url
+    st["repost_type"] = "forward"
+    st["step"] = "waiting_repost_action"
+    st["photo_bytes"] = None
+    
+    if message.photo:
+        try:
+            file_id = message.photo[-1].file_id
+            photo_bytes = tg_file_bytes(file_id)
+            if check_file_size(photo_bytes):
+                st["photo_bytes"] = photo_bytes
+                logger.info(f"Saved photo from forward for user {uid}, size: {len(photo_bytes)} bytes")
+        except Exception as e:
+            logger.error(f"Error extracting photo from forward: {e}")
+    
+    user_state[uid] = st
+    
+    text_preview = original_text[:200] if original_text else "(без текста)"
+    source_text = f"📢 <b>Источник:</b> {source_info}\n" if source_info else ""
+    photo_status = "✅ <b>Фото:</b> сохранено\n" if st["photo_bytes"] else "⚠️ <b>Фото:</b> не найдено в репосте\n"
+    
+    send_message_with_retry(
+        message.chat.id,
+        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{photo_status}📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
+        parse_mode="HTML",
+        reply_markup=repost_action_kb()
+    )
+
+
+# =========================
 # Обработчик текста
 # =========================
 @bot.message_handler(content_types=["text"])
@@ -2222,10 +2346,10 @@ def on_text(message):
         return
     
     if step == "waiting_title_am2":
-        if text == "+" and st.get("original_text"):
-            use_text = st["original_text"]
-        elif text == "+" and st.get("extracted_title"):
+        if text == "+" and st.get("extracted_title"):
             use_text = st["extracted_title"]
+        elif text == "+" and st.get("original_text"):
+            use_text = extract_title_from_text(st["original_text"])
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи заголовок вручную.")
             return
@@ -2325,10 +2449,10 @@ def on_text(message):
         return
     
     if step == "waiting_title_mn_tg":
-        if text == "+" and st.get("original_text"):
-            use_text = st["original_text"]
-        elif text == "+" and st.get("extracted_title"):
+        if text == "+" and st.get("extracted_title"):
             use_text = st["extracted_title"]
+        elif text == "+" and st.get("original_text"):
+            use_text = extract_title_from_text(st["original_text"])
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи текст вручную.")
             return
@@ -2355,10 +2479,10 @@ def on_text(message):
         return
     
     if step == "waiting_title_fdr_post":
-        if text == "+" and st.get("original_text"):
-            use_text = st["original_text"]
-        elif text == "+" and st.get("extracted_title"):
+        if text == "+" and st.get("extracted_title"):
             use_text = st["extracted_title"]
+        elif text == "+" and st.get("original_text"):
+            use_text = extract_title_from_text(st["original_text"])
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи заголовок вручную.")
             return
@@ -2390,10 +2514,10 @@ def on_text(message):
         return
     
     if step == "waiting_title_fdr":
-        if text == "+" and st.get("original_text"):
-            use_text = st["original_text"]
-        elif text == "+" and st.get("extracted_title"):
+        if text == "+" and st.get("extracted_title"):
             use_text = st["extracted_title"]
+        elif text == "+" and st.get("original_text"):
+            use_text = extract_title_from_text(st["original_text"])
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи заголовок вручную.")
             return
@@ -2412,11 +2536,6 @@ def on_text(message):
     if step == "waiting_body_fdr":
         if text == "+" and st.get("original_text"):
             use_text = st["original_text"]
-        elif text == "+" and st.get("extracted_title"):
-            use_text = st["extracted_title"]
-        elif text == "+":
-            bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи текст вручную.")
-            return
         else:
             use_text = text
         try:
@@ -2475,68 +2594,42 @@ def on_text(message):
 
 
 # =========================
-# Обработчик пересылаемых сообщений (репостов)
-# =========================
-@bot.message_handler(content_types=["text", "photo"], func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
-def handle_forwarded_message(message):
-    uid = message.from_user.id
-    
-    original_text = ""
-    if message.text:
-        original_text = message.text
-    elif message.caption:
-        original_text = message.caption
-    
-    source_info = ""
-    source_url = ""
-    if message.forward_from_chat:
-        channel = message.forward_from_chat
-        source_info = f"@{channel.username}" if channel.username else channel.title
-        if channel.username:
-            source_url = f"https://t.me/{channel.username}"
-    elif message.forward_from:
-        user = message.forward_from
-        source_info = f"@{user.username}" if user.username else f"{user.first_name}"
-    
-    st = user_state.get(uid) or {}
-    st["original_text"] = original_text
-    st["original_url"] = source_url
-    st["repost_type"] = "forward"
-    st["step"] = "waiting_repost_action"
-    st["photo_bytes"] = None
-    
-    if message.photo:
-        try:
-            file_id = message.photo[-1].file_id
-            photo_bytes = tg_file_bytes(file_id)
-            if check_file_size(photo_bytes):
-                st["photo_bytes"] = photo_bytes
-                logger.info(f"Saved photo from forward for user {uid}, size: {len(photo_bytes)} bytes")
-        except Exception as e:
-            logger.error(f"Error extracting photo from forward: {e}")
-    
-    user_state[uid] = st
-    
-    text_preview = original_text[:200] if original_text else "(без текста)"
-    source_text = f"📢 <b>Источник:</b> {source_info}\n" if source_info else ""
-    photo_status = "✅ <b>Фото:</b> сохранено\n" if st["photo_bytes"] else "⚠️ <b>Фото:</b> не найдено в репосте\n"
-    
-    send_message_with_retry(
-        message.chat.id,
-        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{photo_status}📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
-        parse_mode="HTML",
-        reply_markup=repost_action_kb()
-    )
-
-
-# =========================
-# Обработчик фото и документов
+# Обработчик фото и документов (для обычных фото и альбомов)
 # =========================
 @bot.message_handler(content_types=["photo", "document"])
 def on_photo_or_document(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     
+    # Проверяем, является ли это сообщение частью медиагруппы (альбома) от пользователя
+    if hasattr(message, 'media_group_id') and message.media_group_id and st.get("step") not in ["waiting_enhance_photo", "waiting_watermark_photo"]:
+        media_group_id = message.media_group_id
+        
+        if media_group_id not in user_album_cache:
+            user_album_cache[media_group_id] = {
+                "photos": [],
+                "caption": "",
+                "start_time": time.time(),
+                "message_id": message.message_id,
+                "chat_id": message.chat.id
+            }
+        
+        if message.photo:
+            try:
+                file_id = message.photo[-1].file_id
+                photo_bytes = tg_file_bytes(file_id)
+                if check_file_size(photo_bytes):
+                    user_album_cache[media_group_id]["photos"].append(photo_bytes)
+            except Exception as e:
+                logger.error(f"Error extracting photo from user album: {e}")
+        
+        if message.caption:
+            user_album_cache[media_group_id]["caption"] = message.caption
+        
+        threading.Thread(target=process_album, args=(uid, media_group_id, message.chat.id, False), daemon=True).start()
+        return
+    
+    # Обычное фото (не из альбома)
     if st.get("step") == "waiting_enhance_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
