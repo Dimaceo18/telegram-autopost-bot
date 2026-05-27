@@ -99,6 +99,7 @@ DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 # Каналы для публикации
 CHANNEL_MN = (os.getenv("CHANNEL_MN") or "").strip()
 CHANNEL_CHP = (os.getenv("CHANNEL_CHP") or "").strip()
+CHANNEL_AFISHA = (os.getenv("CHANNEL_AFISHA") or "").strip()
 
 if CHANNEL and not CHANNEL.startswith("@"):
     CHANNEL = "@" + CHANNEL
@@ -106,6 +107,8 @@ if CHANNEL_MN and not CHANNEL_MN.startswith("@"):
     CHANNEL_MN = "@" + CHANNEL_MN
 if CHANNEL_CHP and not CHANNEL_CHP.startswith("@"):
     CHANNEL_CHP = "@" + CHANNEL_CHP
+if CHANNEL_AFISHA and not CHANNEL_AFISHA.startswith("@"):
+    CHANNEL_AFISHA = "@" + CHANNEL_AFISHA
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -279,7 +282,9 @@ def channel_selection_kb():
     if CHANNEL_MN:
         kb.add(InlineKeyboardButton("📰 MINSK NEWS", callback_data="select_channel:mn"))
     if CHANNEL_CHP:
-        kb.add(InlineKeyboardButton("🚨 Минск ЧП", callback_data="select_channel:chp"))
+        kb.add(InlineKeyboardButton("🚨 МИНСК ЧП", callback_data="select_channel:chp"))
+    if CHANNEL_AFISHA:
+        kb.add(InlineKeyboardButton("🎫 Афиша Минска", callback_data="select_channel:afisha"))
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="select_channel:cancel"))
     return kb
 
@@ -300,11 +305,17 @@ def build_caption_with_buttons(title: str, body: str, channel_type: str) -> Tupl
             InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
             InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/vestiminska")
         )
-    else:
+    elif channel_type == "chp":
         kb = InlineKeyboardMarkup(row_width=1)
         kb.add(
             InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
             InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/minskchpidtp")
+        )
+    else:
+        kb = InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
+            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/afishaminsk")
         )
     return caption, kb
 
@@ -478,6 +489,25 @@ def download_fonts():
 def extract_source_url(text: str) -> str:
     m = URL_RE.search(text or "")
     return m.group(1) if m else ""
+
+def extract_title_from_text(text: str) -> str:
+    """Извлекает заголовок из текста (первое предложение или первый абзац)"""
+    if not text:
+        return ""
+    
+    lines = text.strip().split('\n')
+    if lines and lines[0].strip():
+        first_line = lines[0].strip()
+        if len(first_line) <= 100:
+            return first_line
+    
+    sentences = re.split(r'[.!?]', text)
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if len(sentence) > 10:
+            return sentence[:100]
+    
+    return text[:80]
 
 def load_font(font_name: str, size: int):
     try:
@@ -1706,14 +1736,12 @@ def on_watermark_type(c):
         bot.answer_callback_query(c.id)
         return
     
-    # Если есть фото из репоста - используем его сразу
     if st.get("photo_bytes") and not st.get("watermark_photo_sent"):
         st["watermark_type"] = wm_type
         st["step"] = "waiting_watermark_photo"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "✅ Наношу водяной знак на фото из репоста...")
         
-        # Сразу применяем водяной знак
         try:
             if wm_type == "mn":
                 result = apply_watermark_mn(st["photo_bytes"])
@@ -1763,13 +1791,12 @@ def on_tpl(c):
     st["is_square"] = is_square
     st["template"] = tpl
     
-    # Проверяем, есть ли уже сохранённые фото и текст из репоста
     has_photo = st.get("photo_bytes") is not None
     has_text = st.get("original_text") is not None
     
     if tpl == "AM2":
         if has_photo:
-            st["photo_bytes"] = st["photo_bytes"]  # используем фото из репоста
+            st["photo_bytes"] = st["photo_bytes"]
             st["step"] = "waiting_text_position_am2"
             user_state[uid] = st
             bot.answer_callback_query(c.id, "Шаблон АМ 2 выбран ✅")
@@ -1827,7 +1854,6 @@ def on_tpl(c):
             send_message_with_retry(c.message.chat.id, "📱 Выбран шаблон <b>Сторис ФДР</b>\n\n📸 Пришли фото:", parse_mode="HTML")
             
     else:
-        # Обычные шаблоны (MN, CHP, AM, MN_TG)
         st["step"] = "waiting_text_position"
         user_state[uid] = st
         template_names = {"MN": "МН", "AM": "АМ", "MN_TG": "МН ТГ", "CHP": "ЧП ВМ"}
@@ -1931,7 +1957,6 @@ def on_text_position(c):
     position_text = "сверху" if position == "top" else "снизу"
     
     if st.get("photo_bytes"):
-        # Фото уже есть из репоста
         bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
         default_text = f"\n\n💡 <i>Используй текст из репоста (напиши «+» чтобы использовать его):</i>\n\n{st.get('original_text', '')[:300]}..." if st.get("original_text") else ""
         send_message_with_retry(c.message.chat.id, f"Текст будет расположен <b>{position_text}</b> фотографии.\n\n📸 Фото из репоста уже есть!{default_text}\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b> (или «+» чтобы использовать текст из репоста):", parse_mode="HTML")
@@ -1994,11 +2019,23 @@ def on_repost_action(c):
             
             result = loop.run_until_complete(process_text_with_deepseek(original_text))
             st["ai_processed_text"] = result
-            st["original_text"] = result  # Обновляем текст на обработанный
+            st["original_text"] = result
+            
+            extracted_title = extract_title_from_text(result)
+            st["extracted_title"] = extracted_title
+            
             st["step"] = "waiting_after_ai"
             user_state[uid] = st
             
-            send_message_with_retry(c.message.chat.id, f"✍️ <b>Текст обработан ИИ:</b>\n\n{result}\n\nЧто дальше? (Фото из репоста сохранено!)", parse_mode="HTML", reply_markup=after_ai_kb())
+            send_message_with_retry(
+                c.message.chat.id, 
+                f"✍️ <b>Текст обработан ИИ:</b>\n\n{result}\n\n"
+                f"📌 <b>Извлечённый заголовок:</b> {extracted_title}\n\n"
+                f"Что дальше? (Фото из репоста сохранено!)\n"
+                f"При оформлении напиши «+» чтобы использовать извлечённый заголовок",
+                parse_mode="HTML", 
+                reply_markup=after_ai_kb()
+            )
         except Exception as e:
             logger.error(f"AI processing error: {e}")
             send_message_with_retry(c.message.chat.id, f"❌ Ошибка при обработке ИИ: {e}")
@@ -2038,29 +2075,43 @@ def on_select_channel(c):
     uid = c.from_user.id
     channel_type = c.data.split(":")[1]
     st = user_state.get(uid) or {}
+    
     if channel_type == "cancel":
         bot.answer_callback_query(c.id, "Отменено")
         send_message_with_retry(c.message.chat.id, "❌ Публикация отменена", reply_markup=main_menu_kb())
         return
-    target_channel = CHANNEL_MN if channel_type == "mn" else CHANNEL_CHP
-    channel_name = "MINSK NEWS" if channel_type == "mn" else "Минск ЧП"
+    
+    if channel_type == "mn":
+        target_channel = CHANNEL_MN
+        channel_name = "MINSK NEWS"
+    elif channel_type == "chp":
+        target_channel = CHANNEL_CHP
+        channel_name = "МИНСК ЧП"
+    elif channel_type == "afisha":
+        target_channel = CHANNEL_AFISHA
+        channel_name = "Афиша Минска"
+    else:
+        bot.answer_callback_query(c.id, "❌ Неизвестный канал")
+        return
+    
     if not target_channel:
         bot.answer_callback_query(c.id, f"❌ Канал {channel_name} не настроен")
-        send_message_with_retry(c.message.chat.id, f"❌ Канал {channel_name} не настроен. Добавьте переменную окружения.", reply_markup=main_menu_kb())
+        send_message_with_retry(c.message.chat.id, f"❌ Канал {channel_name} не настроен. Добавьте переменную окружения CHANNEL_AFISHA в Render.", reply_markup=main_menu_kb())
         return
+    
     try:
         if st.get("card_bytes"):
             caption, kb = build_caption_with_buttons(st.get("title", ""), st.get("body_raw", ""), channel_type)
             bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=kb)
             bot.answer_callback_query(c.id, f"Опубликовано в {channel_name} ✅")
             send_message_with_retry(c.message.chat.id, f"✅ Пост опубликован в канале {channel_name}!", reply_markup=main_menu_kb())
+            clear_state(uid)
         else:
             bot.answer_callback_query(c.id, "Ошибка: нет сохранённого поста")
     except Exception as e:
         logger.error(f"Error publishing to channel: {e}")
         bot.answer_callback_query(c.id, "Ошибка публикации")
         send_message_with_retry(c.message.chat.id, f"❌ Не удалось опубликовать: {e}", reply_markup=main_menu_kb())
-    clear_state(uid)
 
 @bot.callback_query_handler(func=lambda c: c.data == "publish_to_channel")
 def on_publish_to_channel(c):
@@ -2069,7 +2120,7 @@ def on_publish_to_channel(c):
     if not st or st.get("step") != "waiting_action":
         bot.answer_callback_query(c.id, "Нет активного поста. Начни с «Оформить пост».")
         return
-    if not CHANNEL_MN and not CHANNEL_CHP:
+    if not CHANNEL_MN and not CHANNEL_CHP and not CHANNEL_AFISHA:
         bot.answer_callback_query(c.id, "❌ Каналы не настроены")
         send_message_with_retry(c.message.chat.id, "❌ Ни один канал для публикации не настроен.", reply_markup=main_menu_kb())
         return
@@ -2119,7 +2170,6 @@ def on_text(message):
     text = message.text.strip() if message.text else ""
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
     
-    # Обработка команд меню
     if text == BTN_POST:
         cmd_post(message)
         return
@@ -2136,13 +2186,12 @@ def on_text(message):
         cmd_ai_text(message)
         return
     
-    # Обработка ссылок на Telegram посты
     tme_match = re.search(r'(?:https?://)?t\.me/([^/]+)/(\d+)', text)
     if tme_match and not message.forward_from_chat:
         username = tme_match.group(1)
         post_id = tme_match.group(2)
         st["original_url"] = text
-        st["original_text"] = text  # Сохраняем текст ссылки
+        st["original_text"] = text
         st["step"] = "waiting_repost_action"
         user_state[uid] = st
         
@@ -2156,7 +2205,6 @@ def on_text(message):
     
     step = st.get("step")
     
-    # Обработка AI текста
     if step == "waiting_ai_text":
         processing_msg = bot.reply_to(message, "🤖 Обрабатываю текст в ИИ... Это может занять до 30 секунд.")
         loop = asyncio.new_event_loop()
@@ -2173,10 +2221,11 @@ def on_text(message):
         clear_state(uid)
         return
     
-    # Обработка заголовка для АМ 2 с поддержкой «+» (использовать текст из репоста)
     if step == "waiting_title_am2":
         if text == "+" and st.get("original_text"):
             use_text = st["original_text"]
+        elif text == "+" and st.get("extracted_title"):
+            use_text = st["extracted_title"]
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи заголовок вручную.")
             return
@@ -2194,7 +2243,6 @@ def on_text(message):
         bot.reply_to(message, f"✅ Заголовок: <b>{html.escape(use_text[:100])}</b>\n\n📅 <b>Добавить дату и место?</b>", parse_mode="HTML", reply_markup=add_date_place_kb())
         return
     
-    # Обработка даты для АМ 2
     if step == "waiting_date_am2":
         st["date"] = text
         st["step"] = "waiting_place_am2"
@@ -2202,7 +2250,6 @@ def on_text(message):
         bot.reply_to(message, f"✅ Дата: {text}\n\n✏️ <b>Введи МЕСТО</b>:", parse_mode="HTML")
         return
     
-    # Обработка места для АМ 2
     if step == "waiting_place_am2":
         st["place"] = text
         st["step"] = "waiting_highlight_word_am2"
@@ -2216,7 +2263,6 @@ def on_text(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
-    # Обработка слова для выделения в АМ 2
     if step == "waiting_highlight_word_am2":
         if text == "-":
             st["highlight_word"] = ""
@@ -2236,7 +2282,6 @@ def on_text(message):
                 bot.reply_to(message, f"⚠️ Слово «{text}» <b>НЕ НАЙДЕНО</b>!\n\nПопробуй другое слово или «-»", parse_mode="HTML")
         return
     
-    # Обработка рубрики для АМ 2
     if step == "waiting_rubric_am2":
         st["rubric"] = text
         st["step"] = "creating_am2"
@@ -2253,7 +2298,6 @@ def on_text(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
-    # Обработка заголовка для МН 2
     if step == "waiting_title_mn2":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
@@ -2265,7 +2309,6 @@ def on_text(message):
         bot.reply_to(message, f"✅ Заголовок сохранён!\n\n<b>{html.escape(text)}</b>\n\n✏️ Теперь отправь слова для выделения жирным (через пробел):", parse_mode="HTML")
         return
     
-    # Обработка фразы для выделения жирным в МН 2
     if step == "waiting_bold_phrase_mn2":
         st["bold_phrase"] = text if text != " " else ""
         try:
@@ -2281,10 +2324,11 @@ def on_text(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
-    # Обработка текста для МН ТГ
     if step == "waiting_title_mn_tg":
         if text == "+" and st.get("original_text"):
             use_text = st["original_text"]
+        elif text == "+" and st.get("extracted_title"):
+            use_text = st["extracted_title"]
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи текст вручную.")
             return
@@ -2310,10 +2354,11 @@ def on_text(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
-    # Обработка заголовка для FDR_POST
     if step == "waiting_title_fdr_post":
         if text == "+" and st.get("original_text"):
             use_text = st["original_text"]
+        elif text == "+" and st.get("extracted_title"):
+            use_text = st["extracted_title"]
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи заголовок вручную.")
             return
@@ -2330,7 +2375,6 @@ def on_text(message):
         bot.reply_to(message, f"✅ Заголовок сохранён!\n\n<b>{html.escape(use_text[:100])}</b>\n\n✏️ Теперь отправь слова для выделения цветом (через пробел):", parse_mode="HTML")
         return
     
-    # Обработка фразы для выделения в FDR_POST
     if step == "waiting_highlight_phrase_fdr_post":
         st["highlight_phrase"] = text if text != " " else ""
         try:
@@ -2345,10 +2389,11 @@ def on_text(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
-    # Обработка заголовка для FDR_STORY
     if step == "waiting_title_fdr":
         if text == "+" and st.get("original_text"):
             use_text = st["original_text"]
+        elif text == "+" and st.get("extracted_title"):
+            use_text = st["extracted_title"]
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи заголовок вручную.")
             return
@@ -2364,10 +2409,11 @@ def on_text(message):
         bot.reply_to(message, f"✅ Заголовок сохранён!\n\n<b>{html.escape(use_text[:100])}</b>\n\n✏️ Теперь отправь основной текст для сторис:", parse_mode="HTML")
         return
     
-    # Обработка основного текста для FDR_STORY
     if step == "waiting_body_fdr":
         if text == "+" and st.get("original_text"):
             use_text = st["original_text"]
+        elif text == "+" and st.get("extracted_title"):
+            use_text = st["extracted_title"]
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи текст вручную.")
             return
@@ -2387,10 +2433,11 @@ def on_text(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
     
-    # Обработка обычного заголовка
     if step == "waiting_title":
-        if text == "+" and st.get("original_text"):
-            use_text = st["original_text"]
+        if text == "+" and st.get("extracted_title"):
+            use_text = st["extracted_title"]
+        elif text == "+" and st.get("original_text"):
+            use_text = extract_title_from_text(st["original_text"])
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи заголовок вручную.")
             return
@@ -2434,14 +2481,12 @@ def on_text(message):
 def handle_forwarded_message(message):
     uid = message.from_user.id
     
-    # Получаем текст из пересланного сообщения
     original_text = ""
     if message.text:
         original_text = message.text
     elif message.caption:
         original_text = message.caption
     
-    # Получаем информацию об источнике
     source_info = ""
     source_url = ""
     if message.forward_from_chat:
@@ -2453,15 +2498,13 @@ def handle_forwarded_message(message):
         user = message.forward_from
         source_info = f"@{user.username}" if user.username else f"{user.first_name}"
     
-    # Сохраняем в состояние
     st = user_state.get(uid) or {}
     st["original_text"] = original_text
     st["original_url"] = source_url
     st["repost_type"] = "forward"
     st["step"] = "waiting_repost_action"
-    st["photo_bytes"] = None  # Сбросим перед сохранением нового фото
+    st["photo_bytes"] = None
     
-    # Если есть фото в пересланном сообщении
     if message.photo:
         try:
             file_id = message.photo[-1].file_id
@@ -2487,14 +2530,13 @@ def handle_forwarded_message(message):
 
 
 # =========================
-# Обработчик фото и документов (для ручной загрузки, если нет фото в репосте)
+# Обработчик фото и документов
 # =========================
 @bot.message_handler(content_types=["photo", "document"])
 def on_photo_or_document(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     
-    # Если это ответ на улучшение качества
     if st.get("step") == "waiting_enhance_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -2513,7 +2555,6 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при улучшении: {e}")
             return
     
-    # Если это ответ на водяной знак
     if st.get("step") == "waiting_watermark_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -2538,7 +2579,6 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при нанесении водяного знака: {e}")
             return
     
-    # Обработка фото для АМ 2 (если нет фото в репосте)
     if st.get("step") == "waiting_photo_am2":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -2556,7 +2596,6 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
     
-    # Обработка фото для Пост ФДР (если нет фото в репосте)
     if st.get("step") == "waiting_photo_fdr_post":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -2575,7 +2614,6 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
     
-    # Обработка фото для Сторис ФДР (если нет фото в репосте)
     if st.get("step") == "waiting_photo_fdr_story":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -2594,7 +2632,6 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
     
-    # Основная обработка фото (если нет фото в репосте)
     if st.get("step") == "waiting_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -2637,23 +2674,35 @@ def on_photo_or_document(message):
 @bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
     clear_state(message.from_user.id)
+    
+    channels_list = []
+    if CHANNEL_MN:
+        channels_list.append("📰 MINSK NEWS")
+    if CHANNEL_CHP:
+        channels_list.append("🚨 МИНСК ЧП")
+    if CHANNEL_AFISHA:
+        channels_list.append("🎫 Афиша Минска")
+    channels_text = ", ".join(channels_list) if channels_list else "не настроены"
+    
     send_message_with_retry(
         message.chat.id,
-        "👋 <b>Привет! Я бот для оформления постов</b>\n\n"
-        "<b>📝 Основные функции:</b>\n"
-        "• 📝 Оформление постов с фото (7 шаблонов, включая Квадраты)\n"
-        "• ✨ Улучшение качества фото (+20% резкость, +15% насыщенность)\n"
-        "• 💧 Водяные знаки - нанеси \"MINSK NEWS\" или \"ЧП Минск\" на фото\n"
-        "• 🤖 Текст в ИИ - отправь текст, ИИ сократит его до 650 символов\n"
-        "• 💰 Цены и условия размещения\n"
-        "• 📎 Репосты из каналов - отправь ссылку на пост или перешли его\n\n"
-        "<b>📌 Как использовать репосты:</b>\n"
-        "1️⃣ Перешли любой пост из Telegram канала в этот чат\n"
-        "2️⃣ Или отправь ссылку на пост (например, https://t.me/channel/123)\n"
-        "3️⃣ Бот автоматически сохранит текст и фото из репоста\n"
-        "4️⃣ Выбери действие: оформить по шаблону, обработать ИИ или нанести водяной знак\n"
-        "5️⃣ При оформлении бот предложит использовать сохранённые данные (напиши «+»)\n\n"
-        "Выбери действие 👇",
+        f"👋 <b>Привет! Я бот для оформления постов</b>\n\n"
+        f"<b>📝 Основные функции:</b>\n"
+        f"• 📝 Оформление постов с фото (7 шаблонов, включая Квадраты)\n"
+        f"• ✨ Улучшение качества фото (+20% резкость, +15% насыщенность)\n"
+        f"• 💧 Водяные знаки - нанеси \"MINSK NEWS\" или \"ЧП Минск\" на фото\n"
+        f"• 🤖 Текст в ИИ - отправь текст, ИИ сократит его до 650 символов\n"
+        f"• 💰 Цены и условия размещения\n"
+        f"• 📎 Репосты из каналов - отправь ссылку на пост или перешли его\n\n"
+        f"<b>📌 Доступные каналы для публикации:</b> {channels_text}\n\n"
+        f"<b>📌 Как использовать репосты:</b>\n"
+        f"1️⃣ Перешли любой пост из Telegram канала в этот чат\n"
+        f"2️⃣ Или отправь ссылку на пост (например, https://t.me/channel/123)\n"
+        f"3️⃣ Бот автоматически сохранит текст и фото из репоста\n"
+        f"4️⃣ Выбери действие: оформить по шаблону, обработать ИИ или нанести водяной знак\n"
+        f"5️⃣ При оформлении напиши «+» чтобы использовать заголовок из текста\n"
+        f"6️⃣ После создания превью нажми «Опубликовать в канале» и выбери нужный канал\n\n"
+        f"Выбери действие 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
     )
