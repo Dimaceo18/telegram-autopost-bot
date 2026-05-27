@@ -243,9 +243,9 @@ def after_ai_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📝 Оформить пост", callback_data="ai:design"),
-        InlineKeyboardButton("📤 Опубликовать без оформления", callback_data="ai:publish_text_only"),
-        InlineKeyboardButton("🔄 Переделать", callback_data="ai:redo"),
-        InlineKeyboardButton("❌ Отмена", callback_data="ai:cancel")
+        InlineKeyboardButton("📢 Выбрать канал", callback_data="ai:select_channel"),
+        InlineKeyboardButton("🔄 Переделать через ИИ", callback_data="ai:redo"),
+        InlineKeyboardButton("◀️ Вернуться назад", callback_data="ai:back")
     )
     return kb
 
@@ -498,6 +498,22 @@ def split_title_and_body(text: str) -> Tuple[str, str]:
         return title, body
     
     return text, ""
+
+def format_ai_response(text: str) -> Tuple[str, str, str]:
+    """Форматирует ответ ИИ в заголовок (жирный) и основной текст"""
+    title, body = split_title_and_body(text)
+    
+    formatted_title = f"<b>{html.escape(title)}</b>" if title else ""
+    formatted_body = html.escape(body) if body else ""
+    
+    if formatted_title and formatted_body:
+        formatted_text = f"{formatted_title}\n\n{formatted_body}"
+    elif formatted_title:
+        formatted_text = formatted_title
+    else:
+        formatted_text = formatted_body
+    
+    return title, body, formatted_text
 
 def load_font(font_name: str, size: int):
     try:
@@ -1675,7 +1691,7 @@ def get_schedule_text() -> str:
 
 
 # =========================
-# DeepSeek AI (ИСПРАВЛЕНО - убрана лишняя фраза)
+# DeepSeek AI (ИСПРАВЛЕНО)
 # =========================
 async def process_text_with_deepseek(text: str) -> str:
     if not DEEPSEEK_API_KEY:
@@ -1693,7 +1709,7 @@ async def process_text_with_deepseek(text: str) -> str:
                 json={
                     "model": "deepseek-chat", 
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного сайта. Отвечай только готовым новостным текстом, без пояснений и вступлений."}, 
+                        {"role": "system", "content": "Ты редактор новостного сайта. Отвечай только готовым новостным текстом, без пояснений и вступлений. Не добавляй фразы вроде 'Вот обработанный текст'."}, 
                         {"role": "user", "content": f"{prompt}\n\n{text}"}
                     ], 
                     "temperature": 0.7, 
@@ -2044,8 +2060,7 @@ def on_repost_action(c):
     
     if action == "design":
         st["step"] = "waiting_template"
-        user_state[uid] = st
-        bot.answer_callback_query(c.id, "Выбери шаблон для оформления поста ✅")
+        user_state[uid] = st        bot.answer_callback_query(c.id, "Выбери шаблон для оформления поста ✅")
         send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления. Фото и текст из репоста будут использованы автоматически! 🎉", reply_markup=template_kb())
         
     elif action == "ai":
@@ -2069,7 +2084,7 @@ def on_repost_action(c):
             st["ai_processed_text"] = result
             st["original_text"] = result
             
-            title, body = split_title_and_body(result)
+            title, body, formatted_text = format_ai_response(result)
             st["title"] = title
             st["body_raw"] = body
             st["extracted_title"] = title
@@ -2081,9 +2096,7 @@ def on_repost_action(c):
             
             send_message_with_retry(
                 c.message.chat.id, 
-                f"✍️ <b>Текст обработан ИИ:</b>\n\n{result}\n\n"
-                f"📌 <b>Заголовок:</b> {title}\n\n"
-                f"Что дальше?",
+                formatted_text,
                 parse_mode="HTML", 
                 reply_markup=after_ai_kb()
             )
@@ -2117,26 +2130,17 @@ def on_ai_action(c):
         bot.answer_callback_query(c.id, "Выбери шаблон для оформления ✅")
         send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления. Фото и обработанный ИИ текст будут использованы автоматически! 🎉", reply_markup=template_kb())
     
-    elif action == "publish_text_only":
-        bot.answer_callback_query(c.id, "📤 Публикую текст без оформления...")
-        
-        original_text = st.get("original_text", "")
-        if not original_text:
-            send_message_with_retry(c.message.chat.id, "❌ Нет текста для публикации.", reply_markup=main_menu_kb())
-            clear_state(uid)
+    elif action == "select_channel":
+        if not CHANNEL_MN and not CHANNEL_CHP and not CHANNEL_AFISHA and not CHANNEL_TEST:
+            bot.answer_callback_query(c.id, "❌ Каналы не настроены")
+            send_message_with_retry(c.message.chat.id, "❌ Ни один канал для публикации не настроен.", reply_markup=after_ai_kb())
             return
         
-        title, body = split_title_and_body(original_text)
-        caption = build_caption_html(title, body)
-        
-        try:
-            bot.send_message(CHANNEL, caption, parse_mode="HTML", reply_markup=channel_kb())
-            send_message_with_retry(c.message.chat.id, "✅ Текст опубликован без оформления!", reply_markup=main_menu_kb())
-        except Exception as e:
-            logger.error(f"Error publishing text only: {e}")
-            send_message_with_retry(c.message.chat.id, f"❌ Ошибка публикации: {e}", reply_markup=main_menu_kb())
-        
-        clear_state(uid)
+        bot.answer_callback_query(c.id, "📢 Выбери канал для публикации")
+        st["temp_message_id"] = c.message.message_id
+        st["temp_chat_id"] = c.message.chat.id
+        user_state[uid] = st
+        send_message_with_retry(c.message.chat.id, "📢 <b>Выбери канал для публикации текста:</b>", parse_mode="HTML", reply_markup=channel_selection_kb())
     
     elif action == "redo":
         bot.answer_callback_query(c.id, "🔄 Переделываю текст...")
@@ -2156,7 +2160,7 @@ def on_ai_action(c):
             st["ai_processed_text"] = result
             st["original_text"] = result
             
-            title, body = split_title_and_body(result)
+            title, body, formatted_text = format_ai_response(result)
             st["title"] = title
             st["body_raw"] = body
             st["extracted_title"] = title
@@ -2166,12 +2170,11 @@ def on_ai_action(c):
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
             
-            send_message_with_retry(
-                c.message.chat.id, 
-                f"✍️ <b>Текст переделан:</b>\n\n{result}\n\n"
-                f"📌 <b>Заголовок:</b> {title}\n\n"
-                f"Что дальше?",
-                parse_mode="HTML", 
+            bot.edit_message_text(
+                formatted_text,
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML",
                 reply_markup=after_ai_kb()
             )
         except Exception as e:
@@ -2179,6 +2182,11 @@ def on_ai_action(c):
             bot.edit_message_text(f"❌ Ошибка при переделке: {e}", c.message.chat.id, processing_msg.message_id)
         finally:
             loop.close()
+    
+    elif action == "back":
+        bot.answer_callback_query(c.id, "◀️ Возврат назад")
+        clear_state(uid)
+        send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
     
     else:
         clear_state(uid)
@@ -2193,7 +2201,14 @@ def on_select_channel(c):
     
     if channel_type == "cancel":
         bot.answer_callback_query(c.id, "Отменено")
-        send_message_with_retry(c.message.chat.id, "❌ Публикация отменена", reply_markup=main_menu_kb())
+        title, body, formatted_text = format_ai_response(st.get("original_text", ""))
+        bot.edit_message_text(
+            formatted_text,
+            c.message.chat.id,
+            c.message.message_id,
+            parse_mode="HTML",
+            reply_markup=after_ai_kb()
+        )
         return
     
     if channel_type == "mn":
@@ -2214,68 +2229,39 @@ def on_select_channel(c):
     
     if not target_channel:
         bot.answer_callback_query(c.id, f"❌ Канал {channel_name} не настроен")
-        send_message_with_retry(c.message.chat.id, f"❌ Канал {channel_name} не настроен. Добавьте переменную окружения в Render.", reply_markup=main_menu_kb())
+        send_message_with_retry(c.message.chat.id, f"❌ Канал {channel_name} не настроен. Добавьте переменную окружения в Render.", reply_markup=after_ai_kb())
         return
     
     try:
-        if st.get("card_bytes"):
-            caption, kb = build_caption_with_buttons(st.get("title", ""), st.get("body_raw", ""), channel_type)
-            bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=kb)
-            bot.answer_callback_query(c.id, f"Опубликовано в {channel_name} ✅")
-            send_message_with_retry(c.message.chat.id, f"✅ Пост опубликован в канале {channel_name}!", reply_markup=main_menu_kb())
-            clear_state(uid)
-        else:
-            bot.answer_callback_query(c.id, "Ошибка: нет сохранённого поста")
+        original_text = st.get("original_text", "")
+        if not original_text:
+            send_message_with_retry(c.message.chat.id, "❌ Нет текста для публикации.", reply_markup=after_ai_kb())
+            return
+        
+        title, body = split_title_and_body(original_text)
+        caption = build_caption_html(title, body)
+        
+        bot.send_message(target_channel, caption, parse_mode="HTML", reply_markup=channel_kb())
+        bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name}")
+        
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+        
+        title, body, formatted_text = format_ai_response(st.get("original_text", ""))
+        bot.send_message(
+            st.get("temp_chat_id", c.message.chat.id),
+            formatted_text,
+            parse_mode="HTML",
+            reply_markup=after_ai_kb()
+        )
+        
     except Exception as e:
-        logger.error(f"Error publishing to channel: {e}")
-        bot.answer_callback_query(c.id, "Ошибка публикации")
-        send_message_with_retry(c.message.chat.id, f"❌ Не удалось опубликовать: {e}", reply_markup=main_menu_kb())
-
-@bot.callback_query_handler(func=lambda c: c.data == "publish_to_channel")
-def on_publish_to_channel(c):
-    uid = c.from_user.id
-    st = user_state.get(uid) or {}
-    if not st or st.get("step") != "waiting_action":
-        bot.answer_callback_query(c.id, "Нет активного поста. Начни с «Оформить пост».")
-        return
-    if not CHANNEL_MN and not CHANNEL_CHP and not CHANNEL_AFISHA and not CHANNEL_TEST:
-        bot.answer_callback_query(c.id, "❌ Каналы не настроены")
-        send_message_with_retry(c.message.chat.id, "❌ Ни один канал для публикации не настроен.", reply_markup=main_menu_kb())
-        return
-    bot.answer_callback_query(c.id, "Выбери канал для публикации")
-    send_message_with_retry(c.message.chat.id, "📢 <b>Выбери канал для публикации:</b>", parse_mode="HTML", reply_markup=channel_selection_kb())
-
-@bot.callback_query_handler(func=lambda c: c.data in ["publish", "edit_text", "cancel"])
-def on_action(call):
-    uid = call.from_user.id
-    st = user_state.get(uid)
-    if not st or st.get("step") != "waiting_action":
-        bot.answer_callback_query(call.id, "Нет активного превью. Начни с «Оформить пост».")
-        return
-    if call.data == "publish":
-        try:
-            caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
-            bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=channel_kb())
-            bot.answer_callback_query(call.id, "Опубликовано ✅")
-            send_message_with_retry(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
-            clear_state(uid)
-        except Exception as e:
-            logger.error(f"Error publishing: {e}")
-            bot.answer_callback_query(call.id, "Ошибка публикации")
-            send_message_with_retry(call.message.chat.id, f"Не смог опубликовать: {e}", reply_markup=main_menu_kb())
-    elif call.data == "edit_text":
-        st["step"] = "waiting_title"
-        user_state[uid] = st
-        bot.answer_callback_query(call.id, "Ок")
-        send_message_with_retry(call.message.chat.id, "Пришли новый ЗАГОЛОВОК.", reply_markup=main_menu_kb())
-    elif call.data == "cancel":
-        bot.answer_callback_query(call.id, "Отменено")
-        clear_state(uid)
-        send_message_with_retry(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
+        logger.error(f"Error publishing text to channel: {e}")
+        bot.answer_callback_query(c.id, "❌ Ошибка публикации")
+        send_message_with_retry(c.message.chat.id, f"❌ Не удалось опубликовать: {e}", reply_markup=after_ai_kb())
 
 
 # =========================
-# Обработчик пересылаемых сообщений (репостов) с поддержкой видео
+# Обработчик пересылаемых сообщений (репостов)
 # =========================
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
                      func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
@@ -2928,7 +2914,7 @@ def cmd_start(message):
         f"3️⃣ Бот автоматически сохранит текст и фото из репоста\n"
         f"4️⃣ Выбери действие: оформить по шаблону, обработать ИИ или нанести водяной знак\n"
         f"5️⃣ При оформлении напиши «+» чтобы использовать заголовок из текста\n"
-        f"6️⃣ После обработки ИИ можно опубликовать текст без оформления или переделать\n"
+        f"6️⃣ После обработки ИИ можно оформить пост, опубликовать текст в канал или переделать\n"
         f"7️⃣ После создания превью нажми «Опубликовать в канале» и выбери нужный канал\n\n"
         f"Выбери действие 👇",
         parse_mode="HTML",
