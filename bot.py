@@ -230,7 +230,8 @@ def repost_action_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📝 Оформить пост", callback_data="repost:design"),
-        InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="repost:ai")
+        InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="repost:ai"),
+        InlineKeyboardButton("💧 Нанести водяной знак", callback_data="repost:watermark")
     )
     return kb
 
@@ -255,8 +256,8 @@ def prices_menu_kb():
 def watermark_type_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
-        InlineKeyboardButton("📰 МН", callback_data="watermark:mn"),
-        InlineKeyboardButton("🚨 ЧП", callback_data="watermark:chp")
+        InlineKeyboardButton("📰 МН (MINSK NEWS)", callback_data="watermark:mn"),
+        InlineKeyboardButton("🚨 ЧП (Минск ЧП)", callback_data="watermark:chp")
     )
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="watermark:cancel"))
     return kb
@@ -1889,38 +1890,55 @@ def on_repost_action(c):
     uid = c.from_user.id
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
+    
     if action == "design":
         st["step"] = "waiting_template"
         user_state[uid] = st
-        bot.answer_callback_query(c.id, "Выбери шаблон")
-        send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон для оформления поста:", reply_markup=template_kb())
+        bot.answer_callback_query(c.id, "Выбери шаблон для оформления поста ✅")
+        send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления:", reply_markup=template_kb())
+        
     elif action == "ai":
-        bot.answer_callback_query(c.id, "🤖 Обрабатываю текст...")
-        send_message_with_retry(c.message.chat.id, "⏳ Отправляю текст на обработку в ИИ... Это может занять до 30 секунд.")
+        bot.answer_callback_query(c.id, "🤖 Обрабатываю текст через ИИ...")
+        send_message_with_retry(c.message.chat.id, "⏳ Отправляю текст на обработку в DeepSeek AI... Это может занять до 30 секунд.")
+        
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            result = loop.run_until_complete(process_text_with_deepseek(st.get("original_text", "")))
+            original_text = st.get("original_text", "")
+            if not original_text:
+                send_message_with_retry(c.message.chat.id, "❌ Нет текста для обработки. Попробуй ещё раз.")
+                return
+            
+            result = loop.run_until_complete(process_text_with_deepseek(original_text))
             st["ai_processed_text"] = result
+            st["original_text"] = result
             st["step"] = "waiting_after_ai"
             user_state[uid] = st
-            send_message_with_retry(c.message.chat.id, f"✍️ <b>Текст обработан:</b>\n\n{result}\n\nЧто дальше?", parse_mode="HTML", reply_markup=after_ai_kb())
+            
+            send_message_with_retry(c.message.chat.id, f"✍️ <b>Текст обработан ИИ:</b>\n\n{result}\n\nЧто дальше?", parse_mode="HTML", reply_markup=after_ai_kb())
         except Exception as e:
-            send_message_with_retry(c.message.chat.id, f"❌ Ошибка при обработке: {e}")
+            logger.error(f"AI processing error: {e}")
+            send_message_with_retry(c.message.chat.id, f"❌ Ошибка при обработке ИИ: {e}")
         finally:
             loop.close()
+            
+    elif action == "watermark":
+        st["step"] = "waiting_watermark_type"
+        user_state[uid] = st
+        bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
+        send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>", parse_mode="HTML", reply_markup=watermark_type_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("ai:"))
 def on_ai_action(c):
     uid = c.from_user.id
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
+    
     if action == "design":
-        st["original_text"] = st.get("ai_processed_text", "")
         st["step"] = "waiting_template"
         user_state[uid] = st
-        bot.answer_callback_query(c.id, "Выбери шаблон")
-        send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон для оформления поста:", reply_markup=template_kb())
+        bot.answer_callback_query(c.id, "Выбери шаблон для оформления ✅")
+        send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления:", reply_markup=template_kb())
     else:
         clear_state(uid)
         bot.answer_callback_query(c.id, "Отменено")
@@ -2004,51 +2022,15 @@ def on_action(call):
 
 
 # =========================
-# Обработчик репостов (ПЕРВЫЙ - с высоким приоритетом)
-# =========================
-@bot.message_handler(func=lambda message: message.forward_from_chat is not None or ("https://t.me/" in (message.text or "")), content_types=["text"])
-def handle_telegram_repost(message):
-    uid = message.from_user.id
-    try:
-        st = user_state.get(uid) or {}
-        if message.forward_from_chat:
-            channel = message.forward_from_chat
-            channel_name = f"@{channel.username}" if channel.username else channel.title
-            st["original_url"] = f"https://t.me/{channel.username}" if channel.username else ""
-            st["original_text"] = message.text or ""
-            st["repost_type"] = "forward"
-        else:
-            st["original_url"] = message.text
-            st["original_text"] = message.text
-            st["repost_type"] = "link"
-        st["step"] = "waiting_repost_action"
-        user_state[uid] = st
-        text_preview = message.text[:200] if message.text else "(без текста)"
-        send_message_with_retry(
-            message.chat.id,
-            f"📎 <b>Репост обнаружен!</b>\n\n📝 Текст: {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
-            parse_mode="HTML",
-            reply_markup=repost_action_kb()
-        )
-    except Exception as e:
-        logger.error(f"Error handling repost: {e}")
-        send_message_with_retry(message.chat.id, "❌ Произошла ошибка при обработке репоста. Попробуйте ещё раз.", reply_markup=main_menu_kb())
-
-
-# =========================
-# Основной обработчик текста
+# Обработчик текста (включая репосты и ссылки на Telegram)
 # =========================
 @bot.message_handler(content_types=["text"])
 def on_text(message):
     uid = message.from_user.id
-    text = message.text.strip()
+    text = message.text.strip() if message.text else ""
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
     
-    if message.forward_from_chat is not None:
-        return
-    if "https://t.me/" in text or "http://t.me/" in text:
-        return
-
+    # Обработка команд меню
     if text == BTN_POST:
         cmd_post(message)
         return
@@ -2064,9 +2046,27 @@ def on_text(message):
     if text == BTN_AI_TEXT:
         cmd_ai_text(message)
         return
-
+    
+    # Обработка ссылок на Telegram посты
+    tme_match = re.search(r'(?:https?://)?t\.me/([^/]+)/(\d+)', text)
+    if tme_match and not message.forward_from_chat:
+        username = tme_match.group(1)
+        post_id = tme_match.group(2)
+        st["original_url"] = text
+        st["step"] = "waiting_repost_action"
+        user_state[uid] = st
+        
+        send_message_with_retry(
+            message.chat.id,
+            f"📎 <b>Ссылка на пост обнаружена!</b>\n\n🔗 t.me/{username}/{post_id}\n\n<b>Что сделать с этим постом?</b>\n\n⚠️ Для наилучшего результата, перешлите сам пост в чат с ботом (вместе с фото).",
+            parse_mode="HTML",
+            reply_markup=repost_action_kb()
+        )
+        return
+    
     step = st.get("step")
     
+    # Обработка AI текста
     if step == "waiting_ai_text":
         processing_msg = bot.reply_to(message, "🤖 Обрабатываю текст в ИИ... Это может занять до 30 секунд.")
         loop = asyncio.new_event_loop()
@@ -2082,7 +2082,8 @@ def on_text(message):
             loop.close()
         clear_state(uid)
         return
-
+    
+    # Обработка заголовка для АМ 2
     if step == "waiting_title_am2":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
@@ -2093,14 +2094,16 @@ def on_text(message):
         user_state[uid] = st
         bot.reply_to(message, f"✅ Заголовок: <b>{html.escape(text)}</b>\n\n📅 <b>Добавить дату и место?</b>", parse_mode="HTML", reply_markup=add_date_place_kb())
         return
-
+    
+    # Обработка даты для АМ 2
     if step == "waiting_date_am2":
         st["date"] = text
         st["step"] = "waiting_place_am2"
         user_state[uid] = st
         bot.reply_to(message, f"✅ Дата: {text}\n\n✏️ <b>Введи МЕСТО</b>:", parse_mode="HTML")
         return
-
+    
+    # Обработка места для АМ 2
     if step == "waiting_place_am2":
         st["place"] = text
         st["step"] = "waiting_highlight_word_am2"
@@ -2113,7 +2116,8 @@ def on_text(message):
         except Exception as e:
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
-
+    
+    # Обработка слова для выделения в АМ 2
     if step == "waiting_highlight_word_am2":
         if text == "-":
             st["highlight_word"] = ""
@@ -2132,7 +2136,8 @@ def on_text(message):
             else:
                 bot.reply_to(message, f"⚠️ Слово «{text}» <b>НЕ НАЙДЕНО</b>!\n\nПопробуй другое слово или «-»", parse_mode="HTML")
         return
-
+    
+    # Обработка рубрики для АМ 2
     if step == "waiting_rubric_am2":
         st["rubric"] = text
         st["step"] = "creating_am2"
@@ -2148,7 +2153,8 @@ def on_text(message):
             logger.error(f"Error: {e}")
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
-
+    
+    # Обработка заголовка для МН 2
     if step == "waiting_title_mn2":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
@@ -2159,7 +2165,8 @@ def on_text(message):
         user_state[uid] = st
         bot.reply_to(message, f"✅ Заголовок сохранён!\n\n<b>{html.escape(text)}</b>\n\n✏️ Теперь отправь слова для выделения жирным (через пробел):", parse_mode="HTML")
         return
-
+    
+    # Обработка фразы для выделения жирным в МН 2
     if step == "waiting_bold_phrase_mn2":
         st["bold_phrase"] = text if text != " " else ""
         try:
@@ -2174,7 +2181,8 @@ def on_text(message):
             logger.error(f"Error creating MN2 card: {e}")
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
-
+    
+    # Обработка текста для МН ТГ
     if step == "waiting_title_mn_tg":
         if not text:
             bot.reply_to(message, "❌ Текст не может быть пустым")
@@ -2194,7 +2202,8 @@ def on_text(message):
             logger.error(f"Error creating MN_TG card: {e}")
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
-
+    
+    # Обработка обычного заголовка
     if step == "waiting_title":
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
@@ -2214,7 +2223,7 @@ def on_text(message):
             logger.error(f"Error creating card: {e}")
             bot.reply_to(message, f"❌ Ошибка: {e}")
         return
-
+    
     if step == "waiting_action":
         bot.reply_to(message, "Нажми кнопку под превью ✅✏️❌", reply_markup=main_menu_kb())
     elif step == "waiting_template":
@@ -2227,13 +2236,70 @@ def on_text(message):
 
 
 # =========================
-# Message handlers для фото
+# Обработчик пересылаемых сообщений (репостов)
+# =========================
+@bot.message_handler(content_types=["text", "photo"], func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
+def handle_forwarded_message(message):
+    uid = message.from_user.id
+    
+    # Получаем текст из пересланного сообщения
+    original_text = ""
+    if message.text:
+        original_text = message.text
+    elif message.caption:
+        original_text = message.caption
+    
+    # Получаем информацию об источнике
+    source_info = ""
+    source_url = ""
+    if message.forward_from_chat:
+        channel = message.forward_from_chat
+        source_info = f"@{channel.username}" if channel.username else channel.title
+        if channel.username:
+            source_url = f"https://t.me/{channel.username}"
+    elif message.forward_from:
+        user = message.forward_from
+        source_info = f"@{user.username}" if user.username else f"{user.first_name}"
+    
+    # Сохраняем в состояние
+    st = user_state.get(uid) or {}
+    st["original_text"] = original_text
+    st["original_url"] = source_url
+    st["repost_type"] = "forward"
+    st["step"] = "waiting_repost_action"
+    
+    # Если есть фото в пересланном сообщении
+    if message.photo:
+        try:
+            file_id = message.photo[-1].file_id
+            photo_bytes = tg_file_bytes(file_id)
+            if check_file_size(photo_bytes):
+                st["photo_bytes"] = photo_bytes
+        except Exception as e:
+            logger.error(f"Error extracting photo from forward: {e}")
+    
+    user_state[uid] = st
+    
+    text_preview = original_text[:200] if original_text else "(без текста)"
+    source_text = f"📢 <b>Источник:</b> {source_info}\n" if source_info else ""
+    
+    send_message_with_retry(
+        message.chat.id,
+        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
+        parse_mode="HTML",
+        reply_markup=repost_action_kb()
+    )
+
+
+# =========================
+# Обработчик фото и документов
 # =========================
 @bot.message_handler(content_types=["photo", "document"])
 def on_photo_or_document(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     
+    # Если это ответ на улучшение качества
     if st.get("step") == "waiting_enhance_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -2252,6 +2318,7 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при улучшении: {e}")
             return
     
+    # Если это ответ на водяной знак
     if st.get("step") == "waiting_watermark_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -2276,6 +2343,7 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при нанесении водяного знака: {e}")
             return
     
+    # Обработка фото для АМ 2
     if st.get("step") == "waiting_photo_am2":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -2293,6 +2361,7 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
     
+    # Обработка фото для Пост ФДР
     if st.get("step") == "waiting_photo_fdr_post":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -2310,6 +2379,7 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
     
+    # Обработка фото для Сторис ФДР
     if st.get("step") == "waiting_photo_fdr_story":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -2327,6 +2397,7 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
     
+    # Основная обработка фото
     if st.get("step") == "waiting_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -2336,6 +2407,7 @@ def on_photo_or_document(message):
                 return
             st["photo_bytes"] = photo_bytes
             is_square = st.get("is_square", False)
+            
             if st.get("template") == "MN2":
                 st["step"] = "waiting_title_mn2"
                 user_state[uid] = st
@@ -2357,7 +2429,7 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
             return
     
-    bot.reply_to(message, "Не знаю, что делать с этим фото. Начни с /post или выбери действие в меню.")
+    bot.reply_to(message, "Не знаю, что делать с этим фото. Нажми «Оформить пост» или выбери другое действие в меню.")
 
 
 # =========================
@@ -2376,6 +2448,10 @@ def cmd_start(message):
         "• 🤖 Текст в ИИ - отправь текст, ИИ сократит его до 650 символов\n"
         "• 💰 Цены и условия размещения\n"
         "• 📎 Репосты из каналов - отправь ссылку на пост или перешли его\n\n"
+        "<b>📌 Как использовать репосты:</b>\n"
+        "1️⃣ Перешли любой пост из Telegram канала в этот чат\n"
+        "2️⃣ Или отправь ссылку на пост (например, https://t.me/channel/123)\n"
+        "3️⃣ Бот распознает текст и фото, и предложит оформить пост\n\n"
         "Выбери действие 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
