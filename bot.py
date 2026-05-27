@@ -1703,7 +1703,7 @@ def get_schedule_text() -> str:
 
 
 # =========================
-# DeepSeek AI (ИСПРАВЛЕНО - убраны # и **)
+# DeepSeek AI
 # =========================
 async def process_text_with_deepseek(text: str) -> str:
     if not DEEPSEEK_API_KEY:
@@ -1843,6 +1843,7 @@ def process_album(uid: int, media_group_id: str, chat_id: int, is_repost: bool =
     
     if photo_bytes:
         st["photo_bytes"] = photo_bytes
+        st["saved_photo_bytes"] = photo_bytes
         logger.info(f"Saved first photo from album for user {uid}")
     
     st["step"] = "waiting_repost_action"
@@ -1867,6 +1868,11 @@ def on_tpl(c):
     
     st["is_square"] = False
     st["template"] = tpl
+    
+    # Восстанавливаем фото из saved_photo_bytes если есть
+    if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
+        st["photo_bytes"] = st["saved_photo_bytes"]
+        logger.info(f"Restored photo for user {uid} in template selection")
     
     has_photo = st.get("photo_bytes") is not None
     
@@ -2091,6 +2097,12 @@ def on_repost_action(c):
                 bot.edit_message_text("❌ Нет текста для обработки. Попробуй ещё раз.", c.message.chat.id, processing_msg.message_id)
                 return
             
+            # СОХРАНЯЕМ ФОТО перед обработкой ИИ
+            photo_bytes = st.get("photo_bytes", None)
+            if photo_bytes:
+                st["saved_photo_bytes"] = photo_bytes
+                logger.info(f"Saved photo for user {uid} before AI processing")
+            
             result = loop.run_until_complete(process_text_with_deepseek(original_text))
             
             if "original_text_for_ai" not in st:
@@ -2140,6 +2152,11 @@ def on_ai_action(c):
     st = user_state.get(uid) or {}
     
     if action == "design":
+        # Восстанавливаем фото из сохранённого
+        if st.get("saved_photo_bytes"):
+            st["photo_bytes"] = st["saved_photo_bytes"]
+            logger.info(f"Restored photo for user {uid} for design")
+        
         st["step"] = "waiting_template"
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Выбери шаблон для оформления ✅")
@@ -2218,13 +2235,16 @@ def on_select_channel(c):
         bot.answer_callback_query(c.id, "Отменено")
         if st.get("temp_message_id"):
             title, body, formatted_text = format_ai_response(st.get("original_text", ""))
-            bot.edit_message_text(
-                formatted_text,
-                st.get("temp_chat_id", c.message.chat.id),
-                st["temp_message_id"],
-                parse_mode="HTML",
-                reply_markup=after_ai_kb()
-            )
+            try:
+                bot.edit_message_text(
+                    formatted_text,
+                    st.get("temp_chat_id", c.message.chat.id),
+                    st["temp_message_id"],
+                    parse_mode="HTML",
+                    reply_markup=after_ai_kb()
+                )
+            except:
+                pass
         else:
             send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
         return
@@ -2251,13 +2271,21 @@ def on_select_channel(c):
         return
     
     try:
-        # Если есть картинка (оформленный пост) - публикуем фото
-        if st.get("card_bytes"):
+        # Проверяем наличие фото
+        has_photo = st.get("photo_bytes") is not None or st.get("card_bytes") is not None
+        
+        if has_photo:
+            # Публикуем с фото (оформленный пост)
+            if st.get("card_bytes"):
+                photo_to_send = st["card_bytes"]
+            else:
+                photo_to_send = st["photo_bytes"]
+            
             caption, kb = build_caption_with_buttons(st.get("title", ""), st.get("body_raw", ""), channel_type)
-            bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=kb)
-            bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name}")
-        # Если есть только текст (после ИИ без оформления)
+            bot.send_photo(target_channel, BytesIO(photo_to_send), caption=caption, parse_mode="HTML", reply_markup=kb)
+            bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с фото")
         elif st.get("original_text"):
+            # Публикуем только текст
             original_text = st.get("original_text", "")
             title, body = split_title_and_body(original_text)
             caption = build_caption_html(title, body)
@@ -2352,6 +2380,7 @@ def handle_forwarded_message(message):
             photo_bytes = tg_file_bytes(file_id)
             if check_file_size(photo_bytes):
                 st["photo_bytes"] = photo_bytes
+                st["saved_photo_bytes"] = photo_bytes
                 logger.info(f"Saved photo from forward for user {uid}")
         except Exception as e:
             logger.error(f"Error extracting photo from forward: {e}")
