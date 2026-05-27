@@ -130,9 +130,6 @@ TARGET_W, TARGET_H = 720, 900
 STORY_W = 720
 STORY_H = 1280
 
-# Размеры для квадратных фото (убраны, но оставлены для совместимости)
-SQUARE_SIZE = 1080
-
 # Параметры для шаблонов
 FDR_POST_PURPLE_COLOR = (122, 58, 240)
 TEXT_POSITION_TOP = "top"
@@ -247,6 +244,7 @@ def after_ai_kb():
     kb.add(
         InlineKeyboardButton("📝 Оформить пост", callback_data="ai:design"),
         InlineKeyboardButton("📤 Опубликовать без оформления", callback_data="ai:publish_text_only"),
+        InlineKeyboardButton("🔄 Переделать", callback_data="ai:redo"),
         InlineKeyboardButton("❌ Отмена", callback_data="ai:cancel")
     )
     return kb
@@ -329,7 +327,7 @@ def color_kb_am2():
 
 
 # =========================
-# Keyboard layouts для шаблонов (без квадратов)
+# Keyboard layouts для шаблонов
 # =========================
 def template_kb():
     kb = InlineKeyboardMarkup()
@@ -998,7 +996,7 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
 
 
 # =========================
-# Card making functions - ВСЕ ШАБЛОНЫ (без квадратов)
+# Card making functions - ВСЕ ШАБЛОНЫ
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
@@ -1677,26 +1675,39 @@ def get_schedule_text() -> str:
 
 
 # =========================
-# DeepSeek AI
+# DeepSeek AI (ИСПРАВЛЕНО - убрана лишняя фраза)
 # =========================
 async def process_text_with_deepseek(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен. Добавьте DEEPSEEK_API_KEY в переменные окружения."
-    prompt = """Ты редактор новостного сайта, у тебя строгий новостной городской формат. Без обращений на вы, ты и т.д. Только новостной формат.
+    
+    prompt = """Ты редактор новостного сайта. Перепиши новость в строгом городском формате, объемом около 650 символов. Убери лишнюю воду, сделай интересный заголовок, никаких смайликов. Сохрани главные факты. Расставь абзацы.
 
-Но тебе нужно переделывать новость с большого объема в новость на 650 символов.
-Убирая всю лишнюю воду, текст, делать интересным заголовок, никаких смайликов. Сохраняй главный факты, проверяй всю информацию несколько раз, чтобы не было никаких ошибок. Расставляй абзацы в нужно месте, чтобы текст не был единым пластом.
-
-Вот текст для обработки:"""
+Вот текст:"""
+    
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.post(
                 DEEPSEEK_API_URL,
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
-                json={"model": "deepseek-chat", "messages": [{"role": "system", "content": "Ты редактор новостного сайта."}, {"role": "user", "content": f"{prompt}\n\n{text}"}], "temperature": 0.7, "max_tokens": 1000}
+                json={
+                    "model": "deepseek-chat", 
+                    "messages": [
+                        {"role": "system", "content": "Ты редактор новостного сайта. Отвечай только готовым новостным текстом, без пояснений и вступлений."}, 
+                        {"role": "user", "content": f"{prompt}\n\n{text}"}
+                    ], 
+                    "temperature": 0.7, 
+                    "max_tokens": 1000
+                }
             )
             if response.status_code == 200:
-                return response.json()["choices"][0]["message"]["content"]
+                result = response.json()["choices"][0]["message"]["content"]
+                # Удаляем возможные служебные фразы из ответа ИИ
+                result = re.sub(r'^Вот обработанный новостной текст.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Вот.*?текст.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                result = result.strip()
+                return result
             return f"❌ Ошибка API: {response.status_code}"
         except Exception as e:
             return f"❌ Ошибка при обращении к API: {str(e)}"
@@ -1797,6 +1808,7 @@ def process_album(uid: int, media_group_id: str, chat_id: int, is_repost: bool =
         st["title"] = title
         st["body_raw"] = body
         st["original_text"] = caption
+        st["original_text_for_ai"] = caption
         logger.info(f"Saved caption from album for user {uid}: {caption[:100]}...")
     
     if photo_bytes:
@@ -2038,17 +2050,22 @@ def on_repost_action(c):
         
     elif action == "ai":
         bot.answer_callback_query(c.id, "🤖 Обрабатываю текст через ИИ...")
-        send_message_with_retry(c.message.chat.id, "⏳ Отправляю текст на обработку в DeepSeek AI... Это может занять до 30 секунд.")
+        
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Обрабатываю текст в DeepSeek AI... (до 30 секунд)")
         
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             original_text = st.get("original_text", "")
             if not original_text:
-                send_message_with_retry(c.message.chat.id, "❌ Нет текста для обработки. Попробуй ещё раз.")
+                bot.edit_message_text("❌ Нет текста для обработки. Попробуй ещё раз.", c.message.chat.id, processing_msg.message_id)
                 return
             
             result = loop.run_until_complete(process_text_with_deepseek(original_text))
+            
+            if "original_text_for_ai" not in st:
+                st["original_text_for_ai"] = original_text
+            
             st["ai_processed_text"] = result
             st["original_text"] = result
             
@@ -2060,18 +2077,19 @@ def on_repost_action(c):
             st["step"] = "waiting_after_ai"
             user_state[uid] = st
             
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
             send_message_with_retry(
                 c.message.chat.id, 
                 f"✍️ <b>Текст обработан ИИ:</b>\n\n{result}\n\n"
-                f"📌 <b>Извлечённый заголовок:</b> {title}\n\n"
-                f"Что дальше? (Фото из репоста сохранено!)\n"
-                f"При оформлении напиши «+» чтобы использовать извлечённый заголовок",
+                f"📌 <b>Заголовок:</b> {title}\n\n"
+                f"Что дальше?",
                 parse_mode="HTML", 
                 reply_markup=after_ai_kb()
             )
         except Exception as e:
             logger.error(f"AI processing error: {e}")
-            send_message_with_retry(c.message.chat.id, f"❌ Ошибка при обработке ИИ: {e}")
+            bot.edit_message_text(f"❌ Ошибка при обработке ИИ: {e}", c.message.chat.id, processing_msg.message_id)
         finally:
             loop.close()
             
@@ -2119,6 +2137,48 @@ def on_ai_action(c):
             send_message_with_retry(c.message.chat.id, f"❌ Ошибка публикации: {e}", reply_markup=main_menu_kb())
         
         clear_state(uid)
+    
+    elif action == "redo":
+        bot.answer_callback_query(c.id, "🔄 Переделываю текст...")
+        
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Переобрабатываю текст в DeepSeek AI...")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("original_text_for_ai", st.get("original_text", ""))
+            if not original_text:
+                bot.edit_message_text("❌ Нет текста для обработки.", c.message.chat.id, processing_msg.message_id)
+                return
+            
+            result = loop.run_until_complete(process_text_with_deepseek(original_text))
+            
+            st["ai_processed_text"] = result
+            st["original_text"] = result
+            
+            title, body = split_title_and_body(result)
+            st["title"] = title
+            st["body_raw"] = body
+            st["extracted_title"] = title
+            
+            st["step"] = "waiting_after_ai"
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            send_message_with_retry(
+                c.message.chat.id, 
+                f"✍️ <b>Текст переделан:</b>\n\n{result}\n\n"
+                f"📌 <b>Заголовок:</b> {title}\n\n"
+                f"Что дальше?",
+                parse_mode="HTML", 
+                reply_markup=after_ai_kb()
+            )
+        except Exception as e:
+            logger.error(f"AI redo error: {e}")
+            bot.edit_message_text(f"❌ Ошибка при переделке: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
     
     else:
         clear_state(uid)
@@ -2215,9 +2275,10 @@ def on_action(call):
 
 
 # =========================
-# Обработчик пересылаемых сообщений (репостов) с поддержкой альбомов
+# Обработчик пересылаемых сообщений (репостов) с поддержкой видео
 # =========================
-@bot.message_handler(content_types=["text", "photo"], func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
+@bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
+                     func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
 def handle_forwarded_message(message):
     uid = message.from_user.id
     
@@ -2268,15 +2329,11 @@ def handle_forwarded_message(message):
     
     st = user_state.get(uid) or {}
     st["original_text"] = original_text
+    st["original_text_for_ai"] = original_text
     st["original_url"] = source_url
     st["repost_type"] = "forward"
     st["step"] = "waiting_repost_action"
     st["photo_bytes"] = None
-    
-    if original_text:
-        title, body = split_title_and_body(original_text)
-        st["title"] = title
-        st["body_raw"] = body
     
     if message.photo:
         try:
@@ -2284,15 +2341,31 @@ def handle_forwarded_message(message):
             photo_bytes = tg_file_bytes(file_id)
             if check_file_size(photo_bytes):
                 st["photo_bytes"] = photo_bytes
-                logger.info(f"Saved photo from forward for user {uid}, size: {len(photo_bytes)} bytes")
+                logger.info(f"Saved photo from forward for user {uid}")
         except Exception as e:
             logger.error(f"Error extracting photo from forward: {e}")
+    
+    if not st["photo_bytes"] and (message.video or message.document or message.animation):
+        st["has_media"] = True
+        st["media_type"] = "video" if message.video else "document"
+        logger.info(f"User {uid} forwarded {st['media_type']} without photo")
+    
+    if original_text:
+        title, body = split_title_and_body(original_text)
+        st["title"] = title
+        st["body_raw"] = body
     
     user_state[uid] = st
     
     text_preview = original_text[:200] if original_text else "(без текста)"
     source_text = f"📢 <b>Источник:</b> {source_info}\n" if source_info else ""
-    photo_status = "✅ <b>Фото:</b> сохранено\n" if st["photo_bytes"] else "⚠️ <b>Фото:</b> не найдено в репосте\n"
+    
+    if st["photo_bytes"]:
+        photo_status = "✅ <b>Фото:</b> сохранено\n"
+    elif st.get("has_media"):
+        photo_status = f"⚠️ <b>Медиа:</b> {st['media_type']} (не обрабатывается как фото)\n"
+    else:
+        photo_status = "⚠️ <b>Фото:</b> не найдено\n"
     
     send_message_with_retry(
         message.chat.id,
@@ -2333,6 +2406,7 @@ def on_text(message):
         post_id = tme_match.group(2)
         st["original_url"] = text
         st["original_text"] = text
+        st["original_text_for_ai"] = text
         st["step"] = "waiting_repost_action"
         user_state[uid] = st
         
@@ -2636,7 +2710,7 @@ def on_text(message):
 
 
 # =========================
-# Обработчик фото и документов (для обычных фото и альбомов)
+# Обработчик фото и документов
 # =========================
 @bot.message_handler(content_types=["photo", "document"])
 def on_photo_or_document(message):
@@ -2795,7 +2869,6 @@ def on_photo_or_document(message):
                 bot.reply_to(message, f"❌ Ошибка при обработке фото: {e}")
                 return
     
-    # Если пользователь просто отправил фото (не в процессе оформления)
     if st.get("step") not in ["waiting_enhance_photo", "waiting_watermark_photo", 
                                 "waiting_photo_am2", "waiting_photo_fdr_post", 
                                 "waiting_photo_fdr_story", "waiting_photo"]:
@@ -2855,7 +2928,7 @@ def cmd_start(message):
         f"3️⃣ Бот автоматически сохранит текст и фото из репоста\n"
         f"4️⃣ Выбери действие: оформить по шаблону, обработать ИИ или нанести водяной знак\n"
         f"5️⃣ При оформлении напиши «+» чтобы использовать заголовок из текста\n"
-        f"6️⃣ После обработки ИИ можно опубликовать текст без оформления\n"
+        f"6️⃣ После обработки ИИ можно опубликовать текст без оформления или переделать\n"
         f"7️⃣ После создания превью нажми «Опубликовать в канале» и выбери нужный канал\n\n"
         f"Выбери действие 👇",
         parse_mode="HTML",
