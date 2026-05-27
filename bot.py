@@ -130,7 +130,7 @@ TARGET_W, TARGET_H = 720, 900
 STORY_W = 720
 STORY_H = 1280
 
-# Размеры для квадратных фото
+# Размеры для квадратных фото (убраны, но оставлены для совместимости)
 SQUARE_SIZE = 1080
 
 # Параметры для шаблонов
@@ -243,9 +243,10 @@ def repost_action_kb():
     return kb
 
 def after_ai_kb():
-    kb = InlineKeyboardMarkup(row_width=1)
+    kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📝 Оформить пост", callback_data="ai:design"),
+        InlineKeyboardButton("📤 Опубликовать без оформления", callback_data="ai:publish_text_only"),
         InlineKeyboardButton("❌ Отмена", callback_data="ai:cancel")
     )
     return kb
@@ -328,69 +329,44 @@ def color_kb_am2():
 
 
 # =========================
-# Keyboard layouts для шаблонов
+# Keyboard layouts для шаблонов (без квадратов)
 # =========================
-def template_kb(is_square: bool = False):
+def template_kb():
     kb = InlineKeyboardMarkup()
-    prefix = "square:" if is_square else "tpl:"
-    
-    if is_square:
-        kb.row(
-            InlineKeyboardButton("📰 МН", callback_data=f"{prefix}MN"),
-            InlineKeyboardButton("🚨 ЧП ВМ", callback_data=f"{prefix}CHP"),
-        )
-        kb.row(
-            InlineKeyboardButton("✨ АМ", callback_data=f"{prefix}AM"),
-            InlineKeyboardButton("🆕 АМ 2", callback_data=f"{prefix}AM2"),
-        )
-        kb.row(
-            InlineKeyboardButton("💜 Пост ФДР", callback_data=f"{prefix}FDR_POST"),
-            InlineKeyboardButton("📱 МН ТГ", callback_data=f"{prefix}MN_TG"),
-        )
-        kb.row(
-            InlineKeyboardButton("🆕 МН 2", callback_data=f"{prefix}MN2"),
-            InlineKeyboardButton("◀️ Назад к оформлению", callback_data="square:back"),
-        )
-    else:
-        kb.row(
-            InlineKeyboardButton("📰 МН", callback_data=f"{prefix}MN"),
-            InlineKeyboardButton("🚨 ЧП ВМ", callback_data=f"{prefix}CHP"),
-        )
-        kb.row(
-            InlineKeyboardButton("✨ АМ", callback_data=f"{prefix}AM"),
-            InlineKeyboardButton("🆕 АМ 2", callback_data=f"{prefix}AM2"),
-        )
-        kb.row(
-            InlineKeyboardButton("📱 Сторис ФДР", callback_data=f"{prefix}FDR_STORY"),
-            InlineKeyboardButton("💜 Пост ФДР", callback_data=f"{prefix}FDR_POST"),
-        )
-        kb.row(
-            InlineKeyboardButton("📱 МН ТГ", callback_data=f"{prefix}MN_TG"),
-            InlineKeyboardButton("🆕 МН 2", callback_data=f"{prefix}MN2"),
-        )
-        kb.row(
-            InlineKeyboardButton("⬛ Квадраты", callback_data="show_squares"),
-        )
+    kb.row(
+        InlineKeyboardButton("📰 МН", callback_data="tpl:MN"),
+        InlineKeyboardButton("🚨 ЧП ВМ", callback_data="tpl:CHP"),
+    )
+    kb.row(
+        InlineKeyboardButton("✨ АМ", callback_data="tpl:AM"),
+        InlineKeyboardButton("🆕 АМ 2", callback_data="tpl:AM2"),
+    )
+    kb.row(
+        InlineKeyboardButton("📱 Сторис ФДР", callback_data="tpl:FDR_STORY"),
+        InlineKeyboardButton("💜 Пост ФДР", callback_data="tpl:FDR_POST"),
+    )
+    kb.row(
+        InlineKeyboardButton("📱 МН ТГ", callback_data="tpl:MN_TG"),
+        InlineKeyboardButton("🆕 МН 2", callback_data="tpl:MN2"),
+    )
     return kb
 
-def text_position_kb(is_square: bool = False):
+def text_position_kb():
     kb = InlineKeyboardMarkup(row_width=2)
-    prefix = "square_pos:" if is_square else "text_pos:"
     kb.add(
-        InlineKeyboardButton("⬆️ Сверху", callback_data=f"{prefix}top"),
-        InlineKeyboardButton("⬇️ Снизу", callback_data=f"{prefix}bottom")
+        InlineKeyboardButton("⬆️ Сверху", callback_data="text_pos:top"),
+        InlineKeyboardButton("⬇️ Снизу", callback_data="text_pos:bottom")
     )
     return kb
 
-def font_size_kb(current_multiplier: float = 1.0, is_square: bool = False):
+def font_size_kb(current_multiplier: float = 1.0):
     kb = InlineKeyboardMarkup(row_width=3)
-    prefix = "square_font:" if is_square else "font_size:"
     kb.add(
-        InlineKeyboardButton("➖", callback_data=f"{prefix}minus:{current_multiplier}"),
-        InlineKeyboardButton(f"{int(current_multiplier*100)}%", callback_data=f"{prefix}current"),
-        InlineKeyboardButton("➕", callback_data=f"{prefix}plus:{current_multiplier}")
+        InlineKeyboardButton("➖", callback_data=f"font_size:minus:{current_multiplier}"),
+        InlineKeyboardButton(f"{int(current_multiplier*100)}%", callback_data=f"font_size:current"),
+        InlineKeyboardButton("➕", callback_data=f"font_size:plus:{current_multiplier}")
     )
-    kb.add(InlineKeyboardButton("✅ Готово", callback_data=f"{prefix}done"))
+    kb.add(InlineKeyboardButton("✅ Готово", callback_data=f"font_size:done"))
     return kb
 
 
@@ -1022,17 +998,13 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
 
 
 # =========================
-# Card making functions - ВСЕ ШАБЛОНЫ
+# Card making functions - ВСЕ ШАБЛОНЫ (без квадратов)
 # =========================
-def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, is_square: bool = False) -> BytesIO:
+def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-    if is_square:
-        img = crop_to_square(img)
-        img = img.resize((SQUARE_SIZE, SQUARE_SIZE), Image.Resampling.LANCZOS)
-    else:
-        img = crop_to_4x5(img)
-        img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(0.55)
     if text_position == TEXT_POSITION_TOP:
         img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
@@ -1080,15 +1052,11 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     out.seek(0)
     return out
 
-def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, is_square: bool = False, bold_phrase: str = "") -> BytesIO:
+def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, bold_phrase: str = "") -> BytesIO:
     ensure_fonts()
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-    if is_square:
-        img = crop_to_square(img)
-        img = img.resize((SQUARE_SIZE, SQUARE_SIZE), Image.Resampling.LANCZOS)
-    else:
-        img = crop_to_4x5(img)
-        img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(0.55)
     if text_position == TEXT_POSITION_TOP:
         img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT * 0.75, max_alpha=165)
@@ -1160,15 +1128,11 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     out.seek(0)
     return out
 
-def make_card_mn_tg(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, is_square: bool = False) -> BytesIO:
+def make_card_mn_tg(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-    if is_square:
-        img = crop_to_square(img)
-        img = img.resize((SQUARE_SIZE, SQUARE_SIZE), Image.Resampling.LANCZOS)
-    else:
-        img = crop_to_4x5(img)
-        img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font_size = int(img.width * 0.08)
@@ -1189,15 +1153,11 @@ def make_card_mn_tg(photo_bytes: bytes, title_text: str, text_position: str = TE
     out.seek(0)
     return out
 
-def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, is_square: bool = False) -> BytesIO:
+def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-    if is_square:
-        img = crop_to_square(img)
-        img = img.resize((SQUARE_SIZE, SQUARE_SIZE), Image.Resampling.LANCZOS)
-    else:
-        img = crop_to_4x5(img)
-        img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(0.85)
     if text_position == TEXT_POSITION_TOP:
         img = apply_top_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
@@ -1230,15 +1190,11 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     out.seek(0)
     return out
 
-def make_card_am(photo_bytes: bytes, title_text: str, is_square: bool = False) -> BytesIO:
+def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     ensure_fonts()
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-    if is_square:
-        img = crop_to_square(img)
-        img = img.resize((SQUARE_SIZE, SQUARE_SIZE), Image.Resampling.LANCZOS)
-    else:
-        img = crop_to_4x5(img)
-        img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
     img = apply_top_blur_band(img)
     draw = ImageDraw.Draw(img)
     margin_x = int(img.width * 0.055)
@@ -1269,44 +1225,9 @@ def make_card_am(photo_bytes: bytes, title_text: str, is_square: bool = False) -
 
 def make_card_am2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP,
                   date: str = "", place: str = "", rubric: str = "",
-                  highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False,
-                  is_square: bool = False) -> BytesIO:
-    if is_square:
-        img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-        img = crop_to_square(img)
-        img = img.resize((SQUARE_SIZE, SQUARE_SIZE), Image.Resampling.LANCZOS)
-        img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-        if text_position == "top":
-            img = apply_gradient_direction(img, "top", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
-        else:
-            img = apply_gradient_direction(img, "bottom", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
-        draw = ImageDraw.Draw(img)
-        margin_x = int(img.width * 0.06)
-        margin_top = int(img.height * 0.15)
-        safe_w = img.width - 2 * margin_x
-        
-        clean_title = clean_markdown(title_text)
-        text = (clean_title or "").strip().upper()
-        
-        title_max_h = int(img.height * 0.23)
-        font, lines, heights, spacing, total_h = fit_text_block_center(
-            draw=draw, text=text, font_path=FONT_PATH, safe_w=safe_w,
-            max_block_h=title_max_h, max_lines=6, start_size=int(img.height * 0.11),
-            min_size=24, line_spacing_ratio=LINE_SPACING_RATIO
-        )
-        y = margin_top
-        for i, ln in enumerate(lines):
-            line_w = text_width(draw, ln, font)
-            x = (img.width - line_w) // 2
-            draw.text((x, y), ln, font=font, fill="white")
-            y += heights[i] + spacing
-        out = BytesIO()
-        img.save(out, format="JPEG", quality=95, subsampling=0)
-        out.seek(0)
-        return out
-    else:
-        return create_poster_am2(photo_bytes, title_text, text_position, date, place, rubric,
-                                 highlight_word, highlight_color, is_yellow)
+                  highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
+    return create_poster_am2(photo_bytes, title_text, text_position, date, place, rubric,
+                             highlight_word, highlight_color, is_yellow)
 
 def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> BytesIO:
     ensure_fonts()
@@ -1353,15 +1274,11 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
     out.seek(0)
     return out
 
-def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: str, is_square: bool = False) -> BytesIO:
+def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: str) -> BytesIO:
     ensure_fonts()
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-    if is_square:
-        img = crop_to_square(img)
-        img = img.resize((SQUARE_SIZE, SQUARE_SIZE), Image.Resampling.LANCZOS)
-    else:
-        img = crop_to_4x5(img)
-        img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(0.85)
     img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
     draw = ImageDraw.Draw(img)
@@ -1417,25 +1334,25 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     return out
 
 def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", 
-              text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, is_square: bool = False, 
+              text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, 
               bold_phrase: str = "", date: str = "", place: str = "", rubric: str = "",
               highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
     if template == "CHP":
-        return make_card_chp(photo_bytes, title_text, text_position, is_square)
+        return make_card_chp(photo_bytes, title_text, text_position)
     if template == "AM":
-        return make_card_am(photo_bytes, title_text, is_square)
+        return make_card_am(photo_bytes, title_text)
     if template == "AM2":
         return make_card_am2(photo_bytes, title_text, text_position, date, place, rubric,
-                            highlight_word, highlight_color, is_yellow, is_square)
+                            highlight_word, highlight_color, is_yellow)
     if template == "FDR_STORY":
         return make_card_fdr_story(photo_bytes, title_text, body_text)
     if template == "FDR_POST":
-        return make_card_fdr_post(photo_bytes, title_text, highlight_phrase, is_square)
+        return make_card_fdr_post(photo_bytes, title_text, highlight_phrase)
     if template == "MN_TG":
-        return make_card_mn_tg(photo_bytes, title_text, text_position, is_square)
+        return make_card_mn_tg(photo_bytes, title_text, text_position)
     if template == "MN2":
-        return make_card_mn2(photo_bytes, title_text, text_position, font_size_multiplier, is_square, bold_phrase)
-    return make_card_mn(photo_bytes, title_text, text_position, is_square)
+        return make_card_mn2(photo_bytes, title_text, text_position, font_size_multiplier, bold_phrase)
+    return make_card_mn(photo_bytes, title_text, text_position)
 
 
 # =========================
@@ -1518,7 +1435,7 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
 
 
 # =========================
-# Caption formatting (ИСПРАВЛЕНО)
+# Caption formatting
 # =========================
 RU_STOP = {"и", "в", "во", "на", "но", "а", "что", "это", "как", "к", "по", "из", "за", "для", "с", "со", "у", "от", "до", "при", "без", "над", "под", "же", "ли", "то", "не", "ни", "да", "нет", "уже", "еще", "ещё", "там", "тут"}
 
@@ -1863,15 +1780,6 @@ def on_watermark_type(c):
     send_message_with_retry(c.message.chat.id, f"✅ Выбран водяной знак. Отправь фото:", parse_mode="HTML")
     bot.answer_callback_query(c.id)
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("show_squares"))
-def on_show_squares(c):
-    uid = c.from_user.id
-    st = user_state.get(uid) or {}
-    st["step"] = "waiting_template_square"
-    user_state[uid] = st
-    send_message_with_retry(c.message.chat.id, "⬛ Выбери шаблон для квадратного фото:", reply_markup=template_kb(True))
-    bot.answer_callback_query(c.id)
-
 def process_album(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
     """Обрабатывает собранный альбом"""
     time.sleep(2)
@@ -1908,23 +1816,14 @@ def process_album(uid: int, media_group_id: str, chat_id: int, is_repost: bool =
         reply_markup=repost_action_kb()
     )
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:") or c.data.startswith("square:"))
+@bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:"))
 def on_tpl(c):
     uid = c.from_user.id
     parts = c.data.split(":", 1)
-    prefix = parts[0]
     tpl = parts[1]
-    is_square = (prefix == "square")
     st = user_state.get(uid) or {}
     
-    if tpl == "back" and is_square:
-        st["step"] = "waiting_template"
-        user_state[uid] = st
-        send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления:", reply_markup=template_kb(False))
-        bot.answer_callback_query(c.id)
-        return
-    
-    st["is_square"] = is_square
+    st["is_square"] = False
     st["template"] = tpl
     
     has_photo = st.get("photo_bytes") is not None
@@ -1935,17 +1834,15 @@ def on_tpl(c):
             user_state[uid] = st
             template_names = {"MN": "МН", "AM": "АМ", "MN_TG": "МН ТГ", "CHP": "ЧП ВМ"}
             template_name = template_names.get(tpl, tpl)
-            size_text = "квадратный " if is_square else ""
             bot.answer_callback_query(c.id, f"Шаблон {template_name} выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"📰 Выбран {size_text}шаблон <b>{template_name}</b>\n\n📸 Фото уже есть!\n\nГде разместить текст?", parse_mode="HTML", reply_markup=text_position_kb(is_square))
+            send_message_with_retry(c.message.chat.id, f"📰 Выбран шаблон <b>{template_name}</b>\n\n📸 Фото уже есть!\n\nГде разместить текст?", parse_mode="HTML", reply_markup=text_position_kb())
         else:
             st["step"] = "waiting_photo"
             user_state[uid] = st
             template_names = {"MN": "МН", "AM": "АМ", "MN_TG": "МН ТГ", "CHP": "ЧП ВМ"}
             template_name = template_names.get(tpl, tpl)
-            size_text = "квадратное " if is_square else ""
             bot.answer_callback_query(c.id, f"Шаблон {template_name} выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"📰 Выбран {size_text}шаблон <b>{template_name}</b>\n\nТеперь пришли {size_text}фото 📷", parse_mode="HTML")
+            send_message_with_retry(c.message.chat.id, f"📰 Выбран шаблон <b>{template_name}</b>\n\nТеперь пришли фото 📷", parse_mode="HTML")
     
     elif tpl == "AM2":
         if has_photo:
@@ -1957,38 +1854,33 @@ def on_tpl(c):
             st["step"] = "waiting_photo_am2"
             user_state[uid] = st
             bot.answer_callback_query(c.id, "Шаблон АМ 2 выбран ✅")
-            size_text = "квадратное " if is_square else ""
-            send_message_with_retry(c.message.chat.id, f"🎨 Выбран {size_text}шаблон <b>АМ 2</b>\n\n📸 Пришли {size_text}фото:", parse_mode="HTML")
+            send_message_with_retry(c.message.chat.id, f"🎨 Выбран шаблон <b>АМ 2</b>\n\n📸 Пришли фото:", parse_mode="HTML")
     
     elif tpl == "MN2":
         if has_photo:
             st["step"] = "waiting_font_size"
             user_state[uid] = st
             bot.answer_callback_query(c.id, f"Шаблон МН 2 выбран ✅")
-            size_text = "квадратного " if is_square else ""
-            send_message_with_retry(c.message.chat.id, f"🔤 Настрой размер шрифта для {size_text}заголовка (фото уже есть):", reply_markup=font_size_kb(1.0, is_square))
+            send_message_with_retry(c.message.chat.id, f"🔤 Настрой размер шрифта для заголовка (фото уже есть):", reply_markup=font_size_kb(1.0))
         else:
             st["step"] = "waiting_font_size"
             user_state[uid] = st
             bot.answer_callback_query(c.id, f"Шаблон МН 2 выбран ✅")
-            size_text = "квадратного " if is_square else ""
-            send_message_with_retry(c.message.chat.id, f"🔤 Настрой размер шрифта для {size_text}заголовка:", reply_markup=font_size_kb(1.0, is_square))
+            send_message_with_retry(c.message.chat.id, f"🔤 Настрой размер шрифта для заголовка:", reply_markup=font_size_kb(1.0))
     
     elif tpl == "FDR_POST":
         if has_photo:
             st["step"] = "waiting_title_fdr_post"
             user_state[uid] = st
             bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
-            size_text = "квадратное " if is_square else ""
-            send_message_with_retry(c.message.chat.id, f"💜 Выбран {size_text}шаблон <b>Пост ФДР</b>\n\n📸 Фото уже есть!\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:", parse_mode="HTML")
+            send_message_with_retry(c.message.chat.id, f"💜 Выбран шаблон <b>Пост ФДР</b>\n\n📸 Фото уже есть!\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:", parse_mode="HTML")
         else:
             st["step"] = "waiting_photo_fdr_post"
             user_state[uid] = st
             bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
-            size_text = "квадратное " if is_square else ""
-            send_message_with_retry(c.message.chat.id, f"💜 Выбран {size_text}шаблон <b>Пост ФДР</b>\n\n📸 Пришли {size_text}фото:", parse_mode="HTML")
+            send_message_with_retry(c.message.chat.id, f"💜 Выбран шаблон <b>Пост ФДР</b>\n\n📸 Пришли фото:", parse_mode="HTML")
     
-    elif tpl == "FDR_STORY" and not is_square:
+    elif tpl == "FDR_STORY":
         if has_photo:
             st["step"] = "waiting_title_fdr"
             user_state[uid] = st
@@ -2076,13 +1968,11 @@ def on_am2_color_select(c):
     except:
         pass
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("text_pos:") or c.data.startswith("square_pos:"))
+@bot.callback_query_handler(func=lambda c: c.data.startswith("text_pos:"))
 def on_text_position(c):
     uid = c.from_user.id
     parts = c.data.split(":", 1)
-    prefix = parts[0]
     position = parts[1]
-    is_square = (prefix == "square_pos")
     st = user_state.get(uid) or {}
     st["text_position"] = position
     
@@ -2101,8 +1991,7 @@ def on_text_position(c):
         st["step"] = "waiting_photo"
         user_state[uid] = st
         position_text = "сверху" if position == "top" else "снизу"
-        size_text = "квадратное " if is_square else ""
-        send_message_with_retry(c.message.chat.id, f"✅ Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли {size_text}фото 📷", parse_mode="HTML")
+        send_message_with_retry(c.message.chat.id, f"✅ Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли фото 📷", parse_mode="HTML")
         bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
     
     try:
@@ -2110,18 +1999,16 @@ def on_text_position(c):
     except:
         pass
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("font_size:") or c.data.startswith("square_font:"))
+@bot.callback_query_handler(func=lambda c: c.data.startswith("font_size:"))
 def on_font_size_adjust(c):
     uid = c.from_user.id
     parts = c.data.split(":")
-    prefix = parts[0]
     action = parts[1]
-    is_square = (prefix == "square_font")
     st = user_state.get(uid) or {}
     if action == "done":
         st["step"] = "waiting_text_position"
         user_state[uid] = st
-        send_message_with_retry(c.message.chat.id, "✅ Размер шрифта настроен. Теперь выбери расположение текста:", reply_markup=text_position_kb(is_square))
+        send_message_with_retry(c.message.chat.id, "✅ Размер шрифта настроен. Теперь выбери расположение текста:", reply_markup=text_position_kb())
         bot.answer_callback_query(c.id, "Настройки сохранены")
         return
     current = float(parts[2]) if len(parts) > 2 else st.get("font_size_multiplier", 1.0)
@@ -2134,8 +2021,7 @@ def on_font_size_adjust(c):
         return
     st["font_size_multiplier"] = new_mult
     user_state[uid] = st
-    template_name = "квадратного МН 2" if is_square else "МН 2"
-    send_message_with_retry(c.message.chat.id, f"🔤 Настройка размера шрифта для {template_name}\n\nТекущий размер: {int(new_mult*100)}%\nИспользуй кнопки + и - для регулировки.\nНажми «Готово» когда закончишь.", reply_markup=font_size_kb(new_mult, is_square))
+    send_message_with_retry(c.message.chat.id, f"🔤 Настройка размера шрифта\n\nТекущий размер: {int(new_mult*100)}%\nИспользуй кнопки + и - для регулировки.\nНажми «Готово» когда закончишь.", reply_markup=font_size_kb(new_mult))
     bot.answer_callback_query(c.id)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("repost:"))
@@ -2212,6 +2098,28 @@ def on_ai_action(c):
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Выбери шаблон для оформления ✅")
         send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления. Фото и обработанный ИИ текст будут использованы автоматически! 🎉", reply_markup=template_kb())
+    
+    elif action == "publish_text_only":
+        bot.answer_callback_query(c.id, "📤 Публикую текст без оформления...")
+        
+        original_text = st.get("original_text", "")
+        if not original_text:
+            send_message_with_retry(c.message.chat.id, "❌ Нет текста для публикации.", reply_markup=main_menu_kb())
+            clear_state(uid)
+            return
+        
+        title, body = split_title_and_body(original_text)
+        caption = build_caption_html(title, body)
+        
+        try:
+            bot.send_message(CHANNEL, caption, parse_mode="HTML", reply_markup=channel_kb())
+            send_message_with_retry(c.message.chat.id, "✅ Текст опубликован без оформления!", reply_markup=main_menu_kb())
+        except Exception as e:
+            logger.error(f"Error publishing text only: {e}")
+            send_message_with_retry(c.message.chat.id, f"❌ Ошибка публикации: {e}", reply_markup=main_menu_kb())
+        
+        clear_state(uid)
+    
     else:
         clear_state(uid)
         bot.answer_callback_query(c.id, "Отменено")
@@ -2365,7 +2273,6 @@ def handle_forwarded_message(message):
     st["step"] = "waiting_repost_action"
     st["photo_bytes"] = None
     
-    # Разделяем текст на заголовок и тело
     if original_text:
         title, body = split_title_and_body(original_text)
         st["title"] = title
@@ -2548,7 +2455,7 @@ def on_text(message):
         st["bold_phrase"] = text if text != " " else ""
         try:
             font_mult = st.get("font_size_multiplier", 1.0)
-            card = make_card(st["photo_bytes"], st["title"], "MN2", text_position=st.get("text_position", TEXT_POSITION_TOP), font_size_multiplier=font_mult, is_square=st.get("is_square", False), bold_phrase=st["bold_phrase"])
+            card = make_card(st["photo_bytes"], st["title"], "MN2", text_position=st.get("text_position", TEXT_POSITION_TOP), font_size_multiplier=font_mult, bold_phrase=st["bold_phrase"])
             st["card_bytes"] = card.getvalue()
             st["step"] = "waiting_action"
             user_state[uid] = st
@@ -2575,7 +2482,7 @@ def on_text(message):
             bot.reply_to(message, "❌ Текст не может быть пустым")
             return
         try:
-            card = make_card(st["photo_bytes"], use_text, "MN_TG", text_position=st.get("text_position", TEXT_POSITION_TOP), is_square=st.get("is_square", False))
+            card = make_card(st["photo_bytes"], use_text, "MN_TG", text_position=st.get("text_position", TEXT_POSITION_TOP))
             st["card_bytes"] = card.getvalue()
             st["full_text"] = use_text
             st["title"] = use_text.split('\n\n')[0] if '\n\n' in use_text else use_text[:100]
@@ -2615,7 +2522,7 @@ def on_text(message):
     if step == "waiting_highlight_phrase_fdr_post":
         st["highlight_phrase"] = text if text != " " else ""
         try:
-            card = make_card(st["photo_bytes"], st["title"], "FDR_POST", highlight_phrase=st["highlight_phrase"], is_square=st.get("is_square", False))
+            card = make_card(st["photo_bytes"], st["title"], "FDR_POST", highlight_phrase=st["highlight_phrase"])
             st["card_bytes"] = card.getvalue()
             st["step"] = "waiting_action"
             user_state[uid] = st
@@ -2691,7 +2598,6 @@ def on_text(message):
         clean_use_text = clean_markdown(use_text)
         
         st["title"] = clean_use_text
-        # Если есть body_raw, оставляем его, иначе body_raw = пустая строка
         if "body_raw" not in st:
             st["body_raw"] = ""
         user_state[uid] = st
@@ -2700,7 +2606,7 @@ def on_text(message):
             font_mult = st.get("font_size_multiplier", 1.0) if st.get("template") == "MN2" else 1.0
             card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), 
                             text_position=st.get("text_position", TEXT_POSITION_TOP), 
-                            font_size_multiplier=font_mult, is_square=st.get("is_square", False), 
+                            font_size_multiplier=font_mult, 
                             bold_phrase=st.get("bold_phrase", ""), date=st.get("date", ""), 
                             place=st.get("place", ""), rubric=st.get("rubric", ""), 
                             highlight_word=st.get("highlight_word", ""), 
@@ -2868,25 +2774,21 @@ def on_photo_or_document(message):
                     bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
                     return
                 st["photo_bytes"] = photo_bytes
-                is_square = st.get("is_square", False)
                 
                 if st.get("template") == "MN2":
                     st["step"] = "waiting_title_mn2"
                     user_state[uid] = st
-                    size_text = "квадратное " if is_square else ""
-                    bot.reply_to(message, f"📸 {size_text}Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
+                    bot.reply_to(message, f"📸 Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
                 elif st.get("template") == "MN_TG":
                     st["step"] = "waiting_title_mn_tg"
                     user_state[uid] = st
-                    size_text = "квадратное " if is_square else ""
                     default_text = f"\n\n💡 <i>Используй текст из репоста (напиши «+» чтобы использовать его):</i>\n\n{st.get('original_text', '')[:200]}..." if st.get("original_text") else ""
-                    bot.reply_to(message, f"📸 {size_text}Фото сохранено!{default_text}\n\nТеперь отправь <b>ТЕКСТ</b> для поста (первый абзац станет заголовком):", parse_mode="HTML")
+                    bot.reply_to(message, f"📸 Фото сохранено!{default_text}\n\nТеперь отправь <b>ТЕКСТ</b> для поста (первый абзац станет заголовком):", parse_mode="HTML")
                 else:
                     st["step"] = "waiting_title"
                     user_state[uid] = st
-                    size_text = "квадратное " if is_square else ""
                     default_text = f"\n\n💡 <i>Используй текст из репоста (напиши «+» чтобы использовать его):</i>\n\n{st.get('original_text', '')[:200]}..." if st.get("original_text") else ""
-                    bot.reply_to(message, f"📸 {size_text}Фото сохранено!{default_text}\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
+                    bot.reply_to(message, f"📸 Фото сохранено!{default_text}\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
                 return
             except Exception as e:
                 logger.error(f"Error processing photo: {e}")
@@ -2940,7 +2842,7 @@ def cmd_start(message):
         message.chat.id,
         f"👋 <b>Привет! Я бот для оформления постов</b>\n\n"
         f"<b>📝 Основные функции:</b>\n"
-        f"• 📝 Оформление постов с фото (7 шаблонов, включая Квадраты)\n"
+        f"• 📝 Оформление постов с фото (7 шаблонов)\n"
         f"• ✨ Улучшение качества фото (+20% резкость, +15% насыщенность)\n"
         f"• 💧 Водяные знаки - нанеси \"MINSK NEWS\" или \"ЧП Минск\" на фото\n"
         f"• 🤖 Текст в ИИ - отправь текст, ИИ сократит его до 650 символов\n"
@@ -2953,7 +2855,8 @@ def cmd_start(message):
         f"3️⃣ Бот автоматически сохранит текст и фото из репоста\n"
         f"4️⃣ Выбери действие: оформить по шаблону, обработать ИИ или нанести водяной знак\n"
         f"5️⃣ При оформлении напиши «+» чтобы использовать заголовок из текста\n"
-        f"6️⃣ После создания превью нажми «Опубликовать в канале» и выбери нужный канал\n\n"
+        f"6️⃣ После обработки ИИ можно опубликовать текст без оформления\n"
+        f"7️⃣ После создания превью нажми «Опубликовать в канале» и выбери нужный канал\n\n"
         f"Выбери действие 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
