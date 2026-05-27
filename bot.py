@@ -300,37 +300,6 @@ def channel_kb():
         kb.add(InlineKeyboardButton("📝 Предложить новость", url=SUGGEST_URL))
     return kb
 
-def build_caption_with_buttons(title: str, body: str, channel_type: str) -> Tuple[str, InlineKeyboardMarkup]:
-    title_safe = html.escape((title or "").strip())
-    body_safe = html.escape((body or "").strip())
-    caption = f"<b>{title_safe}</b>\n\n{body_safe}"
-    
-    if channel_type == "mn":
-        kb = InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
-            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/vestiminska")
-        )
-    elif channel_type == "chp":
-        kb = InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
-            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/minskchpidtp")
-        )
-    elif channel_type == "afisha":
-        kb = InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
-            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/afishaminsk")
-        )
-    else:
-        kb = InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
-            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/test_channel")
-        )
-    return caption, kb
-
 def text_position_kb_am2():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -534,6 +503,27 @@ def clean_markdown(text: str) -> str:
     text = re.sub(r'`([^`]+)`', r'\1', text)
     
     return text.strip()
+
+def split_title_and_body(text: str) -> Tuple[str, str]:
+    """Разделяет текст на заголовок и основной текст"""
+    if not text:
+        return "", ""
+    
+    text = text.strip()
+    
+    if '\n' in text:
+        lines = text.split('\n')
+        title = lines[0].strip()
+        body = '\n'.join(lines[1:]).strip()
+        return title, body
+    
+    if len(text) > 100 and '. ' in text:
+        parts = text.split('. ', 1)
+        title = (parts[0] + '.').strip()
+        body = parts[1].strip() if len(parts) > 1 else ""
+        return title, body
+    
+    return text, ""
 
 def load_font(font_name: str, size: int):
     try:
@@ -1528,7 +1518,7 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
 
 
 # =========================
-# Caption formatting
+# Caption formatting (ИСПРАВЛЕНО)
 # =========================
 RU_STOP = {"и", "в", "во", "на", "но", "а", "что", "это", "как", "к", "по", "из", "за", "для", "с", "со", "у", "от", "до", "при", "без", "над", "под", "же", "ли", "то", "не", "ни", "да", "нет", "уже", "еще", "ещё", "там", "тут"}
 
@@ -1586,25 +1576,81 @@ def highlight_keywords_html(text: str, keywords):
     return safe
 
 def build_caption_html(title: str, body: str) -> str:
-    emoji_ = pick_category_emoji(title, body)
-    keywords = pick_keywords(title, body)
+    """Формирует caption для поста: заголовок жирным, затем основной текст"""
     title_safe = html.escape((title or "").strip())
-    body_high = highlight_keywords_html((body or "").strip(), keywords)
-    return f"<b>{emoji_} {title_safe}</b>\n\n{body_high}".strip()
+    body_safe = html.escape((body or "").strip())
+    
+    if title_safe and body_safe:
+        return f"<b>{title_safe}</b>\n\n{body_safe}"
+    elif title_safe:
+        return f"<b>{title_safe}</b>"
+    else:
+        return body_safe
+
+
+def build_caption_with_buttons(title: str, body: str, channel_type: str) -> Tuple[str, InlineKeyboardMarkup]:
+    """Формирует caption и кнопки для публикации в канал"""
+    title_safe = html.escape((title or "").strip())
+    body_safe = html.escape((body or "").strip())
+    
+    if title_safe and body_safe:
+        caption = f"<b>{title_safe}</b>\n\n{body_safe}"
+    elif title_safe:
+        caption = f"<b>{title_safe}</b>"
+    else:
+        caption = body_safe
+    
+    if channel_type == "mn":
+        kb = InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
+            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/vestiminska")
+        )
+    elif channel_type == "chp":
+        kb = InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
+            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/minskchpidtp")
+        )
+    elif channel_type == "afisha":
+        kb = InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
+            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/afishaminsk")
+        )
+    else:
+        kb = InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
+            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/test_channel")
+        )
+    return caption, kb
+
 
 def build_caption_tg(full_text: str) -> str:
+    """Форматирует текст для публикации в Telegram канал"""
     paragraphs = full_text.strip().split('\n\n')
     if not paragraphs:
         return ""
+    
     title = paragraphs[0].strip()
     title_safe = html.escape(title)
+    
     body_parts = []
     for p in paragraphs[1:]:
         if p.strip():
             body_parts.append(html.escape(p.strip()))
     body_text = '\n\n'.join(body_parts) if body_parts else ""
+    
+    if title_safe and body_text:
+        caption = f"<b>{title_safe}</b>\n\n{body_text}"
+    elif title_safe:
+        caption = f"<b>{title_safe}</b>"
+    else:
+        caption = body_text
+    
     links = "\n\n🔗 <a href='https://t.me/vestiminska'>Все новости Минска</a>\n📝 <a href='https://t.me/prishlinews_bot'>Прислать новость</a>"
-    return f"<b>{title_safe}</b>\n\n{body_text}{links}"
+    return caption + links
 
 
 # =========================
@@ -1839,6 +1885,9 @@ def process_album(uid: int, media_group_id: str, chat_id: int, is_repost: bool =
     photo_bytes = album_data.get("photos", [])[0] if album_data.get("photos") else None
     
     if caption:
+        title, body = split_title_and_body(caption)
+        st["title"] = title
+        st["body_raw"] = body
         st["original_text"] = caption
         logger.info(f"Saved caption from album for user {uid}: {caption[:100]}...")
     
@@ -2117,8 +2166,10 @@ def on_repost_action(c):
             st["ai_processed_text"] = result
             st["original_text"] = result
             
-            extracted_title = extract_title_from_text(result)
-            st["extracted_title"] = extracted_title
+            title, body = split_title_and_body(result)
+            st["title"] = title
+            st["body_raw"] = body
+            st["extracted_title"] = title
             
             st["step"] = "waiting_after_ai"
             user_state[uid] = st
@@ -2126,7 +2177,7 @@ def on_repost_action(c):
             send_message_with_retry(
                 c.message.chat.id, 
                 f"✍️ <b>Текст обработан ИИ:</b>\n\n{result}\n\n"
-                f"📌 <b>Извлечённый заголовок:</b> {extracted_title}\n\n"
+                f"📌 <b>Извлечённый заголовок:</b> {title}\n\n"
                 f"Что дальше? (Фото из репоста сохранено!)\n"
                 f"При оформлении напиши «+» чтобы использовать извлечённый заголовок",
                 parse_mode="HTML", 
@@ -2235,12 +2286,7 @@ def on_action(call):
         return
     if call.data == "publish":
         try:
-            if st.get("template") == "MN_TG" and "full_text" in st:
-                caption = build_caption_tg(st["full_text"])
-            elif st.get("template") == "AM2":
-                caption = build_caption_html(st["title"], st.get("body_raw", ""))
-            else:
-                caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
+            caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
             bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=channel_kb())
             bot.answer_callback_query(call.id, "Опубликовано ✅")
             send_message_with_retry(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
@@ -2318,6 +2364,12 @@ def handle_forwarded_message(message):
     st["repost_type"] = "forward"
     st["step"] = "waiting_repost_action"
     st["photo_bytes"] = None
+    
+    # Разделяем текст на заголовок и тело
+    if original_text:
+        title, body = split_title_and_body(original_text)
+        st["title"] = title
+        st["body_raw"] = body
     
     if message.photo:
         try:
@@ -2404,10 +2456,11 @@ def on_text(message):
         return
     
     if step == "waiting_title_am2":
-        if text == "+" and st.get("extracted_title"):
-            use_text = st["extracted_title"]
+        if text == "+" and st.get("title"):
+            use_text = st["title"]
         elif text == "+" and st.get("original_text"):
-            use_text = extract_title_from_text(st["original_text"])
+            title, _ = split_title_and_body(st["original_text"])
+            use_text = title
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи заголовок вручную.")
             return
@@ -2507,10 +2560,11 @@ def on_text(message):
         return
     
     if step == "waiting_title_mn_tg":
-        if text == "+" and st.get("extracted_title"):
-            use_text = st["extracted_title"]
+        if text == "+" and st.get("title"):
+            use_text = st["title"]
         elif text == "+" and st.get("original_text"):
-            use_text = extract_title_from_text(st["original_text"])
+            title, body = split_title_and_body(st["original_text"])
+            use_text = title + "\n\n" + body if body else title
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи текст вручную.")
             return
@@ -2537,10 +2591,11 @@ def on_text(message):
         return
     
     if step == "waiting_title_fdr_post":
-        if text == "+" and st.get("extracted_title"):
-            use_text = st["extracted_title"]
+        if text == "+" and st.get("title"):
+            use_text = st["title"]
         elif text == "+" and st.get("original_text"):
-            use_text = extract_title_from_text(st["original_text"])
+            title, _ = split_title_and_body(st["original_text"])
+            use_text = title
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи заголовок вручную.")
             return
@@ -2572,10 +2627,11 @@ def on_text(message):
         return
     
     if step == "waiting_title_fdr":
-        if text == "+" and st.get("extracted_title"):
-            use_text = st["extracted_title"]
+        if text == "+" and st.get("title"):
+            use_text = st["title"]
         elif text == "+" and st.get("original_text"):
-            use_text = extract_title_from_text(st["original_text"])
+            title, _ = split_title_and_body(st["original_text"])
+            use_text = title
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи заголовок вручную.")
             return
@@ -2592,8 +2648,14 @@ def on_text(message):
         return
     
     if step == "waiting_body_fdr":
-        if text == "+" and st.get("original_text"):
-            use_text = st["original_text"]
+        if text == "+" and st.get("body_raw"):
+            use_text = st["body_raw"]
+        elif text == "+" and st.get("original_text"):
+            _, body = split_title_and_body(st["original_text"])
+            use_text = body
+        elif text == "+":
+            bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи текст вручную.")
+            return
         else:
             use_text = text
         try:
@@ -2611,10 +2673,11 @@ def on_text(message):
         return
     
     if step == "waiting_title":
-        if text == "+" and st.get("extracted_title"):
-            use_text = st["extracted_title"]
+        if text == "+" and st.get("title"):
+            use_text = st["title"]
         elif text == "+" and st.get("original_text"):
-            use_text = extract_title_from_text(st["original_text"])
+            title, _ = split_title_and_body(st["original_text"])
+            use_text = title
         elif text == "+":
             bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи заголовок вручную.")
             return
@@ -2628,13 +2691,25 @@ def on_text(message):
         clean_use_text = clean_markdown(use_text)
         
         st["title"] = clean_use_text
-        st["body_raw"] = clean_use_text
+        # Если есть body_raw, оставляем его, иначе body_raw = пустая строка
+        if "body_raw" not in st:
+            st["body_raw"] = ""
+        user_state[uid] = st
+        
         try:
             font_mult = st.get("font_size_multiplier", 1.0) if st.get("template") == "MN2" else 1.0
-            card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), text_position=st.get("text_position", TEXT_POSITION_TOP), font_size_multiplier=font_mult, is_square=st.get("is_square", False), bold_phrase=st.get("bold_phrase", ""), date=st.get("date", ""), place=st.get("place", ""), rubric=st.get("rubric", ""), highlight_word=st.get("highlight_word", ""), highlight_color=st.get("highlight_color"), is_yellow=st.get("is_yellow", False))
+            card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), 
+                            text_position=st.get("text_position", TEXT_POSITION_TOP), 
+                            font_size_multiplier=font_mult, is_square=st.get("is_square", False), 
+                            bold_phrase=st.get("bold_phrase", ""), date=st.get("date", ""), 
+                            place=st.get("place", ""), rubric=st.get("rubric", ""), 
+                            highlight_word=st.get("highlight_word", ""), 
+                            highlight_color=st.get("highlight_color"), 
+                            is_yellow=st.get("is_yellow", False))
             st["card_bytes"] = card.getvalue()
             st["step"] = "waiting_action"
             user_state[uid] = st
+            
             caption = build_caption_html(st["title"], st["body_raw"])
             bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb())
             bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
