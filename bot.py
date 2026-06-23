@@ -25,7 +25,8 @@ import httpx
 import telebot
 from telebot.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton
+    ReplyKeyboardMarkup, KeyboardButton,
+    InputMediaPhoto, InputMediaVideo
 )
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 from requests.adapters import HTTPAdapter
@@ -122,8 +123,8 @@ if not SUGGEST_URL and BOT_USERNAME:
     SUGGEST_URL = f"https://t.me/{BOT_USERNAME}?start=suggest"
 
 # Constants
-MAX_FILE_SIZE = 20 * 1024 * 1024
-REQUEST_TIMEOUT = 15
+MAX_FILE_SIZE = 50 * 1024 * 1024  # Увеличиваем до 50MB для видео
+REQUEST_TIMEOUT = 30
 
 # Размеры для всех шаблонов - 720x900
 TARGET_W, TARGET_H = 720, 900
@@ -409,6 +410,38 @@ def tg_file_bytes(file_id: str) -> bytes:
     except Exception as e:
         logger.error(f"Failed to download file: {e}")
         raise
+
+def tg_file_bytes_with_info(file_id: str) -> Tuple[bytes, Dict]:
+    """Скачивает файл и возвращает байты и информацию о файле"""
+    try:
+        file_info = bot.get_file(file_id)
+        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+        r = SESSION.get(file_url, timeout=60)
+        r.raise_for_status()
+        
+        # Определяем тип файла
+        file_path = file_info.file_path
+        if file_path.startswith('video/'):
+            media_type = 'video'
+        elif file_path.startswith('photo/'):
+            media_type = 'photo'
+        else:
+            media_type = 'document'
+        
+        info = {
+            'file_id': file_id,
+            'file_path': file_path,
+            'file_size': file_info.file_size,
+            'media_type': media_type
+        }
+        return r.content, info
+    except Exception as e:
+        logger.error(f"Failed to download file: {e}")
+        raise
+
+def download_video(file_id: str) -> Tuple[bytes, Dict]:
+    """Скачивает видео и возвращает байты и информацию"""
+    return tg_file_bytes_with_info(file_id)
 
 def clear_state(user_id: int):
     if user_id in user_state:
@@ -1821,8 +1854,8 @@ def on_watermark_type(c):
     send_message_with_retry(c.message.chat.id, f"✅ Выбран водяной знак. Отправь фото:", parse_mode="HTML")
     bot.answer_callback_query(c.id)
 
-def process_album(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
-    """Обрабатывает собранный альбом"""
+def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
+    """Обрабатывает собранный альбом (фото + видео)"""
     time.sleep(2)
     if media_group_id not in user_album_cache:
         return
@@ -1831,7 +1864,8 @@ def process_album(uid: int, media_group_id: str, chat_id: int, is_repost: bool =
     st = user_state.get(uid) or {}
     
     caption = album_data.get("caption", "")
-    photo_bytes = album_data.get("photos", [])[0] if album_data.get("photos") else None
+    photos = album_data.get("photos", [])
+    videos = album_data.get("videos", [])
     
     if caption:
         title, body = split_title_and_body(caption)
@@ -1841,20 +1875,36 @@ def process_album(uid: int, media_group_id: str, chat_id: int, is_repost: bool =
         st["original_text_for_ai"] = caption
         logger.info(f"Saved caption from album for user {uid}: {caption[:100]}...")
     
-    if photo_bytes:
-        st["photo_bytes"] = photo_bytes
-        st["saved_photo_bytes"] = photo_bytes
+    # Сохраняем все медиа
+    st["media_group"] = {"photos": photos, "videos": videos}
+    
+    if photos:
+        st["photo_bytes"] = photos[0]  # Первое фото для шаблонов
+        st["saved_photo_bytes"] = photos[0]
         logger.info(f"Saved first photo from album for user {uid}")
+    
+    if videos:
+        st["video_bytes"] = videos[0]['bytes']
+        st["video_info"] = videos[0]['info']
+        logger.info(f"Saved first video from album for user {uid}")
     
     st["step"] = "waiting_repost_action"
     user_state[uid] = st
     
     text_preview = caption[:200] if caption else "(без текста)"
-    photo_status = "✅ <b>Фото:</b> сохранено (первое из альбома)\n" if photo_bytes else "⚠️ <b>Фото:</b> не найдено\n"
+    photo_count = len(photos)
+    video_count = len(videos)
+    media_status = []
+    if photo_count > 0:
+        media_status.append(f"✅ <b>Фото:</b> {photo_count} шт")
+    if video_count > 0:
+        media_status.append(f"✅ <b>Видео:</b> {video_count} шт")
+    if not media_status:
+        media_status.append("⚠️ <b>Медиа:</b> не найдено")
     
     send_message_with_retry(
         chat_id,
-        f"📸 <b>Альбом обнаружен!</b>\n\n{photo_status}📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
+        f"📸 <b>Альбом обнаружен!</b>\n\n{', '.join(media_status)}\n📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
         parse_mode="HTML",
         reply_markup=repost_action_kb()
     )
@@ -2295,26 +2345,56 @@ def on_select_channel(c):
         return
     
     try:
-        # Проверяем наличие фото
-        has_photo = st.get("photo_bytes") is not None or st.get("card_bytes") is not None
+        caption_text = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
+        media_group = st.get("media_group", {"photos": [], "videos": []})
         
-        if has_photo:
-            # Публикуем с фото (оформленный пост)
-            if st.get("card_bytes"):
-                photo_to_send = st["card_bytes"]
-            else:
-                photo_to_send = st["photo_bytes"]
-            
+        # Если есть оформленная картинка - публикуем её
+        if st.get("card_bytes"):
             caption, kb = build_caption_with_buttons(st.get("title", ""), st.get("body_raw", ""), channel_type)
-            bot.send_photo(target_channel, BytesIO(photo_to_send), caption=caption, parse_mode="HTML", reply_markup=kb)
+            bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=kb)
             bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с фото")
+        
+        # Если есть несколько фото или видео - публикуем как медиагруппу
+        elif media_group.get("photos") or media_group.get("videos"):
+            # Собираем все медиа в медиагруппу
+            media_list = []
+            first = True
+            
+            # Добавляем все фото
+            for photo_bytes in media_group.get("photos", []):
+                media_list.append(InputMediaPhoto(BytesIO(photo_bytes), caption=caption_text if first else ""))
+                first = False
+            
+            # Добавляем все видео
+            for video_data in media_group.get("videos", []):
+                video_bytes = video_data.get('bytes')
+                if video_bytes:
+                    media_list.append(InputMediaVideo(BytesIO(video_bytes), caption=caption_text if first else ""))
+                    first = False
+            
+            # Отправляем медиагруппу
+            if len(media_list) > 1:
+                bot.send_media_group(target_channel, media_list)
+                bot.answer_callback_query(c.id, f"✅ {len(media_list)} медиа опубликовано в {channel_name}")
+            elif len(media_list) == 1:
+                # Если одно медиа, отправляем отдельно
+                if isinstance(media_list[0], InputMediaPhoto):
+                    bot.send_photo(target_channel, media_list[0].media, caption=media_list[0].caption, parse_mode="HTML")
+                elif isinstance(media_list[0], InputMediaVideo):
+                    bot.send_video(target_channel, media_list[0].media, caption=media_list[0].caption, parse_mode="HTML")
+                bot.answer_callback_query(c.id, f"✅ Медиа опубликовано в {channel_name}")
+            else:
+                bot.answer_callback_query(c.id, "❌ Нет медиа для публикации")
+                return
+        
+        # Если есть только текст
         elif st.get("original_text"):
-            # Публикуем только текст
             original_text = st.get("original_text", "")
             title, body = split_title_and_body(original_text)
             caption = build_caption_html(title, body)
             bot.send_message(target_channel, caption, parse_mode="HTML", reply_markup=channel_kb())
             bot.answer_callback_query(c.id, f"✅ Текст опубликован в {channel_name}")
+        
         else:
             bot.answer_callback_query(c.id, "❌ Нет контента для публикации")
             return
@@ -2325,10 +2405,7 @@ def on_select_channel(c):
         except:
             pass
         
-        # Очищаем состояние
         clear_state(uid)
-        
-        # Отправляем подтверждение
         send_message_with_retry(c.message.chat.id, f"✅ Пост опубликован в канале {channel_name}!", reply_markup=main_menu_kb())
         
     except Exception as e:
@@ -2367,25 +2444,28 @@ def on_action(call):
 
 
 # =========================
-# Обработчик пересылаемых сообщений (репостов)
+# Обработчик пересылаемых сообщений (репостов) с поддержкой видео и альбомов
 # =========================
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
                      func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
 def handle_forwarded_message(message):
     uid = message.from_user.id
     
+    # Проверяем медиагруппу (альбом)
     if hasattr(message, 'media_group_id') and message.media_group_id:
         media_group_id = message.media_group_id
         
         if media_group_id not in user_album_cache:
             user_album_cache[media_group_id] = {
                 "photos": [],
+                "videos": [],
                 "caption": "",
                 "start_time": time.time(),
                 "message_id": message.message_id,
                 "chat_id": message.chat.id
             }
         
+        # Сохраняем фото
         if message.photo:
             try:
                 file_id = message.photo[-1].file_id
@@ -2396,12 +2476,27 @@ def handle_forwarded_message(message):
             except Exception as e:
                 logger.error(f"Error extracting photo from album: {e}")
         
+        # Сохраняем видео
+        if message.video:
+            try:
+                file_id = message.video.file_id
+                video_bytes, video_info = download_video(file_id)
+                if check_file_size(video_bytes):
+                    user_album_cache[media_group_id]["videos"].append({
+                        'bytes': video_bytes,
+                        'info': video_info
+                    })
+                    logger.info(f"Added video to album {media_group_id}")
+            except Exception as e:
+                logger.error(f"Error extracting video from album: {e}")
+        
         if message.caption:
             user_album_cache[media_group_id]["caption"] = message.caption
         
-        threading.Thread(target=process_album, args=(uid, media_group_id, message.chat.id, True), daemon=True).start()
+        threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, True), daemon=True).start()
         return
     
+    # Обычный репост (не альбом)
     original_text = ""
     if message.text:
         original_text = message.text
@@ -2426,7 +2521,11 @@ def handle_forwarded_message(message):
     st["repost_type"] = "forward"
     st["step"] = "waiting_repost_action"
     st["photo_bytes"] = None
+    st["video_bytes"] = None
+    st["video_info"] = None
+    st["media_group"] = {"photos": [], "videos": []}
     
+    # Сохраняем фото
     if message.photo:
         try:
             file_id = message.photo[-1].file_id
@@ -2434,10 +2533,28 @@ def handle_forwarded_message(message):
             if check_file_size(photo_bytes):
                 st["photo_bytes"] = photo_bytes
                 st["saved_photo_bytes"] = photo_bytes
+                st["media_group"]["photos"].append(photo_bytes)
                 logger.info(f"Saved photo from forward for user {uid}")
         except Exception as e:
             logger.error(f"Error extracting photo from forward: {e}")
     
+    # Сохраняем видео
+    if message.video:
+        try:
+            file_id = message.video.file_id
+            video_bytes, video_info = download_video(file_id)
+            if check_file_size(video_bytes):
+                st["video_bytes"] = video_bytes
+                st["video_info"] = video_info
+                st["media_group"]["videos"].append({
+                    'bytes': video_bytes,
+                    'info': video_info
+                })
+                logger.info(f"Saved video from forward for user {uid}")
+        except Exception as e:
+            logger.error(f"Error extracting video from forward: {e}")
+    
+    # Если есть только видео без фото - отмечаем это
     if not st["photo_bytes"] and (message.video or message.document or message.animation):
         st["has_media"] = True
         st["media_type"] = "video" if message.video else "document"
@@ -2453,16 +2570,19 @@ def handle_forwarded_message(message):
     text_preview = original_text[:200] if original_text else "(без текста)"
     source_text = f"📢 <b>Источник:</b> {source_info}\n" if source_info else ""
     
+    media_status = []
     if st["photo_bytes"]:
-        photo_status = "✅ <b>Фото:</b> сохранено\n"
-    elif st.get("has_media"):
-        photo_status = f"⚠️ <b>Медиа:</b> {st['media_type']} (не обрабатывается как фото)\n"
-    else:
-        photo_status = "⚠️ <b>Фото:</b> не найдено\n"
+        media_status.append("✅ <b>Фото:</b> сохранено")
+    if st["video_bytes"]:
+        media_status.append("✅ <b>Видео:</b> сохранено")
+    if not st["photo_bytes"] and not st["video_bytes"] and st.get("has_media"):
+        media_status.append(f"⚠️ <b>Медиа:</b> {st['media_type']}")
+    if not media_status:
+        media_status.append("⚠️ <b>Медиа:</b> не найдено")
     
     send_message_with_retry(
         message.chat.id,
-        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{photo_status}📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
+        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{'<br>'.join(media_status)}\n📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
         parse_mode="HTML",
         reply_markup=repost_action_kb()
     )
@@ -2816,6 +2936,7 @@ def on_photo_or_document(message):
         if media_group_id not in user_album_cache:
             user_album_cache[media_group_id] = {
                 "photos": [],
+                "videos": [],
                 "caption": "",
                 "start_time": time.time(),
                 "message_id": message.message_id,
@@ -2834,7 +2955,7 @@ def on_photo_or_document(message):
         if message.caption:
             user_album_cache[media_group_id]["caption"] = message.caption
         
-        threading.Thread(target=process_album, args=(uid, media_group_id, message.chat.id, False), daemon=True).start()
+        threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, False), daemon=True).start()
         return
     
     if st.get("step") == "waiting_enhance_photo":
@@ -3013,12 +3134,14 @@ def cmd_start(message):
         f"• 💧 Водяные знаки - нанеси \"MINSK NEWS\" или \"ЧП Минск\" на фото\n"
         f"• 🤖 Текст в ИИ - отправь текст, ИИ сократит его до 650 символов\n"
         f"• 💰 Цены и условия размещения\n"
-        f"• 📎 Репосты из каналов - отправь ссылку на пост или перешли его\n\n"
+        f"• 📎 Репосты из каналов - отправь ссылку на пост или перешли его\n"
+        f"• 🎬 Поддержка видео - бот сохраняет видео и публикует его с текстом\n"
+        f"• 📸 Альбомы - поддерживает несколько фото и видео\n\n"
         f"<b>📌 Доступные каналы для публикации:</b> {channels_text}\n\n"
         f"<b>📌 Как использовать репосты:</b>\n"
         f"1️⃣ Перешли любой пост из Telegram канала в этот чат\n"
         f"2️⃣ Или отправь ссылку на пост (например, https://t.me/channel/123)\n"
-        f"3️⃣ Бот автоматически сохранит текст и фото из репоста\n"
+        f"3️⃣ Бот автоматически сохранит текст и медиа из репоста\n"
         f"4️⃣ Выбери действие: оформить по шаблону, обработать ИИ или нанести водяной знак\n"
         f"5️⃣ При оформлении напиши «+» чтобы использовать заголовок из текста\n"
         f"6️⃣ После обработки ИИ можно оформить пост, опубликовать текст в канал или переделать\n"
