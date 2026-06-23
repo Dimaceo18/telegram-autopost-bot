@@ -2307,12 +2307,10 @@ def on_select_channel(c):
     
     if channel_type == "cancel":
         bot.answer_callback_query(c.id, "Отменено")
-        # Удаляем сообщение с выбором канала
         try:
             bot.delete_message(c.message.chat.id, c.message.message_id)
         except:
             pass
-        # Возвращаемся к превью
         if st.get("card_bytes"):
             caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
             bot.send_photo(c.message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb())
@@ -2341,11 +2339,15 @@ def on_select_channel(c):
     
     if not target_channel:
         bot.answer_callback_query(c.id, f"❌ Канал {channel_name} не настроен")
-        send_message_with_retry(c.message.chat.id, f"❌ Канал {channel_name} не настроен. Добавьте переменную окружения в Render.", reply_markup=after_ai_kb() if st.get("temp_message_id") else main_menu_kb())
+        send_message_with_retry(c.message.chat.id, f"❌ Канал {channel_name} не настроен.", reply_markup=after_ai_kb() if st.get("temp_message_id") else main_menu_kb())
         return
     
     try:
-        caption_text = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
+        # Формируем caption с HTML-разметкой
+        title = st.get("title", "")
+        body = st.get("body_raw", "")
+        caption_text = build_caption_html(title, body)
+        
         media_group = st.get("media_group", {"photos": [], "videos": []})
         
         # Если есть оформленная картинка - публикуем её
@@ -2362,22 +2364,29 @@ def on_select_channel(c):
             
             # Добавляем все фото
             for photo_bytes in media_group.get("photos", []):
-                media_list.append(InputMediaPhoto(BytesIO(photo_bytes), caption=caption_text if first else ""))
-                first = False
+                # Для первого медиа добавляем caption с HTML
+                if first:
+                    media_list.append(InputMediaPhoto(BytesIO(photo_bytes), caption=caption_text, parse_mode="HTML"))
+                    first = False
+                else:
+                    media_list.append(InputMediaPhoto(BytesIO(photo_bytes)))
             
             # Добавляем все видео
             for video_data in media_group.get("videos", []):
                 video_bytes = video_data.get('bytes')
                 if video_bytes:
-                    media_list.append(InputMediaVideo(BytesIO(video_bytes), caption=caption_text if first else ""))
-                    first = False
+                    if first:
+                        media_list.append(InputMediaVideo(BytesIO(video_bytes), caption=caption_text, parse_mode="HTML"))
+                        first = False
+                    else:
+                        media_list.append(InputMediaVideo(BytesIO(video_bytes)))
             
             # Отправляем медиагруппу
             if len(media_list) > 1:
                 bot.send_media_group(target_channel, media_list)
                 bot.answer_callback_query(c.id, f"✅ {len(media_list)} медиа опубликовано в {channel_name}")
             elif len(media_list) == 1:
-                # Если одно медиа, отправляем отдельно
+                # Если одно медиа, отправляем отдельно с правильным parse_mode
                 if isinstance(media_list[0], InputMediaPhoto):
                     bot.send_photo(target_channel, media_list[0].media, caption=media_list[0].caption, parse_mode="HTML")
                 elif isinstance(media_list[0], InputMediaVideo):
@@ -2412,35 +2421,6 @@ def on_select_channel(c):
         logger.error(f"Error publishing to channel: {e}")
         bot.answer_callback_query(c.id, "❌ Ошибка публикации")
         send_message_with_retry(c.message.chat.id, f"❌ Не удалось опубликовать: {e}", reply_markup=main_menu_kb())
-
-
-@bot.callback_query_handler(func=lambda c: c.data in ["publish", "edit_text", "cancel"])
-def on_action(call):
-    uid = call.from_user.id
-    st = user_state.get(uid)
-    if not st or st.get("step") != "waiting_action":
-        bot.answer_callback_query(call.id, "Нет активного превью. Начни с «Оформить пост».")
-        return
-    if call.data == "publish":
-        try:
-            caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
-            bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=channel_kb())
-            bot.answer_callback_query(call.id, "Опубликовано ✅")
-            send_message_with_retry(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
-            clear_state(uid)
-        except Exception as e:
-            logger.error(f"Error publishing: {e}")
-            bot.answer_callback_query(call.id, "Ошибка публикации")
-            send_message_with_retry(call.message.chat.id, f"Не смог опубликовать: {e}", reply_markup=main_menu_kb())
-    elif call.data == "edit_text":
-        st["step"] = "waiting_title"
-        user_state[uid] = st
-        bot.answer_callback_query(call.id, "Ок")
-        send_message_with_retry(call.message.chat.id, "Пришли новый ЗАГОЛОВОК.", reply_markup=main_menu_kb())
-    elif call.data == "cancel":
-        bot.answer_callback_query(call.id, "Отменено")
-        clear_state(uid)
-        send_message_with_retry(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
 
 
 # =========================
