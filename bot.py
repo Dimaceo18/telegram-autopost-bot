@@ -439,13 +439,12 @@ def tg_file_bytes_with_info(file_id: str) -> Tuple[bytes, Dict]:
         raise
 
 def get_video_info(file_id: str, video_obj) -> Dict:
-    """Получает информацию о видео без скачивания"""
+    """Получает информацию о видео из объекта video, без обращения к API"""
     try:
-        file_info = bot.get_file(file_id)
+        # Используем данные из самого объекта video, а не через get_file
         info = {
             'file_id': file_id,
-            'file_path': file_info.file_path,
-            'file_size': file_info.file_size,
+            'file_size': getattr(video_obj, 'file_size', 0),
             'media_type': 'video',
             'duration': getattr(video_obj, 'duration', 0),
             'width': getattr(video_obj, 'width', 0),
