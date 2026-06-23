@@ -1500,7 +1500,7 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
 
 
 # =========================
-# Caption formatting
+# Caption formatting (ИСПРАВЛЕНО - с обрезкой)
 # =========================
 RU_STOP = {"и", "в", "во", "на", "но", "а", "что", "это", "как", "к", "по", "из", "за", "для", "с", "со", "у", "от", "до", "при", "без", "над", "под", "же", "ли", "то", "не", "ни", "да", "нет", "уже", "еще", "ещё", "там", "тут"}
 
@@ -1557,19 +1557,8 @@ def highlight_keywords_html(text: str, keywords):
         safe = pattern.sub(r"<b>\1</b>", safe)
     return safe
 
-def build_caption_html(title: str, body: str) -> str:
-    title_safe = html.escape((title or "").strip())
-    body_safe = html.escape((body or "").strip())
-    
-    if title_safe and body_safe:
-        return f"<b>{title_safe}</b>\n\n{body_safe}"
-    elif title_safe:
-        return f"<b>{title_safe}</b>"
-    else:
-        return body_safe
-
-
-def build_caption_with_buttons(title: str, body: str, channel_type: str) -> Tuple[str, InlineKeyboardMarkup]:
+def build_caption_html(title: str, body: str, max_length: int = 1000) -> str:
+    """Формирует caption для поста: заголовок жирным, затем основной текст, с обрезкой"""
     title_safe = html.escape((title or "").strip())
     body_safe = html.escape((body or "").strip())
     
@@ -1579,6 +1568,29 @@ def build_caption_with_buttons(title: str, body: str, channel_type: str) -> Tupl
         caption = f"<b>{title_safe}</b>"
     else:
         caption = body_safe
+    
+    # Обрезаем до max_length символов
+    if len(caption) > max_length:
+        caption = caption[:max_length - 3] + "..."
+    
+    return caption
+
+
+def build_caption_with_buttons(title: str, body: str, channel_type: str, max_length: int = 1000) -> Tuple[str, InlineKeyboardMarkup]:
+    """Формирует caption и кнопки для публикации в канал, с обрезкой"""
+    title_safe = html.escape((title or "").strip())
+    body_safe = html.escape((body or "").strip())
+    
+    if title_safe and body_safe:
+        caption = f"<b>{title_safe}</b>\n\n{body_safe}"
+    elif title_safe:
+        caption = f"<b>{title_safe}</b>"
+    else:
+        caption = body_safe
+    
+    # Обрезаем до max_length символов
+    if len(caption) > max_length:
+        caption = caption[:max_length - 3] + "..."
     
     if channel_type == "mn":
         kb = InlineKeyboardMarkup(row_width=1)
@@ -1605,6 +1617,38 @@ def build_caption_with_buttons(title: str, body: str, channel_type: str) -> Tupl
             InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/test_channel")
         )
     return caption, kb
+
+
+def build_caption_tg(full_text: str, max_length: int = 1000) -> str:
+    """Форматирует текст для публикации в Telegram канал, с обрезкой"""
+    paragraphs = full_text.strip().split('\n\n')
+    if not paragraphs:
+        return ""
+    
+    title = paragraphs[0].strip()
+    title_safe = html.escape(title)
+    
+    body_parts = []
+    for p in paragraphs[1:]:
+        if p.strip():
+            body_parts.append(html.escape(p.strip()))
+    body_text = '\n\n'.join(body_parts) if body_parts else ""
+    
+    if title_safe and body_text:
+        caption = f"<b>{title_safe}</b>\n\n{body_text}"
+    elif title_safe:
+        caption = f"<b>{title_safe}</b>"
+    else:
+        caption = body_text
+    
+    links = "\n\n🔗 <a href='https://t.me/vestiminska'>Все новости Минска</a>\n📝 <a href='https://t.me/prishlinews_bot'>Прислать новость</a>"
+    caption = caption + links
+    
+    # Обрезаем до max_length символов
+    if len(caption) > max_length:
+        caption = caption[:max_length - 3] + "..."
+    
+    return caption
 
 
 def build_caption_tg(full_text: str) -> str:
