@@ -186,20 +186,22 @@ HIGHLIGHT_COLORS = {
 
 
 # =========================
-# BOT + SESSION
+# BOT + SESSION (с исправлением SSL)
 # =========================
 bot = telebot.TeleBot(TOKEN)
 
 SESSION = requests.Session()
 retry_strategy = Retry(
-    total=3,
-    backoff_factor=0.5,
+    total=5,
+    backoff_factor=1,
     status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET", "POST"]
 )
 adapter = HTTPAdapter(
     max_retries=retry_strategy,
     pool_connections=20,
-    pool_maxsize=20
+    pool_maxsize=20,
+    pool_block=False
 )
 SESSION.mount("http://", adapter)
 SESSION.mount("https://", adapter)
@@ -207,6 +209,7 @@ SESSION.mount("https://", adapter)
 SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept-Language": "ru-RU,ru;q=0.9",
+    "Connection": "close"
 })
 
 URL_RE = re.compile(r"(https?://[^\s]+)", re.IGNORECASE)
@@ -380,6 +383,56 @@ def send_message_with_retry(chat_id, text, parse_mode=None, reply_markup=None, m
                     )
                 except:
                     raise
+    return None
+
+def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_markup=None, max_retries=3):
+    """Отправляет фото с обрезкой caption и повторными попытками"""
+    if caption and len(caption) > 950:
+        caption = caption[:947] + "..."
+    
+    for attempt in range(max_retries):
+        try:
+            return bot.send_photo(
+                chat_id=chat_id,
+                photo=photo,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Send photo attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 + attempt * 2)
+            else:
+                try:
+                    return bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo,
+                        reply_markup=reply_markup
+                    )
+                except:
+                    return None
+    return None
+
+def send_media_group_with_retry(chat_id, media_list, max_retries=3):
+    """Отправляет медиагруппу с обработкой ошибок"""
+    for attempt in range(max_retries):
+        try:
+            return bot.send_media_group(chat_id, media_list)
+        except Exception as e:
+            logger.error(f"Media group attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 + attempt * 2)
+            else:
+                for media in media_list:
+                    try:
+                        if isinstance(media, InputMediaPhoto):
+                            bot.send_photo(chat_id, media.media, caption=media.caption, parse_mode="HTML")
+                        elif isinstance(media, InputMediaVideo):
+                            bot.send_video(chat_id, media.media, caption=media.caption, parse_mode="HTML")
+                    except:
+                        pass
+                return None
     return None
 
 def check_file_size(file_bytes: bytes) -> bool:
@@ -1044,7 +1097,7 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
 
 
 # =========================
-# Card making functions - ВСЕ ШАБЛОНЫ (с правильным переносом и фиксированным межстрочным расстоянием)
+# Card making functions - ВСЕ ШАБЛОНЫ (с аккуратным межстрочным расстоянием)
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
@@ -1071,18 +1124,16 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     clean_title = clean_markdown(title_text)
     text = (clean_title or "").strip().upper()
     
-    # Используем fit_text_block для правильного переноса
     font, lines, heights, spacing, total_text_height = fit_text_block(
         draw=draw, text=text, font_path=FONT_MN, safe_w=safe_w,
         max_block_h=title_max_h, max_lines=6, start_size=int(img.height * 0.11),
         min_size=16, line_spacing_ratio=0.22
     )
     
-    # МЕЖСТРОЧНОЕ РАССТОЯНИЕ = РАЗМЕР ШРИФТА (аккуратное расстояние)
-    line_height = font.size  # Теперь равно размеру шрифта
-    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2  # +2px между строк
+    # МЕЖСТРОЧНОЕ РАССТОЯНИЕ = РАЗМЕР ШРИФТА
+    line_height = font.size
+    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
-    # Выравнивание по ширине
     block_w = 0
     for ln in lines:
         block_w = max(block_w, text_width(draw, ln, font))
@@ -1099,7 +1150,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     y = title_y
     for ln in lines:
         draw.text((block_x, y), ln, font=font, fill="white")
-        y += line_height + 2  # Размер шрифта + 2px между строк
+        y += line_height + 2
     
     footer_x = (img.width - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
@@ -1107,7 +1158,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
     out.seek(0)
     return out
-    
+
 def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, bold_phrase: str = "") -> BytesIO:
     ensure_fonts()
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -1137,18 +1188,16 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     bold_phrase_upper = clean_bold_phrase.strip().upper() if clean_bold_phrase else ""
     bold_words = set(bold_phrase_upper.split())
     
-    # Используем fit_text_block для правильного переноса
     font, lines, heights, spacing, total_text_height = fit_text_block(
         draw=draw, text=text, font_path=FONT_MN, safe_w=safe_w,
         max_block_h=title_max_h, max_lines=6, start_size=int(img.height * 0.11),
         min_size=16, line_spacing_ratio=0.25
     )
     
-    # ФИКСИРОВАННОЕ МЕЖСТРОЧНОЕ РАССТОЯНИЕ
-    fixed_line_height = int(font.size * 0.9)
-    total_text_height = len(lines) * fixed_line_height
+    # МЕЖСТРОЧНОЕ РАССТОЯНИЕ = РАЗМЕР ШРИФТА
+    line_height = font.size
+    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
-    # Выравнивание по ширине
     block_w = 0
     for ln in lines:
         block_w = max(block_w, text_width(draw, ln, font))
@@ -1177,7 +1226,7 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
                 current_x += text_width(draw, word, font) + space_width
             else:
                 current_x += text_width(draw, word, font)
-        y += fixed_line_height
+        y += line_height + 2
     
     footer_x = (img.width - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
@@ -1231,16 +1280,15 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     clean_title = clean_markdown(title_text)
     text = (clean_title or "").strip().upper()
     
-    # Используем fit_text_block для правильного переноса
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw, text=text, font_path=FONT_CHP, safe_w=safe_w,
         max_block_h=title_max_h, max_lines=6, start_size=int(img.height * 0.11),
         min_size=16, line_spacing_ratio=0.22
     )
     
-    # ФИКСИРОВАННОЕ МЕЖСТРОЧНОЕ РАССТОЯНИЕ
-    fixed_line_height = int(font.size * 0.9)
-    total_text_height = len(lines) * fixed_line_height
+    # МЕЖСТРОЧНОЕ РАССТОЯНИЕ = РАЗМЕР ШРИФТА
+    line_height = font.size
+    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
     if text_position == TEXT_POSITION_TOP:
         y = margin_top
@@ -1249,7 +1297,7 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     
     for ln in lines:
         draw.text((margin_x, y), ln, font=font, fill="white")
-        y += fixed_line_height
+        y += line_height + 2
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
@@ -1274,23 +1322,22 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     text_zone_bottom = int(band_h * 0.12)
     text_zone_h = max(1, band_h - text_zone_top - text_zone_bottom)
     
-    # Используем fit_text_block для правильного переноса
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw, text=text, font_path=FONT_AM, safe_w=safe_w,
         max_block_h=text_zone_h, max_lines=3, start_size=int(img.height * 0.060),
         min_size=20, line_spacing_ratio=0.16
     )
     
-    # ФИКСИРОВАННОЕ МЕЖСТРОЧНОЕ РАССТОЯНИЕ
-    fixed_line_height = int(font.size * 0.9)
-    total_text_height = len(lines) * fixed_line_height
+    # МЕЖСТРОЧНОЕ РАССТОЯНИЕ = РАЗМЕР ШРИФТА
+    line_height = font.size
+    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
     y = text_zone_top + max(0, (text_zone_h - total_text_height) // 2)
     for ln in lines:
         lw = text_width(draw, ln, font)
         x = (img.width - lw) // 2
         draw.text((x, y), ln, font=font, fill="white")
-        y += fixed_line_height
+        y += line_height + 2
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
@@ -1369,16 +1416,15 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     
-    # Используем fit_text_block для правильного переноса
     font, lines, heights, spacing, total_h = fit_text_block(
         draw=draw, text=title_text_upper, font_path=FONT_CHP, safe_w=safe_w,
         max_block_h=title_max_h, max_lines=6, start_size=int(img.height * 0.11),
         min_size=16, line_spacing_ratio=0.22
     )
     
-    # ФИКСИРОВАННОЕ МЕЖСТРОЧНОЕ РАССТОЯНИЕ
-    fixed_line_height = int(font.size * 0.9)
-    total_text_height = len(lines) * fixed_line_height
+    # МЕЖСТРОЧНОЕ РАССТОЯНИЕ = РАЗМЕР ШРИФТА
+    line_height = font.size
+    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
     base_y = img.height - margin_bottom - total_text_height
     y = base_y
@@ -1398,7 +1444,7 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
                 current_x += text_width(draw, word, font) + space_width
             else:
                 current_x += text_width(draw, word, font)
-        y += fixed_line_height
+        y += line_height + 2
     
     # Затем рисуем текст
     y = base_y
@@ -1412,7 +1458,7 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
                 current_x += text_width(draw, word, font) + space_width
             else:
                 current_x += text_width(draw, word, font)
-        y += fixed_line_height
+        y += line_height + 2
     
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
@@ -1578,7 +1624,7 @@ def highlight_keywords_html(text: str, keywords):
         safe = pattern.sub(r"<b>\1</b>", safe)
     return safe
 
-def build_caption_html(title: str, body: str, max_length: int = 1000) -> str:
+def build_caption_html(title: str, body: str, max_length: int = 950) -> str:
     title_safe = html.escape((title or "").strip())
     body_safe = html.escape((body or "").strip())
     
@@ -1594,7 +1640,7 @@ def build_caption_html(title: str, body: str, max_length: int = 1000) -> str:
     
     return caption
 
-def build_caption_with_buttons(title: str, body: str, channel_type: str, max_length: int = 1000) -> Tuple[str, InlineKeyboardMarkup]:
+def build_caption_with_buttons(title: str, body: str, channel_type: str, max_length: int = 950) -> Tuple[str, InlineKeyboardMarkup]:
     title_safe = html.escape((title or "").strip())
     body_safe = html.escape((body or "").strip())
     
@@ -1634,7 +1680,7 @@ def build_caption_with_buttons(title: str, body: str, channel_type: str, max_len
         )
     return caption, kb
 
-def build_caption_tg(full_text: str, max_length: int = 1000) -> str:
+def build_caption_tg(full_text: str, max_length: int = 950) -> str:
     paragraphs = full_text.strip().split('\n\n')
     if not paragraphs:
         return ""
@@ -2360,7 +2406,12 @@ def on_select_channel(c):
         media_group = st.get("media_group", {"photos": [], "videos": []})
         
         if st.get("card_bytes"):
-            bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=caption_text, parse_mode="HTML")
+            send_photo_with_retry(
+                target_channel, 
+                BytesIO(st["card_bytes"]), 
+                caption=caption_text, 
+                parse_mode="HTML"
+            )
             bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с фото")
         
         elif media_group.get("photos") or media_group.get("videos"):
@@ -2384,11 +2435,11 @@ def on_select_channel(c):
                         media_list.append(InputMediaVideo(file_id))
             
             if len(media_list) > 1:
-                bot.send_media_group(target_channel, media_list)
+                send_media_group_with_retry(target_channel, media_list)
                 bot.answer_callback_query(c.id, f"✅ {len(media_list)} медиа опубликовано в {channel_name}")
             elif len(media_list) == 1:
                 if isinstance(media_list[0], InputMediaPhoto):
-                    bot.send_photo(target_channel, media_list[0].media, caption=media_list[0].caption, parse_mode="HTML")
+                    send_photo_with_retry(target_channel, media_list[0].media, caption=media_list[0].caption, parse_mode="HTML")
                 elif isinstance(media_list[0], InputMediaVideo):
                     bot.send_video(target_channel, media_list[0].media, caption=media_list[0].caption, parse_mode="HTML")
                 bot.answer_callback_query(c.id, f"✅ Медиа опубликовано в {channel_name}")
@@ -2431,7 +2482,12 @@ def on_action(call):
     if call.data == "publish":
         try:
             caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
-            bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML")
+            send_photo_with_retry(
+                CHANNEL, 
+                BytesIO(st["card_bytes"]), 
+                caption=caption, 
+                parse_mode="HTML"
+            )
             bot.answer_callback_query(call.id, "Опубликовано ✅")
             send_message_with_retry(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
             clear_state(uid)
@@ -2902,7 +2958,13 @@ def on_text(message):
             user_state[uid] = st
             
             caption = build_caption_html(st["title"], st["body_raw"])
-            bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb())
+            send_photo_with_retry(
+                message.chat.id, 
+                BytesIO(st["card_bytes"]), 
+                caption=caption, 
+                parse_mode="HTML", 
+                reply_markup=preview_kb()
+            )
             bot.reply_to(message, "Превью готово ✅ Нажми кнопку.")
         except Exception as e:
             logger.error(f"Error creating card: {e}")
@@ -3240,6 +3302,14 @@ if __name__ == "__main__":
         download_fonts()
         ensure_fonts()
         logger.info("Fonts loaded successfully")
+        
+        # Удаляем вебхук и даём время на очистку
+        try:
+            bot.remove_webhook()
+            time.sleep(1)
+            logger.info("Webhook removed")
+        except Exception as e:
+            logger.warning(f"Failed to remove webhook: {e}")
         
         http_thread = threading.Thread(target=run_http_server, daemon=True)
         http_thread.start()
