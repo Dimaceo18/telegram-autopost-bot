@@ -389,7 +389,6 @@ def send_message_with_retry(chat_id, text, parse_mode=None, reply_markup=None, m
     return None
 
 def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_markup=None, max_retries=3):
-    """Отправляет фото с обрезкой caption и повторными попытками"""
     if caption and len(caption) > 950:
         caption = caption[:947] + "..."
     
@@ -418,7 +417,6 @@ def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_m
     return None
 
 def send_media_group_with_retry(chat_id, media_list, max_retries=3):
-    """Отправляет медиагруппу с обработкой ошибок"""
     for attempt in range(max_retries):
         try:
             return bot.send_media_group(chat_id, media_list)
@@ -1508,58 +1506,151 @@ def enhance_image_simple(image_bytes: bytes) -> BytesIO:
 
 
 # =========================
-# Watermark functions
+# Watermark functions - ИСПРАВЛЕННЫЕ
 # =========================
+def ensure_4x5_ratio(img: Image.Image) -> Image.Image:
+    """Обрезает изображение до соотношения 4:5"""
+    w, h = img.size
+    target_ratio = 4 / 5
+    current_ratio = w / h
+    
+    if abs(current_ratio - target_ratio) > 0.01:
+        if current_ratio > target_ratio:
+            new_w = int(h * target_ratio)
+            left = (w - new_w) // 2
+            return img.crop((left, 0, left + new_w, h))
+        else:
+            new_h = int(w / target_ratio)
+            top = (h - new_h) // 2
+            return img.crop((0, top, w, top + new_h))
+    return img
+
 def apply_watermark_mn(photo_bytes: bytes) -> BytesIO:
+    """Наносит водяной знак MINSK NEWS с правильным размером 4:5"""
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
+        
+        # Приводим к соотношению 4:5
+        img = ensure_4x5_ratio(img)
+        img_width, img_height = img.size
+        
+        # Создаём слой для водяного знака
         watermark = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(watermark)
-        font_size = int(img.width * 0.1)
+        
+        # Рассчитываем размер шрифта
+        font_size = int(img_width * 0.10)
+        font_size = max(30, min(120, font_size))
+        
         try:
             font = load_font(FONT_MN, font_size)
         except:
             font = ImageFont.load_default()
+        
         watermark_text = "MINSK NEWS"
+        
+        # Получаем размеры текста
         bbox = draw.textbbox((0, 0), watermark_text, font=font)
         text_width_val = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
-        x = (img.width - text_width_val) // 2
-        y = (img.height - text_height) // 2
+        
+        # Проверяем, не выходит ли текст за границы
+        max_attempts = 10
+        attempt = 0
+        while text_width_val > img_width * 0.9 and attempt < max_attempts:
+            font_size = int(font_size * 0.9)
+            if font_size < 20:
+                break
+            try:
+                font = load_font(FONT_MN, font_size)
+            except:
+                font = ImageFont.load_default()
+            bbox = draw.textbbox((0, 0), watermark_text, font=font)
+            text_width_val = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            attempt += 1
+        
+        # Вычисляем позицию по центру
+        x = (img_width - text_width_val) // 2
+        y = (img_height - text_height) // 2
+        
+        # Наносим водяной знак с прозрачностью 25%
         draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 64))
+        
+        # Объединяем изображение с водяным знаком
         result = Image.alpha_composite(img, watermark)
         result = result.convert("RGB")
+        
         output = BytesIO()
         result.save(output, format="JPEG", quality=95, optimize=True)
         output.seek(0)
         return output
+        
     except Exception as e:
         logger.error(f"Error applying MN watermark: {e}")
         raise
 
 def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
+    """Наносит водяной знак ЧП Минск с правильным размером 4:5"""
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
+        
+        # Приводим к соотношению 4:5
+        img = ensure_4x5_ratio(img)
+        img_width, img_height = img.size
+        
+        # Создаём слой для водяного знака
         watermark = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(watermark)
-        font_size = int(img.width * 0.1)
+        
+        # Рассчитываем размер шрифта
+        font_size = int(img_width * 0.10)
+        font_size = max(30, min(120, font_size))
+        
         try:
             font = load_font(FONT_CHP, font_size)
         except:
             font = ImageFont.load_default()
+        
         watermark_text = "ЧП Минск"
+        
+        # Получаем размеры текста
         bbox = draw.textbbox((0, 0), watermark_text, font=font)
         text_width_val = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
-        x = (img.width - text_width_val) // 2
-        y = (img.height - text_height) // 2
+        
+        # Проверяем, не выходит ли текст за границы
+        max_attempts = 10
+        attempt = 0
+        while text_width_val > img_width * 0.9 and attempt < max_attempts:
+            font_size = int(font_size * 0.9)
+            if font_size < 20:
+                break
+            try:
+                font = load_font(FONT_CHP, font_size)
+            except:
+                font = ImageFont.load_default()
+            bbox = draw.textbbox((0, 0), watermark_text, font=font)
+            text_width_val = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            attempt += 1
+        
+        # Вычисляем позицию по центру
+        x = (img_width - text_width_val) // 2
+        y = (img_height - text_height) // 2
+        
+        # Наносим водяной знак с прозрачностью 25%
         draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 64))
+        
+        # Объединяем изображение с водяным знаком
         result = Image.alpha_composite(img, watermark)
         result = result.convert("RGB")
+        
         output = BytesIO()
         result.save(output, format="JPEG", quality=95, optimize=True)
         output.seek(0)
         return output
+        
     except Exception as e:
         logger.error(f"Error applying CHP watermark: {e}")
         raise
@@ -1959,16 +2050,16 @@ def on_watermark_type(c):
         
         watermarked_photo = result.getvalue()
         
-        # Сохраняем фото с водяным знаком (перезаписываем photo_bytes)
+        # === СОХРАНЯЕМ ФОТО С ВОДЯНЫМ ЗНАКОМ ВО ВСЕХ МЕСТАХ ===
         st["photo_bytes"] = watermarked_photo
         st["saved_photo_bytes"] = watermarked_photo
+        st["watermarked_photo"] = watermarked_photo
         st["watermark_applied"] = True
         
-        # Если есть оформленный пост - обновляем только фото, НЕ ПЕРЕСОЗДАЁМ ШАБЛОН
+        # Если есть оформленный пост - пересоздаём карточку С ВОДЯНЫМ ЗНАКОМ
         if st.get("card_bytes") and st.get("template") and st.get("title"):
-            # Просто обновляем photo_bytes и card_bytes (пересоздаём картинку)
             card = make_card(
-                st["photo_bytes"], 
+                st["photo_bytes"],
                 st["title"], 
                 st.get("template", "MN"),
                 text_position=st.get("text_position", TEXT_POSITION_TOP),
@@ -1998,7 +2089,6 @@ def on_watermark_type(c):
         
         # Если есть текст после ИИ, но ещё нет оформленного поста
         elif st.get("original_text"):
-            # Обновляем фото в состоянии
             st["step"] = "waiting_after_ai"
             user_state[uid] = st
             
@@ -2100,7 +2190,6 @@ def on_tpl(c):
     tpl = parts[1]
     st = user_state.get(uid) or {}
     
-    # Если выбрали водяной знак
     if tpl == "watermark":
         st["step"] = "waiting_watermark_type"
         user_state[uid] = st
@@ -2302,7 +2391,6 @@ def on_add_watermark(c):
         send_message_with_retry(c.message.chat.id, "⚠️ Не найдено фото. Отправь фото для нанесения водяного знака.", reply_markup=main_menu_kb())
         return
     
-    # Восстанавливаем фото если нужно
     if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
         st["photo_bytes"] = st["saved_photo_bytes"]
     
@@ -2402,7 +2490,6 @@ def on_ai_action(c):
         send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления. Фото и обработанный ИИ текст будут использованы автоматически! 🎉", reply_markup=template_kb())
     
     elif action == "watermark":
-        # Водяной знак после ИИ
         if st.get("photo_bytes") or st.get("saved_photo_bytes"):
             if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
                 st["photo_bytes"] = st["saved_photo_bytes"]
@@ -2554,7 +2641,17 @@ def on_select_channel(c):
         caption_text = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
         media_group = st.get("media_group", {"photos": [], "videos": []})
         
-        if st.get("card_bytes"):
+        # ИСПРАВЛЕНИЕ: используем photo_bytes (уже с водяным знаком)
+        if st.get("photo_bytes"):
+            send_photo_with_retry(
+                target_channel, 
+                BytesIO(st["photo_bytes"]),
+                caption=caption_text, 
+                parse_mode="HTML"
+            )
+            bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с фото")
+        
+        elif st.get("card_bytes"):
             send_photo_with_retry(
                 target_channel, 
                 BytesIO(st["card_bytes"]), 
@@ -2631,14 +2728,25 @@ def on_action(call):
     if call.data == "publish":
         try:
             caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
-            send_photo_with_retry(
-                CHANNEL, 
-                BytesIO(st["card_bytes"]), 
-                caption=caption, 
-                parse_mode="HTML"
-            )
-            bot.answer_callback_query(call.id, "Опубликовано ✅")
-            send_message_with_retry(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
+            
+            # ИСПРАВЛЕНИЕ: используем photo_bytes (с водяным знаком)
+            photo_to_send = st.get("photo_bytes")
+            if photo_to_send is None:
+                photo_to_send = st.get("card_bytes")
+            
+            if photo_to_send:
+                send_photo_with_retry(
+                    CHANNEL, 
+                    BytesIO(photo_to_send), 
+                    caption=caption, 
+                    parse_mode="HTML"
+                )
+                bot.answer_callback_query(call.id, "Опубликовано ✅")
+                send_message_with_retry(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
+            else:
+                bot.answer_callback_query(call.id, "❌ Нет фото для публикации")
+                send_message_with_retry(call.message.chat.id, "❌ Нет фото для публикации", reply_markup=main_menu_kb())
+            
             clear_state(uid)
         except Exception as e:
             logger.error(f"Error publishing: {e}")
@@ -2656,7 +2764,7 @@ def on_action(call):
 
 
 # =========================
-# Обработчик пересылаемых сообщений (репостов) с поддержкой видео
+# Обработчик пересылаемых сообщений (репостов)
 # =========================
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
                      func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
@@ -3242,6 +3350,7 @@ def on_photo_or_document(message):
                     bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
                     return
                 st["photo_bytes"] = photo_bytes
+                st["saved_photo_bytes"] = photo_bytes
                 st["step"] = "waiting_text_position_am2"
                 user_state[uid] = st
                 bot.reply_to(message, "📸 Фото сохранено!\n\n📐 <b>Выбери расположение текста:</b>", parse_mode="HTML", reply_markup=text_position_kb_am2())
@@ -3259,6 +3368,7 @@ def on_photo_or_document(message):
                     bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
                     return
                 st["photo_bytes"] = photo_bytes
+                st["saved_photo_bytes"] = photo_bytes
                 st["step"] = "waiting_title_fdr_post"
                 user_state[uid] = st
                 default_text = f"\n\n💡 <i>Используй текст из репоста (напиши «+» чтобы использовать его):</i>\n\n{st.get('original_text', '')[:200]}..." if st.get("original_text") else ""
@@ -3277,6 +3387,7 @@ def on_photo_or_document(message):
                     bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
                     return
                 st["photo_bytes"] = photo_bytes
+                st["saved_photo_bytes"] = photo_bytes
                 st["step"] = "waiting_title_fdr"
                 user_state[uid] = st
                 default_text = f"\n\n💡 <i>Используй текст из репоста (напиши «+» чтобы использовать его):</i>\n\n{st.get('original_text', '')[:200]}..." if st.get("original_text") else ""
@@ -3295,6 +3406,7 @@ def on_photo_or_document(message):
                     bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
                     return
                 st["photo_bytes"] = photo_bytes
+                st["saved_photo_bytes"] = photo_bytes
                 
                 if st.get("template") == "MN2":
                     st["step"] = "waiting_title_mn2"
@@ -3327,6 +3439,7 @@ def on_photo_or_document(message):
                 return
             
             st["photo_bytes"] = photo_bytes
+            st["saved_photo_bytes"] = photo_bytes
             st["step"] = "waiting_template"
             user_state[uid] = st
             
@@ -3476,7 +3589,6 @@ if __name__ == "__main__":
         ensure_fonts()
         logger.info("Fonts loaded successfully")
         
-        # Удаляем вебхук и даём время на очистку
         try:
             bot.remove_webhook()
             time.sleep(1)
