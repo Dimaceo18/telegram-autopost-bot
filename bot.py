@@ -1078,9 +1078,9 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
         min_size=16, line_spacing_ratio=0.22
     )
     
-    # ФИКСИРОВАННОЕ МЕЖСТРОЧНОЕ РАССТОЯНИЕ
-    fixed_line_height = int(font.size * 0.9)
-    total_text_height = len(lines) * fixed_line_height
+    # МЕЖСТРОЧНОЕ РАССТОЯНИЕ = РАЗМЕР ШРИФТА (аккуратное расстояние)
+    line_height = font.size  # Теперь равно размеру шрифта
+    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2  # +2px между строк
     
     # Выравнивание по ширине
     block_w = 0
@@ -1099,7 +1099,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     y = title_y
     for ln in lines:
         draw.text((block_x, y), ln, font=font, fill="white")
-        y += fixed_line_height
+        y += line_height + 2  # Размер шрифта + 2px между строк
     
     footer_x = (img.width - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
@@ -1107,7 +1107,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
     out.seek(0)
     return out
-
+    
 def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, bold_phrase: str = "") -> BytesIO:
     ensure_fonts()
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
