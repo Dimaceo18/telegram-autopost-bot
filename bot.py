@@ -186,7 +186,7 @@ HIGHLIGHT_COLORS = {
 
 
 # =========================
-# BOT + SESSION (с исправлением SSL)
+# BOT + SESSION
 # =========================
 bot = telebot.TeleBot(TOKEN)
 
@@ -247,6 +247,7 @@ def after_ai_kb():
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton("📝 Оформить пост", callback_data="ai:design"),
+        InlineKeyboardButton("💧 Водяной знак", callback_data="ai:watermark"),
         InlineKeyboardButton("📢 Выбрать канал", callback_data="ai:select_channel"),
         InlineKeyboardButton("🔄 Переделать через ИИ", callback_data="ai:redo"),
         InlineKeyboardButton("◀️ Вернуться назад", callback_data="ai:back")
@@ -267,7 +268,8 @@ def watermark_type_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📰 МН (MINSK NEWS)", callback_data="watermark:mn"),
-        InlineKeyboardButton("🚨 ЧП (Минск ЧП)", callback_data="watermark:chp")
+        InlineKeyboardButton("🚨 ЧП (Минск ЧП)", callback_data="watermark:chp"),
+        InlineKeyboardButton("◀️ Назад", callback_data="watermark:back")
     )
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="watermark:cancel"))
     return kb
@@ -277,6 +279,7 @@ def preview_kb(source_url: str = ""):
     kb.add(
         InlineKeyboardButton("✅ Опубликовать", callback_data="publish"),
         InlineKeyboardButton("📢 Опубликовать в канале", callback_data="publish_to_channel"),
+        InlineKeyboardButton("💧 Водяной знак", callback_data="add_watermark"),
         InlineKeyboardButton("✏️ Редактировать текст", callback_data="edit_text"),
         InlineKeyboardButton("❌ Отмена", callback_data="cancel")
     )
@@ -1097,7 +1100,7 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
 
 
 # =========================
-# Card making functions - ВСЕ ШАБЛОНЫ (с аккуратным межстрочным расстоянием)
+# Card making functions - ВСЕ ШАБЛОНЫ
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
@@ -1130,7 +1133,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
         min_size=16, line_spacing_ratio=0.22
     )
     
-    # МЕЖСТРОЧНОЕ РАССТОЯНИЕ = РАЗМЕР ШРИФТА
+    # Межстрочное расстояние = размер шрифта
     line_height = font.size
     total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
@@ -1194,7 +1197,6 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         min_size=16, line_spacing_ratio=0.25
     )
     
-    # МЕЖСТРОЧНОЕ РАССТОЯНИЕ = РАЗМЕР ШРИФТА
     line_height = font.size
     total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
@@ -1286,7 +1288,6 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
         min_size=16, line_spacing_ratio=0.22
     )
     
-    # МЕЖСТРОЧНОЕ РАССТОЯНИЕ = РАЗМЕР ШРИФТА
     line_height = font.size
     total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
@@ -1328,7 +1329,6 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
         min_size=20, line_spacing_ratio=0.16
     )
     
-    # МЕЖСТРОЧНОЕ РАССТОЯНИЕ = РАЗМЕР ШРИФТА
     line_height = font.size
     total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
@@ -1422,7 +1422,6 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
         min_size=16, line_spacing_ratio=0.22
     )
     
-    # МЕЖСТРОЧНОЕ РАССТОЯНИЕ = РАЗМЕР ШРИФТА
     line_height = font.size
     total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
@@ -1899,6 +1898,7 @@ def on_watermark_type(c):
     uid = c.from_user.id
     wm_type = c.data.split(":", 1)[1]
     st = user_state.get(uid) or {}
+    
     if wm_type == "cancel":
         st.pop("step", None)
         user_state[uid] = st
@@ -1906,27 +1906,89 @@ def on_watermark_type(c):
         bot.answer_callback_query(c.id)
         return
     
-    if st.get("photo_bytes") and not st.get("watermark_photo_sent"):
+    if wm_type == "back":
+        # Возврат к предыдущему состоянию
+        st.pop("step", None)
+        user_state[uid] = st
+        
+        # Если был превью - возвращаемся к нему
+        if st.get("card_bytes"):
+            caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
+            send_photo_with_retry(
+                c.message.chat.id, 
+                BytesIO(st["card_bytes"]), 
+                caption=caption, 
+                parse_mode="HTML", 
+                reply_markup=preview_kb()
+            )
+        # Если был текст после ИИ
+        elif st.get("original_text"):
+            title, body, formatted_text = format_ai_response(st.get("original_text", ""))
+            bot.send_message(c.message.chat.id, formatted_text, parse_mode="HTML", reply_markup=after_ai_kb())
+        else:
+            send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
+        
+        bot.answer_callback_query(c.id, "◀️ Возврат")
+        return
+    
+    # Если есть фото - используем его
+    if st.get("photo_bytes"):
         st["watermark_type"] = wm_type
         st["step"] = "waiting_watermark_photo"
         user_state[uid] = st
-        bot.answer_callback_query(c.id, "✅ Наношу водяной знак на фото из репоста...")
+        bot.answer_callback_query(c.id, "✅ Наношу водяной знак на фото...")
         
         try:
             if wm_type == "mn":
                 result = apply_watermark_mn(st["photo_bytes"])
-                caption = "💧 Водяной знак <b>MINSK NEWS</b> нанесён на фото из репоста!"
+                caption = "💧 Водяной знак <b>MINSK NEWS</b> нанесён!"
             else:
                 result = apply_watermark_chp(st["photo_bytes"])
-                caption = "💧 Водяной знак <b>ЧП Минск</b> нанесён на фото из репоста!"
+                caption = "💧 Водяной знак <b>ЧП Минск</b> нанесён!"
             
-            bot.send_document(c.message.chat.id, document=result, visible_file_name=f"watermark_{wm_type}.jpg", caption=caption, parse_mode="HTML")
-            clear_state(uid)
+            # Сохраняем фото с водяным знаком
+            st["photo_bytes"] = result.getvalue()
+            st["watermark_applied"] = True
+            
+            # Если был оформленный пост - обновляем его с водяным знаком
+            if st.get("template") and st.get("title"):
+                card = make_card(
+                    st["photo_bytes"], 
+                    st["title"], 
+                    st.get("template", "MN"),
+                    text_position=st.get("text_position", TEXT_POSITION_TOP),
+                    bold_phrase=st.get("bold_phrase", ""),
+                    date=st.get("date", ""),
+                    place=st.get("place", ""),
+                    rubric=st.get("rubric", ""),
+                    highlight_word=st.get("highlight_word", ""),
+                    highlight_color=st.get("highlight_color"),
+                    is_yellow=st.get("is_yellow", False)
+                )
+                st["card_bytes"] = card.getvalue()
+                st["step"] = "waiting_action"
+                user_state[uid] = st
+                
+                caption_html = build_caption_html(st["title"], st["body_raw"])
+                send_photo_with_retry(
+                    c.message.chat.id, 
+                    BytesIO(st["card_bytes"]), 
+                    caption=caption_html, 
+                    parse_mode="HTML", 
+                    reply_markup=preview_kb()
+                )
+                bot.send_message(c.message.chat.id, "✅ Водяной знак нанесён! Пост обновлён.")
+            else:
+                user_state[uid] = st
+                bot.send_document(c.message.chat.id, document=result, visible_file_name=f"watermark_{wm_type}.jpg", caption=caption, parse_mode="HTML")
+                bot.send_message(c.message.chat.id, "✅ Водяной знак нанесён!", reply_markup=main_menu_kb())
+                clear_state(uid)
         except Exception as e:
             logger.error(f"Error applying watermark: {e}")
             send_message_with_retry(c.message.chat.id, f"❌ Ошибка при нанесении водяного знака: {e}")
         return
     
+    # Если нет фото - просим отправить
     st["watermark_type"] = wm_type
     st["step"] = "waiting_watermark_photo"
     user_state[uid] = st
@@ -2185,6 +2247,25 @@ def on_text_position(c):
     except:
         pass
 
+@bot.callback_query_handler(func=lambda c: c.data == "add_watermark")
+def on_add_watermark(c):
+    uid = c.from_user.id
+    st = user_state.get(uid) or {}
+    
+    if not st.get("photo_bytes") and not st.get("saved_photo_bytes"):
+        bot.answer_callback_query(c.id, "⚠️ Нет фото для водяного знака")
+        send_message_with_retry(c.message.chat.id, "⚠️ Не найдено фото. Отправь фото для нанесения водяного знака.", reply_markup=main_menu_kb())
+        return
+    
+    # Восстанавливаем фото если нужно
+    if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
+        st["photo_bytes"] = st["saved_photo_bytes"]
+    
+    st["step"] = "waiting_watermark_type"
+    user_state[uid] = st
+    bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
+    send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>\n\n📸 Фото сохранено!", parse_mode="HTML", reply_markup=watermark_type_kb())
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("repost:"))
 def on_repost_action(c):
     uid = c.from_user.id
@@ -2246,7 +2327,9 @@ def on_repost_action(c):
             loop.close()
             
     elif action == "watermark":
-        if st.get("photo_bytes"):
+        if st.get("photo_bytes") or st.get("saved_photo_bytes"):
+            if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
+                st["photo_bytes"] = st["saved_photo_bytes"]
             st["step"] = "waiting_watermark_type"
             user_state[uid] = st
             bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
@@ -2255,7 +2338,7 @@ def on_repost_action(c):
             st["step"] = "waiting_watermark_type"
             user_state[uid] = st
             bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
-            send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>\n\n⚠️ В репосте не найдено фото. Отправь фото отдельно.", parse_mode="HTML", reply_markup=watermark_type_kb())
+            send_message_with_retry(c.message.chat.id, f"💧 <b>Выбери тип водяного знака:</b>\n\n⚠️ В репосте не найдено фото. Отправь фото отдельно.", parse_mode="HTML", reply_markup=watermark_type_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("ai:"))
 def on_ai_action(c):
@@ -2272,6 +2355,21 @@ def on_ai_action(c):
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Выбери шаблон для оформления ✅")
         send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления. Фото и обработанный ИИ текст будут использованы автоматически! 🎉", reply_markup=template_kb())
+    
+    elif action == "watermark":
+        # Водяной знак после ИИ
+        if st.get("photo_bytes") or st.get("saved_photo_bytes"):
+            if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
+                st["photo_bytes"] = st["saved_photo_bytes"]
+            st["step"] = "waiting_watermark_type"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
+            send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>\n\n📸 Фото из репоста будет использовано автоматически!", parse_mode="HTML", reply_markup=watermark_type_kb())
+        else:
+            st["step"] = "waiting_watermark_type"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
+            send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>\n\n⚠️ Нет сохранённого фото. Отправь фото отдельно.", parse_mode="HTML", reply_markup=watermark_type_kb())
     
     elif action == "select_channel":
         if not CHANNEL_MN and not CHANNEL_CHP and not CHANNEL_AFISHA and not CHANNEL_TEST:
@@ -2372,7 +2470,13 @@ def on_select_channel(c):
             pass
         if st.get("card_bytes"):
             caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
-            bot.send_photo(c.message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb())
+            send_photo_with_retry(
+                c.message.chat.id, 
+                BytesIO(st["card_bytes"]), 
+                caption=caption, 
+                parse_mode="HTML", 
+                reply_markup=preview_kb()
+            )
         elif st.get("original_text"):
             title, body, formatted_text = format_ai_response(st.get("original_text", ""))
             bot.send_message(c.message.chat.id, formatted_text, parse_mode="HTML", reply_markup=after_ai_kb())
@@ -2803,7 +2907,13 @@ def on_text(message):
             st["step"] = "waiting_action"
             user_state[uid] = st
             caption = build_caption_html(st["title"], st["body_raw"])
-            bot.send_photo(message.chat.id, photo=BytesIO(card.getvalue()), caption=caption, parse_mode="HTML", reply_markup=preview_kb())
+            send_photo_with_retry(
+                message.chat.id, 
+                BytesIO(card.getvalue()), 
+                caption=caption, 
+                parse_mode="HTML", 
+                reply_markup=preview_kb()
+            )
         except Exception as e:
             logger.error(f"Error creating MN2 card: {e}")
             bot.reply_to(message, f"❌ Ошибка: {e}")
@@ -2833,7 +2943,13 @@ def on_text(message):
             st["step"] = "waiting_action"
             user_state[uid] = st
             caption = build_caption_tg(use_text)
-            bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb())
+            send_photo_with_retry(
+                message.chat.id, 
+                BytesIO(st["card_bytes"]), 
+                caption=caption, 
+                parse_mode="HTML", 
+                reply_markup=preview_kb()
+            )
             bot.reply_to(message, "Превью готово ✅")
         except Exception as e:
             logger.error(f"Error creating MN_TG card: {e}")
@@ -2870,7 +2986,13 @@ def on_text(message):
             st["step"] = "waiting_action"
             user_state[uid] = st
             caption = build_caption_html(st["title"], st["body_raw"])
-            bot.send_photo(message.chat.id, photo=BytesIO(card.getvalue()), caption=caption, parse_mode="HTML", reply_markup=preview_kb())
+            send_photo_with_retry(
+                message.chat.id, 
+                BytesIO(card.getvalue()), 
+                caption=caption, 
+                parse_mode="HTML", 
+                reply_markup=preview_kb()
+            )
         except Exception as e:
             logger.error(f"Error creating FDR_POST card: {e}")
             bot.reply_to(message, f"❌ Ошибка: {e}")
@@ -2915,7 +3037,13 @@ def on_text(message):
             st["step"] = "waiting_action"
             user_state[uid] = st
             caption = build_caption_html(st["title"], st["body_raw"])
-            bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb())
+            send_photo_with_retry(
+                message.chat.id, 
+                BytesIO(st["card_bytes"]), 
+                caption=caption, 
+                parse_mode="HTML", 
+                reply_markup=preview_kb()
+            )
             bot.reply_to(message, "Превью готово ✅")
         except Exception as e:
             logger.error(f"Error creating FDR_STORY card: {e}")
