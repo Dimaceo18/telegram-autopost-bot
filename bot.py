@@ -1933,87 +1933,105 @@ def on_watermark_type(c):
         bot.answer_callback_query(c.id, "◀️ Возврат")
         return
     
-    # Если есть фото - используем его
-    if st.get("photo_bytes"):
+    # Проверяем, есть ли фото
+    if not st.get("photo_bytes") and not st.get("saved_photo_bytes"):
         st["watermark_type"] = wm_type
         st["step"] = "waiting_watermark_photo"
         user_state[uid] = st
-        bot.answer_callback_query(c.id, "✅ Наношу водяной знак на фото...")
-        
-        try:
-            if wm_type == "mn":
-                result = apply_watermark_mn(st["photo_bytes"])
-                watermark_name = "MINSK NEWS"
-            else:
-                result = apply_watermark_chp(st["photo_bytes"])
-                watermark_name = "ЧП Минск"
-            
-            # Сохраняем фото с водяным знаком
-            watermarked_photo = result.getvalue()
-            st["photo_bytes"] = watermarked_photo
-            st["watermark_applied"] = True
-            
-            # Если есть оформленный пост - обновляем его с водяным знаком
-            if st.get("template") and st.get("title"):
-                card = make_card(
-                    st["photo_bytes"], 
-                    st["title"], 
-                    st.get("template", "MN"),
-                    text_position=st.get("text_position", TEXT_POSITION_TOP),
-                    bold_phrase=st.get("bold_phrase", ""),
-                    date=st.get("date", ""),
-                    place=st.get("place", ""),
-                    rubric=st.get("rubric", ""),
-                    highlight_word=st.get("highlight_word", ""),
-                    highlight_color=st.get("highlight_color"),
-                    is_yellow=st.get("is_yellow", False)
-                )
-                st["card_bytes"] = card.getvalue()
-                st["step"] = "waiting_action"
-                user_state[uid] = st
-                
-                caption_html = build_caption_html(st["title"], st["body_raw"])
-                
-                # Отправляем обновлённый пост с водяным знаком
-                bot.delete_message(c.message.chat.id, c.message.message_id)
-                send_photo_with_retry(
-                    c.message.chat.id, 
-                    BytesIO(st["card_bytes"]), 
-                    caption=f"💧 <b>Водяной знак «{watermark_name}» нанесён!</b>\n\n{caption_html}", 
-                    parse_mode="HTML", 
-                    reply_markup=preview_kb()
-                )
-                
-            elif st.get("original_text"):
-                # Если есть текст после ИИ, но ещё нет оформленного поста
-                # Отправляем фото с водяным знаком и предлагаем оформить
-                user_state[uid] = st
-                bot.delete_message(c.message.chat.id, c.message.message_id)
-                send_photo_with_retry(
-                    c.message.chat.id, 
-                    BytesIO(watermarked_photo), 
-                    caption=f"💧 <b>Водяной знак «{watermark_name}» нанесён на фото!</b>\n\nЧто дальше?", 
-                    parse_mode="HTML", 
-                    reply_markup=after_ai_kb()
-                )
-            
-            else:
-                # Только фото, без текста
-                user_state[uid] = st
-                bot.delete_message(c.message.chat.id, c.message.message_id)
-                send_photo_with_retry(
-                    c.message.chat.id, 
-                    BytesIO(watermarked_photo), 
-                    caption=f"💧 <b>Водяной знак «{watermark_name}» нанесён!</b>", 
-                    parse_mode="HTML"
-                )
-                send_message_with_retry(c.message.chat.id, "✅ Водяной знак нанесён!", reply_markup=main_menu_kb())
-                clear_state(uid)
-                
-        except Exception as e:
-            logger.error(f"Error applying watermark: {e}")
-            send_message_with_retry(c.message.chat.id, f"❌ Ошибка при нанесении водяного знака: {e}")
+        send_message_with_retry(c.message.chat.id, f"✅ Выбран водяной знак. Отправь фото:", parse_mode="HTML")
+        bot.answer_callback_query(c.id)
         return
+    
+    # Восстанавливаем фото из saved_photo_bytes если нужно
+    if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
+        st["photo_bytes"] = st["saved_photo_bytes"]
+    
+    bot.answer_callback_query(c.id, f"✅ Наношу водяной знак {wm_type.upper()}...")
+    
+    try:
+        # Наносим водяной знак на ИСХОДНОЕ фото
+        if wm_type == "mn":
+            result = apply_watermark_mn(st["photo_bytes"])
+            watermark_name = "MINSK NEWS"
+        else:
+            result = apply_watermark_chp(st["photo_bytes"])
+            watermark_name = "ЧП Минск"
+        
+        watermarked_photo = result.getvalue()
+        
+        # Сохраняем фото с водяным знаком (перезаписываем photo_bytes)
+        st["photo_bytes"] = watermarked_photo
+        st["saved_photo_bytes"] = watermarked_photo
+        st["watermark_applied"] = True
+        
+        # Если есть оформленный пост - обновляем только фото, НЕ ПЕРЕСОЗДАЁМ ШАБЛОН
+        if st.get("card_bytes") and st.get("template") and st.get("title"):
+            # Просто обновляем photo_bytes и card_bytes (пересоздаём картинку)
+            card = make_card(
+                st["photo_bytes"], 
+                st["title"], 
+                st.get("template", "MN"),
+                text_position=st.get("text_position", TEXT_POSITION_TOP),
+                bold_phrase=st.get("bold_phrase", ""),
+                date=st.get("date", ""),
+                place=st.get("place", ""),
+                rubric=st.get("rubric", ""),
+                highlight_word=st.get("highlight_word", ""),
+                highlight_color=st.get("highlight_color"),
+                is_yellow=st.get("is_yellow", False)
+            )
+            st["card_bytes"] = card.getvalue()
+            st["step"] = "waiting_action"
+            user_state[uid] = st
+            
+            caption_html = build_caption_html(st["title"], st["body_raw"])
+            
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+            send_photo_with_retry(
+                c.message.chat.id, 
+                BytesIO(st["card_bytes"]), 
+                caption=f"💧 <b>Водяной знак «{watermark_name}» нанесён!</b>\n\n{caption_html}", 
+                parse_mode="HTML", 
+                reply_markup=preview_kb()
+            )
+            return
+        
+        # Если есть текст после ИИ, но ещё нет оформленного поста
+        elif st.get("original_text"):
+            # Обновляем фото в состоянии
+            st["step"] = "waiting_after_ai"
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+            send_photo_with_retry(
+                c.message.chat.id, 
+                BytesIO(watermarked_photo), 
+                caption=f"💧 <b>Водяной знак «{watermark_name}» нанесён на фото!</b>\n\nТекст:\n{st.get('original_text', '')[:300]}...", 
+                parse_mode="HTML", 
+                reply_markup=after_ai_kb()
+            )
+            return
+        
+        # Если есть только фото (без текста и без шаблона)
+        else:
+            st["photo_bytes"] = watermarked_photo
+            st["saved_photo_bytes"] = watermarked_photo
+            st["step"] = "waiting_watermark_photo"
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+            send_photo_with_retry(
+                c.message.chat.id, 
+                BytesIO(watermarked_photo), 
+                caption=f"💧 <b>Водяной знак «{watermark_name}» нанесён!</b>", 
+                parse_mode="HTML"
+            )
+            send_message_with_retry(c.message.chat.id, "✅ Водяной знак нанесён! Теперь можешь оформить пост.", reply_markup=main_menu_kb())
+            return
+            
+    except Exception as e:
+        logger.error(f"Error applying watermark: {e}")
+        send_message_with_retry(c.message.chat.id, f"❌ Ошибка при нанесении водяного знака: {e}")
     
     # Если нет фото - просим отправить
     st["watermark_type"] = wm_type
