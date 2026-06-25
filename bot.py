@@ -1526,20 +1526,21 @@ def ensure_4x5_ratio(img: Image.Image) -> Image.Image:
     return img
 
 def apply_watermark_mn(photo_bytes: bytes) -> BytesIO:
-    """Наносит водяной знак MINSK NEWS с правильным размером 4:5"""
+    """Наносит водяной знак MINSK NEWS без обрезки фото"""
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
         
-        # Приводим к соотношению 4:5
-        img = ensure_4x5_ratio(img)
+        # Получаем размеры изображения
         img_width, img_height = img.size
         
         # Создаём слой для водяного знака
         watermark = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(watermark)
         
-        # Рассчитываем размер шрифта
+        # Рассчитываем размер шрифта в зависимости от размера изображения
+        # Базовый размер - 10% от ширины
         font_size = int(img_width * 0.10)
+        # Ограничиваем размер
         font_size = max(30, min(120, font_size))
         
         try:
@@ -1591,12 +1592,11 @@ def apply_watermark_mn(photo_bytes: bytes) -> BytesIO:
         raise
 
 def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
-    """Наносит водяной знак ЧП Минск с правильным размером 4:5"""
+    """Наносит водяной знак ЧП Минск без обрезки фото"""
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
         
-        # Приводим к соотношению 4:5
-        img = ensure_4x5_ratio(img)
+        # Получаем размеры изображения
         img_width, img_height = img.size
         
         # Создаём слой для водяного знака
