@@ -1921,10 +1921,12 @@ def on_watermark_type(c):
                 parse_mode="HTML", 
                 reply_markup=preview_kb()
             )
+            bot.delete_message(c.message.chat.id, c.message.message_id)
         # Если был текст после ИИ
         elif st.get("original_text"):
             title, body, formatted_text = format_ai_response(st.get("original_text", ""))
             bot.send_message(c.message.chat.id, formatted_text, parse_mode="HTML", reply_markup=after_ai_kb())
+            bot.delete_message(c.message.chat.id, c.message.message_id)
         else:
             send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
         
@@ -1941,16 +1943,17 @@ def on_watermark_type(c):
         try:
             if wm_type == "mn":
                 result = apply_watermark_mn(st["photo_bytes"])
-                caption = "💧 Водяной знак <b>MINSK NEWS</b> нанесён!"
+                watermark_name = "MINSK NEWS"
             else:
                 result = apply_watermark_chp(st["photo_bytes"])
-                caption = "💧 Водяной знак <b>ЧП Минск</b> нанесён!"
+                watermark_name = "ЧП Минск"
             
             # Сохраняем фото с водяным знаком
-            st["photo_bytes"] = result.getvalue()
+            watermarked_photo = result.getvalue()
+            st["photo_bytes"] = watermarked_photo
             st["watermark_applied"] = True
             
-            # Если был оформленный пост - обновляем его с водяным знаком
+            # Если есть оформленный пост - обновляем его с водяным знаком
             if st.get("template") and st.get("title"):
                 card = make_card(
                     st["photo_bytes"], 
@@ -1970,19 +1973,43 @@ def on_watermark_type(c):
                 user_state[uid] = st
                 
                 caption_html = build_caption_html(st["title"], st["body_raw"])
+                
+                # Отправляем обновлённый пост с водяным знаком
+                bot.delete_message(c.message.chat.id, c.message.message_id)
                 send_photo_with_retry(
                     c.message.chat.id, 
                     BytesIO(st["card_bytes"]), 
-                    caption=caption_html, 
+                    caption=f"💧 <b>Водяной знак «{watermark_name}» нанесён!</b>\n\n{caption_html}", 
                     parse_mode="HTML", 
                     reply_markup=preview_kb()
                 )
-                bot.send_message(c.message.chat.id, "✅ Водяной знак нанесён! Пост обновлён.")
-            else:
+                
+            elif st.get("original_text"):
+                # Если есть текст после ИИ, но ещё нет оформленного поста
+                # Отправляем фото с водяным знаком и предлагаем оформить
                 user_state[uid] = st
-                bot.send_document(c.message.chat.id, document=result, visible_file_name=f"watermark_{wm_type}.jpg", caption=caption, parse_mode="HTML")
-                bot.send_message(c.message.chat.id, "✅ Водяной знак нанесён!", reply_markup=main_menu_kb())
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+                send_photo_with_retry(
+                    c.message.chat.id, 
+                    BytesIO(watermarked_photo), 
+                    caption=f"💧 <b>Водяной знак «{watermark_name}» нанесён на фото!</b>\n\nЧто дальше?", 
+                    parse_mode="HTML", 
+                    reply_markup=after_ai_kb()
+                )
+            
+            else:
+                # Только фото, без текста
+                user_state[uid] = st
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+                send_photo_with_retry(
+                    c.message.chat.id, 
+                    BytesIO(watermarked_photo), 
+                    caption=f"💧 <b>Водяной знак «{watermark_name}» нанесён!</b>", 
+                    parse_mode="HTML"
+                )
+                send_message_with_retry(c.message.chat.id, "✅ Водяной знак нанесён!", reply_markup=main_menu_kb())
                 clear_state(uid)
+                
         except Exception as e:
             logger.error(f"Error applying watermark: {e}")
             send_message_with_retry(c.message.chat.id, f"❌ Ошибка при нанесении водяного знака: {e}")
