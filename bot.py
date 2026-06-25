@@ -815,7 +815,8 @@ def _wrap_text_preserve_paragraphs(draw, text, font, max_w):
             continue
         current = words[0]
         for word in words[1:]:
-            test = current + " " + word            bbox = draw.textbbox((0, 0), test, font=font)
+            test = current + " " + word            
+            bbox = draw.textbbox((0, 0), test, font=font)
             if (bbox[2] - bbox[0]) <= max_w:
                 current = test
             else:
