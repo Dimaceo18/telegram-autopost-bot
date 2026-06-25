@@ -123,7 +123,7 @@ if not SUGGEST_URL and BOT_USERNAME:
     SUGGEST_URL = f"https://t.me/{BOT_USERNAME}?start=suggest"
 
 # Constants
-MAX_FILE_SIZE = 50 * 1024 * 1024
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB для видео
 REQUEST_TIMEOUT = 30
 
 # Размеры для всех шаблонов - 720x900
@@ -241,7 +241,7 @@ def repost_action_kb():
     return kb
 
 def after_ai_kb():
-    kb = InlineKeyboardMarkup(row_width=1)
+    kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📝 Оформить пост", callback_data="ai:design"),
         InlineKeyboardButton("📢 Выбрать канал", callback_data="ai:select_channel"),
@@ -328,20 +328,25 @@ def color_kb_am2():
 
 
 # =========================
-# Keyboard layouts для шаблонов (кнопки в столбик)
+# Keyboard layouts для шаблонов
 # =========================
 def template_kb():
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(
+    kb = InlineKeyboardMarkup()
+    kb.row(
         InlineKeyboardButton("📰 МН", callback_data="tpl:MN"),
         InlineKeyboardButton("🚨 ЧП ВМ", callback_data="tpl:CHP"),
+    )
+    kb.row(
         InlineKeyboardButton("✨ АМ", callback_data="tpl:AM"),
         InlineKeyboardButton("🆕 АМ 2", callback_data="tpl:AM2"),
+    )
+    kb.row(
         InlineKeyboardButton("📱 Сторис ФДР", callback_data="tpl:FDR_STORY"),
         InlineKeyboardButton("💜 Пост ФДР", callback_data="tpl:FDR_POST"),
+    )
+    kb.row(
         InlineKeyboardButton("📱 МН ТГ", callback_data="tpl:MN_TG"),
         InlineKeyboardButton("🆕 МН 2", callback_data="tpl:MN2"),
-        InlineKeyboardButton("💧 Водяной знак", callback_data="tpl:watermark")
     )
     return kb
 
@@ -351,6 +356,16 @@ def text_position_kb():
         InlineKeyboardButton("⬆️ Сверху", callback_data="text_pos:top"),
         InlineKeyboardButton("⬇️ Снизу", callback_data="text_pos:bottom")
     )
+    return kb
+
+def font_size_kb(current_multiplier: float = 1.0):
+    kb = InlineKeyboardMarkup(row_width=3)
+    kb.add(
+        InlineKeyboardButton("➖", callback_data=f"font_size:minus:{current_multiplier}"),
+        InlineKeyboardButton(f"{int(current_multiplier*100)}%", callback_data=f"font_size:current"),
+        InlineKeyboardButton("➕", callback_data=f"font_size:plus:{current_multiplier}")
+    )
+    kb.add(InlineKeyboardButton("✅ Готово", callback_data=f"font_size:done"))
     return kb
 
 
@@ -397,6 +412,7 @@ def tg_file_bytes(file_id: str) -> bytes:
         raise
 
 def tg_file_bytes_with_info(file_id: str) -> Tuple[bytes, Dict]:
+    """Скачивает файл и возвращает байты и информацию о файле"""
     try:
         file_info = bot.get_file(file_id)
         file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
@@ -423,7 +439,9 @@ def tg_file_bytes_with_info(file_id: str) -> Tuple[bytes, Dict]:
         raise
 
 def get_video_info(file_id: str, video_obj) -> Dict:
+    """Получает информацию о видео из объекта video, без обращения к API"""
     try:
+        # Используем данные из самого объекта video, а не через get_file
         info = {
             'file_id': file_id,
             'file_size': getattr(video_obj, 'file_size', 0),
@@ -440,6 +458,7 @@ def get_video_info(file_id: str, video_obj) -> Dict:
         raise
 
 def download_video(file_id: str) -> Tuple[bytes, Dict]:
+    """Скачивает видео и возвращает байты и информацию (для маленьких видео)"""
     return tg_file_bytes_with_info(file_id)
 
 def clear_state(user_id: int):
@@ -815,7 +834,7 @@ def _wrap_text_preserve_paragraphs(draw, text, font, max_w):
             continue
         current = words[0]
         for word in words[1:]:
-            test = current + " " + word            
+            test = current + " " + word
             bbox = draw.textbbox((0, 0), test, font=font)
             if (bbox[2] - bbox[0]) <= max_w:
                 current = test
@@ -1044,7 +1063,7 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
 
 
 # =========================
-# Card making functions - ВСЕ ШАБЛОНЫ (с фиксированным межстрочным расстоянием)
+# Card making functions - ВСЕ ШАБЛОНЫ
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
@@ -1066,37 +1085,31 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
     footer_w = fb[2] - fb[0]
     footer_h = fb[3] - fb[1]
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     
     clean_title = clean_markdown(title_text)
     text = (clean_title or "").strip().upper()
     
-    font_size = int(img.height * 0.11)
-    font = load_font(FONT_MN, font_size)
-    
-    lines, ok = wrap_no_truncate(draw, text, font, safe_w, max_lines=6)
-    
-    # ФИКСИРОВАННОЕ МЕЖСТРОЧНОЕ РАССТОЯНИЕ
-    line_height = int(font_size * 0.9)
-    total_text_height = len(lines) * line_height
-    
+    font, lines, heights, spacing, total_text_height = fit_text_block(
+        draw=draw, text=text, font_path=FONT_MN, safe_w=safe_w,
+        max_block_h=title_max_h, max_lines=6, start_size=int(img.height * 0.11),
+        min_size=16, line_spacing_ratio=0.22
+    )
     block_w = 0
     for ln in lines:
         block_w = max(block_w, text_width(draw, ln, font))
     block_x = (img.width - block_w) // 2
     block_x = max(margin_x, block_x)
-    
     if text_position == TEXT_POSITION_TOP:
         title_y = margin_top
         footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
     else:
         title_y = img.height - margin_bottom - total_text_height - 10
         footer_y = 10
-    
     y = title_y
-    for ln in lines:
+    for i, ln in enumerate(lines):
         draw.text((block_x, y), ln, font=font, fill="white")
-        y += line_height
-    
+        y += heights[i] + spacing
     footer_x = (img.width - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
     out = BytesIO()
@@ -1104,7 +1117,7 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     out.seek(0)
     return out
 
-def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, bold_phrase: str = "") -> BytesIO:
+def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, bold_phrase: str = "") -> BytesIO:
     ensure_fonts()
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -1124,6 +1137,7 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     fb = draw.textbbox((0, 0), FOOTER_TEXT, font=footer_font)
     footer_w = fb[2] - fb[0]
     footer_h = fb[3] - fb[1]
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     
     clean_title = clean_markdown(title_text)
     text = (clean_title or "").strip().upper()
@@ -1132,45 +1146,46 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     bold_phrase_upper = clean_bold_phrase.strip().upper() if clean_bold_phrase else ""
     bold_words = set(bold_phrase_upper.split())
     
-    font_size = int(img.height * 0.11)
-    font = load_font(FONT_MN, font_size)
-    
-    lines, ok = wrap_no_truncate(draw, text, font, safe_w, max_lines=6)
-    
-    # ФИКСИРОВАННОЕ МЕЖСТРОЧНОЕ РАССТОЯНИЕ
-    line_height = int(font_size * 0.9)
-    total_text_height = len(lines) * line_height
-    
+    base_start_size = int(img.height * 0.11)
+    adjusted_start_size = int(base_start_size * font_size_multiplier)
+    font, lines, heights, spacing, total_text_height = fit_text_block(
+        draw=draw, text=text, font_path=FONT_MN, safe_w=safe_w,
+        max_block_h=title_max_h, max_lines=6, start_size=adjusted_start_size,
+        min_size=16, line_spacing_ratio=0.25
+    )
     block_w = 0
     for ln in lines:
         block_w = max(block_w, text_width(draw, ln, font))
     block_x = (img.width - block_w) // 2
     block_x = max(margin_x, block_x)
-    
     if text_position == TEXT_POSITION_TOP:
         title_y = margin_top
         footer_y = img.height - margin_bottom + (margin_bottom - footer_h) // 2
     else:
         title_y = img.height - margin_bottom - total_text_height - 10
         footer_y = 10
-    
-    y = title_y
-    for ln in lines:
-        current_x = block_x
-        words = ln.split()
+    def draw_line_with_bold(line_text, x_start, y_pos):
+        words = line_text.split()
+        current_x = x_start
         for word in words:
             if word in bold_words:
-                bold_font = load_font(FONT_MN_BOLD, font_size)
-                draw.text((current_x, y), word, font=bold_font, fill="white")
+                bold_font = load_font(FONT_MN_BOLD, font.size)
+                draw.text((current_x, y_pos), word, font=bold_font, fill="white")
             else:
-                draw.text((current_x, y), word, font=font, fill="white")
+                draw.text((current_x, y_pos), word, font=font, fill="white")
             if word != words[-1]:
                 space_width = text_width(draw, " ", font)
                 current_x += text_width(draw, word, font) + space_width
             else:
                 current_x += text_width(draw, word, font)
-        y += line_height
-    
+    y = title_y
+    for i, ln in enumerate(lines):
+        draw_line_with_bold(ln, block_x, y)
+        if i < len(lines) - 1:
+            line_height = max(heights[i], int(font.size * 0.9))
+            y += line_height + spacing
+        else:
+            y += heights[i]
     footer_x = (img.width - footer_w) // 2
     draw.text((footer_x, footer_y), FOOTER_TEXT, font=footer_font, fill="white")
     out = BytesIO()
@@ -1218,28 +1233,23 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     margin_bottom = int(img.height * 0.08)
     margin_top = int(img.height * 0.08)
     safe_w = img.width - 2 * margin_x
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     
     clean_title = clean_markdown(title_text)
     text = (clean_title or "").strip().upper()
     
-    font_size = int(img.height * 0.11)
-    font = load_font(FONT_CHP, font_size)
-    
-    lines, ok = wrap_no_truncate(draw, text, font, safe_w, max_lines=6)
-    
-    # ФИКСИРОВАННОЕ МЕЖСТРОЧНОЕ РАССТОЯНИЕ
-    line_height = int(font_size * 0.9)
-    total_text_height = len(lines) * line_height
-    
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw, text=text, font_path=FONT_CHP, safe_w=safe_w,
+        max_block_h=title_max_h, max_lines=6, start_size=int(img.height * 0.11),
+        min_size=16, line_spacing_ratio=0.22
+    )
     if text_position == TEXT_POSITION_TOP:
         y = margin_top
     else:
-        y = img.height - margin_bottom - total_text_height
-    
-    for ln in lines:
+        y = img.height - margin_bottom - total_h
+    for i, ln in enumerate(lines):
         draw.text((margin_x, y), ln, font=font, fill="white")
-        y += line_height
-    
+        y += heights[i] + spacing
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
     out.seek(0)
@@ -1262,23 +1272,17 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     text_zone_top = int(band_h * 0.12)
     text_zone_bottom = int(band_h * 0.12)
     text_zone_h = max(1, band_h - text_zone_top - text_zone_bottom)
-    
-    font_size = int(img.height * 0.060)
-    font = load_font(FONT_AM, font_size)
-    
-    lines, ok = wrap_no_truncate(draw, text, font, safe_w, max_lines=3)
-    
-    # ФИКСИРОВАННОЕ МЕЖСТРОЧНОЕ РАССТОЯНИЕ
-    line_height = int(font_size * 0.9)
-    total_text_height = len(lines) * line_height
-    
-    y = text_zone_top + max(0, (text_zone_h - total_text_height) // 2)
-    for ln in lines:
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw, text=text, font_path=FONT_AM, safe_w=safe_w,
+        max_block_h=text_zone_h, max_lines=3, start_size=int(img.height * 0.060),
+        min_size=20, line_spacing_ratio=0.16
+    )
+    y = text_zone_top + max(0, (text_zone_h - total_h) // 2)
+    for i, ln in enumerate(lines):
         lw = text_width(draw, ln, font)
         x = (img.width - lw) // 2
         draw.text((x, y), ln, font=font, fill="white")
-        y += line_height
-    
+        y += heights[i] + spacing
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
     out.seek(0)
@@ -1354,19 +1358,14 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     highlight_phrase_upper = clean_highlight.strip().upper()
     highlight_words = set(highlight_phrase_upper.split())
     
-    font_size = int(img.height * 0.11)
-    font = load_font(FONT_CHP, font_size)
-    
-    lines, ok = wrap_no_truncate(draw, title_text_upper, font, safe_w, max_lines=6)
-    
-    # ФИКСИРОВАННОЕ МЕЖСТРОЧНОЕ РАССТОЯНИЕ
-    line_height = int(font_size * 0.9)
-    total_text_height = len(lines) * line_height
-    
-    base_y = img.height - margin_bottom - total_text_height
+    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+    font, lines, heights, spacing, total_h = fit_text_block(
+        draw=draw, text=title_text_upper, font_path=FONT_CHP, safe_w=safe_w,
+        max_block_h=title_max_h, max_lines=6, start_size=int(img.height * 0.11),
+        min_size=16, line_spacing_ratio=0.22
+    )
+    base_y = img.height - margin_bottom - total_h
     y = base_y
-    
-    # Сначала рисуем подсветку
     for line_idx, line in enumerate(lines):
         line_words = line.split()
         current_x = margin_x
@@ -1381,9 +1380,7 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
                 current_x += text_width(draw, word, font) + space_width
             else:
                 current_x += text_width(draw, word, font)
-        y += line_height
-    
-    # Затем рисуем текст
+        y += heights[line_idx] + spacing
     y = base_y
     for line_idx, line in enumerate(lines):
         line_words = line.split()
@@ -1395,15 +1392,14 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
                 current_x += text_width(draw, word, font) + space_width
             else:
                 current_x += text_width(draw, word, font)
-        y += line_height
-    
+        y += heights[line_idx] + spacing
     out = BytesIO()
     img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
     out.seek(0)
     return out
 
 def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str = "", highlight_phrase: str = "", 
-              text_position: str = TEXT_POSITION_TOP, 
+              text_position: str = TEXT_POSITION_TOP, font_size_multiplier: float = 1.0, 
               bold_phrase: str = "", date: str = "", place: str = "", rubric: str = "",
               highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
     if template == "CHP":
@@ -1420,7 +1416,7 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
     if template == "MN_TG":
         return make_card_mn_tg(photo_bytes, title_text, text_position)
     if template == "MN2":
-        return make_card_mn2(photo_bytes, title_text, text_position, bold_phrase)
+        return make_card_mn2(photo_bytes, title_text, text_position, font_size_multiplier, bold_phrase)
     return make_card_mn(photo_bytes, title_text, text_position)
 
 
@@ -1504,7 +1500,7 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
 
 
 # =========================
-# Caption formatting
+# Caption formatting (ИСПРАВЛЕНО - с обрезкой)
 # =========================
 RU_STOP = {"и", "в", "во", "на", "но", "а", "что", "это", "как", "к", "по", "из", "за", "для", "с", "со", "у", "от", "до", "при", "без", "над", "под", "же", "ли", "то", "не", "ни", "да", "нет", "уже", "еще", "ещё", "там", "тут"}
 
@@ -1562,6 +1558,7 @@ def highlight_keywords_html(text: str, keywords):
     return safe
 
 def build_caption_html(title: str, body: str, max_length: int = 1000) -> str:
+    """Формирует caption для поста: заголовок жирным, затем основной текст, с обрезкой"""
     title_safe = html.escape((title or "").strip())
     body_safe = html.escape((body or "").strip())
     
@@ -1572,12 +1569,15 @@ def build_caption_html(title: str, body: str, max_length: int = 1000) -> str:
     else:
         caption = body_safe
     
+    # Обрезаем до max_length символов
     if len(caption) > max_length:
         caption = caption[:max_length - 3] + "..."
     
     return caption
 
+
 def build_caption_with_buttons(title: str, body: str, channel_type: str, max_length: int = 1000) -> Tuple[str, InlineKeyboardMarkup]:
+    """Формирует caption и кнопки для публикации в канал, с обрезкой"""
     title_safe = html.escape((title or "").strip())
     body_safe = html.escape((body or "").strip())
     
@@ -1588,6 +1588,7 @@ def build_caption_with_buttons(title: str, body: str, channel_type: str, max_len
     else:
         caption = body_safe
     
+    # Обрезаем до max_length символов
     if len(caption) > max_length:
         caption = caption[:max_length - 3] + "..."
     
@@ -1617,7 +1618,9 @@ def build_caption_with_buttons(title: str, body: str, channel_type: str, max_len
         )
     return caption, kb
 
+
 def build_caption_tg(full_text: str, max_length: int = 1000) -> str:
+    """Форматирует текст для публикации в Telegram канал, с обрезкой"""
     paragraphs = full_text.strip().split('\n\n')
     if not paragraphs:
         return ""
@@ -1641,10 +1644,36 @@ def build_caption_tg(full_text: str, max_length: int = 1000) -> str:
     links = "\n\n🔗 <a href='https://t.me/vestiminska'>Все новости Минска</a>\n📝 <a href='https://t.me/prishlinews_bot'>Прислать новость</a>"
     caption = caption + links
     
+    # Обрезаем до max_length символов
     if len(caption) > max_length:
         caption = caption[:max_length - 3] + "..."
     
     return caption
+
+
+def build_caption_tg(full_text: str) -> str:
+    paragraphs = full_text.strip().split('\n\n')
+    if not paragraphs:
+        return ""
+    
+    title = paragraphs[0].strip()
+    title_safe = html.escape(title)
+    
+    body_parts = []
+    for p in paragraphs[1:]:
+        if p.strip():
+            body_parts.append(html.escape(p.strip()))
+    body_text = '\n\n'.join(body_parts) if body_parts else ""
+    
+    if title_safe and body_text:
+        caption = f"<b>{title_safe}</b>\n\n{body_text}"
+    elif title_safe:
+        caption = f"<b>{title_safe}</b>"
+    else:
+        caption = body_text
+    
+    links = "\n\n🔗 <a href='https://t.me/vestiminska'>Все новости Минска</a>\n📝 <a href='https://t.me/prishlinews_bot'>Прислать новость</a>"
+    return caption + links
 
 
 # =========================
@@ -1871,6 +1900,7 @@ def on_watermark_type(c):
     bot.answer_callback_query(c.id)
 
 def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
+    """Обрабатывает собранный альбом (фото + видео)"""
     time.sleep(2)
     if media_group_id not in user_album_cache:
         return
@@ -1930,18 +1960,6 @@ def on_tpl(c):
     tpl = parts[1]
     st = user_state.get(uid) or {}
     
-    # Если выбрали водяной знак
-    if tpl == "watermark":
-        st["step"] = "waiting_watermark_type"
-        user_state[uid] = st
-        bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
-        send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>", parse_mode="HTML", reply_markup=watermark_type_kb())
-        try:
-            bot.delete_message(c.message.chat.id, c.message.message_id)
-        except:
-            pass
-        return
-    
     st["is_square"] = False
     st["template"] = tpl
     
@@ -1981,15 +1999,15 @@ def on_tpl(c):
     
     elif tpl == "MN2":
         if has_photo:
-            st["step"] = "waiting_text_position"
+            st["step"] = "waiting_font_size"
             user_state[uid] = st
             bot.answer_callback_query(c.id, f"Шаблон МН 2 выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"📰 Выбран шаблон <b>МН 2</b>\n\n📸 Фото уже есть!\n\nГде разместить текст?", parse_mode="HTML", reply_markup=text_position_kb())
+            send_message_with_retry(c.message.chat.id, f"🔤 Настрой размер шрифта для заголовка (фото уже есть):", reply_markup=font_size_kb(1.0))
         else:
-            st["step"] = "waiting_photo"
+            st["step"] = "waiting_font_size"
             user_state[uid] = st
             bot.answer_callback_query(c.id, f"Шаблон МН 2 выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"📰 Выбран шаблон <b>МН 2</b>\n\nТеперь пришли фото 📷", parse_mode="HTML")
+            send_message_with_retry(c.message.chat.id, f"🔤 Настрой размер шрифта для заголовка:", reply_markup=font_size_kb(1.0))
     
     elif tpl == "FDR_POST":
         if has_photo:
@@ -2121,6 +2139,31 @@ def on_text_position(c):
         bot.delete_message(c.message.chat.id, c.message.message_id)
     except:
         pass
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("font_size:"))
+def on_font_size_adjust(c):
+    uid = c.from_user.id
+    parts = c.data.split(":")
+    action = parts[1]
+    st = user_state.get(uid) or {}
+    if action == "done":
+        st["step"] = "waiting_text_position"
+        user_state[uid] = st
+        send_message_with_retry(c.message.chat.id, "✅ Размер шрифта настроен. Теперь выбери расположение текста:", reply_markup=text_position_kb())
+        bot.answer_callback_query(c.id, "Настройки сохранены")
+        return
+    current = float(parts[2]) if len(parts) > 2 else st.get("font_size_multiplier", 1.0)
+    if action == "plus":
+        new_mult = min(2.0, current + 0.1)
+    elif action == "minus":
+        new_mult = max(0.5, current - 0.1)
+    else:
+        bot.answer_callback_query(c.id)
+        return
+    st["font_size_multiplier"] = new_mult
+    user_state[uid] = st
+    send_message_with_retry(c.message.chat.id, f"🔤 Настройка размера шрифта\n\nТекущий размер: {int(new_mult*100)}%\nИспользуй кнопки + и - для регулировки.\nНажми «Готово» когда закончишь.", reply_markup=font_size_kb(new_mult))
+    bot.answer_callback_query(c.id)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("repost:"))
 def on_repost_action(c):
@@ -2343,7 +2386,8 @@ def on_select_channel(c):
         media_group = st.get("media_group", {"photos": [], "videos": []})
         
         if st.get("card_bytes"):
-            bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=caption_text, parse_mode="HTML")
+            caption, kb = build_caption_with_buttons(st.get("title", ""), st.get("body_raw", ""), channel_type)
+            bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=kb)
             bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с фото")
         
         elif media_group.get("photos") or media_group.get("videos"):
@@ -2383,7 +2427,7 @@ def on_select_channel(c):
             original_text = st.get("original_text", "")
             title, body = split_title_and_body(original_text)
             caption = build_caption_html(title, body)
-            bot.send_message(target_channel, caption, parse_mode="HTML")
+            bot.send_message(target_channel, caption, parse_mode="HTML", reply_markup=channel_kb())
             bot.answer_callback_query(c.id, f"✅ Текст опубликован в {channel_name}")
         
         else:
@@ -2414,7 +2458,7 @@ def on_action(call):
     if call.data == "publish":
         try:
             caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
-            bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML")
+            bot.send_photo(CHANNEL, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=channel_kb())
             bot.answer_callback_query(call.id, "Опубликовано ✅")
             send_message_with_retry(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
             clear_state(uid)
@@ -2700,32 +2744,21 @@ def on_text(message):
         return
     
     if step == "waiting_title_mn2":
-        if text == "+" and st.get("title"):
-            use_text = st["title"]
-        elif text == "+" and st.get("original_text"):
-            title, _ = split_title_and_body(st["original_text"])
-            use_text = title
-        elif text == "+":
-            bot.reply_to(message, "❌ Нет сохранённого текста из репоста. Введи заголовок вручную.")
-            return
-        else:
-            use_text = text
-        
-        if not use_text:
+        if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
-        
-        st["title"] = use_text
-        st["body_raw"] = use_text
+        st["title"] = text
+        st["body_raw"] = text
         st["step"] = "waiting_bold_phrase_mn2"
         user_state[uid] = st
-        bot.reply_to(message, f"✅ Заголовок сохранён!\n\n<b>{html.escape(use_text)}</b>\n\n✏️ Теперь отправь слова для выделения жирным (через пробел, или «-» чтобы пропустить):", parse_mode="HTML")
+        bot.reply_to(message, f"✅ Заголовок сохранён!\n\n<b>{html.escape(text)}</b>\n\n✏️ Теперь отправь слова для выделения жирным (через пробел):", parse_mode="HTML")
         return
     
     if step == "waiting_bold_phrase_mn2":
-        st["bold_phrase"] = text if text != "-" else ""
+        st["bold_phrase"] = text if text != " " else ""
         try:
-            card = make_card(st["photo_bytes"], st["title"], "MN2", text_position=st.get("text_position", TEXT_POSITION_TOP), bold_phrase=st["bold_phrase"])
+            font_mult = st.get("font_size_multiplier", 1.0)
+            card = make_card(st["photo_bytes"], st["title"], "MN2", text_position=st.get("text_position", TEXT_POSITION_TOP), font_size_multiplier=font_mult, bold_phrase=st["bold_phrase"])
             st["card_bytes"] = card.getvalue()
             st["step"] = "waiting_action"
             user_state[uid] = st
@@ -2873,8 +2906,10 @@ def on_text(message):
         user_state[uid] = st
         
         try:
+            font_mult = st.get("font_size_multiplier", 1.0) if st.get("template") == "MN2" else 1.0
             card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), 
                             text_position=st.get("text_position", TEXT_POSITION_TOP), 
+                            font_size_multiplier=font_mult, 
                             bold_phrase=st.get("bold_phrase", ""), date=st.get("date", ""), 
                             place=st.get("place", ""), rubric=st.get("rubric", ""), 
                             highlight_word=st.get("highlight_word", ""), 
