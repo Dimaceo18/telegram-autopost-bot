@@ -1741,12 +1741,12 @@ URL статьи: {url}
 6. Сохрани структуру абзацев (расставь переносы строк между абзацами)
 7. НЕ изменяй текст, НЕ переписывай его - просто извлеки
 8. Верни только чистый текст статьи
-9. Если на странице есть заголовок статьи - включи его в начало текста
+9. Если на странице есть заголовок статьи - включи его в начало текста отдельной строкой
 
 Верни только текст статьи, без пояснений.
 """
 
-        async with httpx.AsyncClient(timeout=90.0) as client:  # Увеличиваем таймаут до 90 секунд
+        async with httpx.AsyncClient(timeout=90.0) as client:
             response = await client.post(
                 DEEPSEEK_API_URL,
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
@@ -1757,7 +1757,7 @@ URL статьи: {url}
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.3,
-                    "max_tokens": 6000  # Увеличиваем для больших статей
+                    "max_tokens": 6000
                 }
             )
             
@@ -1772,34 +1772,45 @@ URL статьи: {url}
                 result = re.sub(r'^Ссылка.*?:', '', result, flags=re.IGNORECASE)
                 result = result.strip()
                 
-                # Пытаемся извлечь заголовок из текста
-                title_match = re.search(r'^(.*?)(?:\n|$)', result)
-                page_title = title_match.group(1).strip() if title_match else "Статья"
+                # Извлекаем заголовок (первая строка)
+                lines = result.split('\n')
+                page_title = lines[0].strip() if lines else "Статья"
                 
-                # Извлекаем изображения из текста (если DeepSeek их упомянул)
+                # Остальной текст (без заголовка)
+                body_text = '\n'.join(lines[1:]).strip() if len(lines) > 1 else ""
+                
+                # Если заголовок слишком короткий или похож на ссылку, пытаемся найти реальный заголовок
+                if len(page_title) < 10 or 'http' in page_title:
+                    # Ищем заголовок в тексте
+                    title_match = re.search(r'^(.{10,100}?)(?:\n|$)', result)
+                    if title_match:
+                        page_title = title_match.group(1).strip()
+                        body_text = result[len(page_title):].strip()
+                
+                # Извлекаем изображения - пробуем найти URL изображений в тексте
                 images = []
-                # Ищем упоминания изображений в тексте
-                img_matches = re.findall(r'\[изображение\s*[:]?\s*([^\]]+)\]', result, re.IGNORECASE)
-                if img_matches:
-                    # Пытаемся загрузить изображения по упомянутым URL
-                    for img_url in img_matches[:5]:
-                        if img_url.startswith('http'):
-                            try:
-                                async with httpx.AsyncClient(timeout=15.0) as img_client:
-                                    img_response = await img_client.get(img_url, headers={
-                                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                                    })
-                                    if img_response.status_code == 200:
-                                        content_type = img_response.headers.get('content-type', '')
-                                        if 'image' in content_type:
-                                            images.append(img_response.content)
-                            except Exception as e:
-                                logger.error(f"Error downloading image: {e}")
+                # Ищем URL изображений
+                img_urls = re.findall(r'https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp)', result, re.IGNORECASE)
+                img_urls = list(dict.fromkeys(img_urls))[:5]  # Уникальные, максимум 5
+                
+                for img_url in img_urls:
+                    try:
+                        async with httpx.AsyncClient(timeout=15.0) as img_client:
+                            img_response = await img_client.get(img_url, headers={
+                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                            })
+                            if img_response.status_code == 200:
+                                content_type = img_response.headers.get('content-type', '')
+                                if 'image' in content_type:
+                                    images.append(img_response.content)
+                                    logger.info(f"Downloaded image from article")
+                    except Exception as e:
+                        logger.error(f"Error downloading image: {e}")
                 
                 return {
-                    "text": result,
+                    "text": body_text,  # Только текст без заголовка
+                    "title": page_title,  # Заголовок отдельно
                     "images": images,
-                    "title": page_title,
                     "url": url
                 }
             else:
@@ -1833,6 +1844,183 @@ URL статьи: {url}
             "title": "",
             "url": url
         }
+
+
+# =========================
+# Обработчик ссылок на статьи (ОБНОВЛЕННЫЙ)
+# =========================
+@bot.message_handler(func=lambda message: re.search(r'https?://[^\s]+', message.text) and not re.search(r't\.me/', message.text))
+def handle_article_link(message):
+    uid = message.from_user.id
+    text = message.text.strip()
+    
+    url_match = re.search(r'(https?://[^\s]+)', text)
+    if not url_match:
+        bot.reply_to(message, "❌ Не найдена ссылка в сообщении")
+        return
+    
+    url = url_match.group(1)
+    
+    if 't.me' in url:
+        return
+    
+    processing_msg = bot.reply_to(message, "🔍 Извлекаю содержимое статьи через ИИ...\n\n⏳ Это может занять до 30-60 секунд...")
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        result = loop.run_until_complete(extract_article_content(url))
+        
+        if not result or not result.get("text"):
+            bot.edit_message_text(
+                "❌ Не удалось извлечь текст статьи. Попробуйте другую ссылку или отправьте текст вручную.",
+                message.chat.id,
+                processing_msg.message_id
+            )
+            return
+        
+        try:
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+        except:
+            pass
+        
+        st = user_state.get(uid) or {}
+        st["extracted_text"] = result.get("text", "")
+        st["extracted_title"] = result.get("title", "")
+        st["extracted_images"] = result.get("images", [])
+        st["extracted_url"] = result.get("url", url)
+        st["step"] = "waiting_extracted_article"
+        user_state[uid] = st
+        
+        try:
+            # ОТПРАВЛЯЕМ ЗАГОЛОВОК ЖИРНЫМ
+            title_text = result.get("title", "Статья")
+            if title_text:
+                # Отправляем заголовок жирным
+                bot.send_message(
+                    message.chat.id, 
+                    f"<b>{html.escape(title_text)}</b>", 
+                    parse_mode="HTML"
+                )
+            
+            # ОТПРАВЛЯЕМ ТЕКСТ СТАТЬИ
+            article_text = result.get("text", "")
+            if article_text:
+                if len(article_text) > 4000:
+                    # Разбиваем на части
+                    parts = [article_text[i:i+4000] for i in range(0, len(article_text), 4000)]
+                    for i, part in enumerate(parts):
+                        if i == 0:
+                            bot.send_message(
+                                message.chat.id, 
+                                f"📝 <b>Текст статьи (часть 1/{len(parts)}):</b>\n\n{part}", 
+                                parse_mode="HTML"
+                            )
+                        else:
+                            bot.send_message(
+                                message.chat.id, 
+                                f"📝 <b>Текст статьи (часть {i+1}/{len(parts)}):</b>\n\n{part}", 
+                                parse_mode="HTML"
+                            )
+                else:
+                    bot.send_message(message.chat.id, article_text, parse_mode="HTML")
+            
+            # ОТПРАВЛЯЕМ МЕДИА (изображения)
+            images = result.get("images", [])
+            if images:
+                if len(images) == 1:
+                    # Одно фото
+                    send_photo_with_retry(
+                        message.chat.id,
+                        BytesIO(images[0]),
+                        caption="📸 <b>Изображение из статьи</b>",
+                        parse_mode="HTML"
+                    )
+                else:
+                    # Несколько фото - группой
+                    media_group = []
+                    for i, img_bytes in enumerate(images[:5]):
+                        try:
+                            if i == 0:
+                                media_group.append(InputMediaPhoto(
+                                    BytesIO(img_bytes),
+                                    caption=f"📸 <b>Изображения из статьи ({len(images)} шт.)</b>"
+                                ))
+                            else:
+                                media_group.append(InputMediaPhoto(BytesIO(img_bytes)))
+                        except Exception as e:
+                            logger.error(f"Error preparing image: {e}")
+                    
+                    if media_group:
+                        try:
+                            bot.send_media_group(message.chat.id, media_group)
+                        except Exception as e:
+                            logger.error(f"Error sending media group: {e}")
+                            # Отправляем по одному
+                            for media in media_group:
+                                try:
+                                    bot.send_photo(message.chat.id, media.media)
+                                except:
+                                    pass
+            
+            # КНОПКИ ДЛЯ ДЕЙСТВИЙ
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
+                InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="article:ai"),
+                InlineKeyboardButton("📱 Пост для ТГ (500 симв.)", callback_data="article:tg"),
+                InlineKeyboardButton("📱 Пост для Тредс (400 симв.)", callback_data="article:threads"),
+                InlineKeyboardButton("💧 Водяной знак", callback_data="article:watermark")
+            )
+            kb.add(InlineKeyboardButton("📢 Опубликовать в канале", callback_data="article:publish"))
+            
+            bot.send_message(
+                message.chat.id,
+                "🎯 <b>Что сделать с этой статьей?</b>",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            
+        except Exception as e:
+            logger.error(f"Error sending article content: {e}")
+            # Если что-то пошло не так, отправляем хотя бы текст
+            if result.get("text"):
+                bot.send_message(
+                    message.chat.id,
+                    f"⚠️ Часть контента не отобразилась, но текст сохранен.\n\n{result['text'][:1000]}...",
+                    parse_mode="HTML"
+                )
+            
+            # Все равно показываем кнопки
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
+                InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="article:ai")
+            )
+            bot.send_message(
+                message.chat.id,
+                "🎯 <b>Что сделать с этой статьей?</b>",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            
+    except Exception as e:
+        logger.error(f"Error processing article: {e}")
+        try:
+            bot.edit_message_text(
+                f"❌ Ошибка при обработке статьи: {str(e)}",
+                message.chat.id,
+                processing_msg.message_id
+            )
+        except:
+            bot.send_message(
+                message.chat.id,
+                f"❌ Ошибка при обработке статьи: {str(e)}",
+                parse_mode="HTML"
+            )
+    finally:
+        loop.close()
 
 
 # =========================
