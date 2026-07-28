@@ -2603,13 +2603,28 @@ def on_repost_action(c):
             st["tg_post_text"] = result
             st["post_type"] = "tg"
             st["step"] = "waiting_post_action"
+            
+            if st.get("photo_bytes"):
+                st["saved_photo_bytes"] = st["photo_bytes"]
+                logger.info(f"Saved photo for TG post for user {uid}")
+            
             user_state[uid] = st
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
             
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            elif st.get("video_info"):
+                media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+            elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+                photo_count = len(st["media_group"].get("photos", []))
+                video_count = len(st["media_group"].get("videos", []))
+                media_info = f"\n📸 <b>Медиа:</b> {photo_count} фото, {video_count} видео"
+            
             send_message_with_retry(
                 c.message.chat.id,
-                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}",
+                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}{media_info}",
                 parse_mode="HTML",
                 reply_markup=post_action_kb("tg")
             )
@@ -2643,13 +2658,28 @@ def on_repost_action(c):
             st["threads_post_text"] = result
             st["post_type"] = "threads"
             st["step"] = "waiting_post_action"
+            
+            if st.get("photo_bytes"):
+                st["saved_photo_bytes"] = st["photo_bytes"]
+                logger.info(f"Saved photo for Threads post for user {uid}")
+            
             user_state[uid] = st
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
             
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            elif st.get("video_info"):
+                media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+            elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+                photo_count = len(st["media_group"].get("photos", []))
+                video_count = len(st["media_group"].get("videos", []))
+                media_info = f"\n📸 <b>Медиа:</b> {photo_count} фото, {video_count} видео"
+            
             send_message_with_retry(
                 c.message.chat.id,
-                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}",
+                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}{media_info}",
                 parse_mode="HTML",
                 reply_markup=post_action_kb("threads")
             )
@@ -2793,9 +2823,19 @@ def on_tg_action(c):
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
             
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            elif st.get("video_info"):
+                media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+            elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+                photo_count = len(st["media_group"].get("photos", []))
+                video_count = len(st["media_group"].get("videos", []))
+                media_info = f"\n📸 <b>Медиа:</b> {photo_count} фото, {video_count} видео"
+            
             send_message_with_retry(
                 c.message.chat.id,
-                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}",
+                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}{media_info}",
                 parse_mode="HTML",
                 reply_markup=post_action_kb("tg")
             )
@@ -2845,9 +2885,19 @@ def on_threads_action(c):
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
             
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            elif st.get("video_info"):
+                media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+            elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+                photo_count = len(st["media_group"].get("photos", []))
+                video_count = len(st["media_group"].get("videos", []))
+                media_info = f"\n📸 <b>Медиа:</b> {photo_count} фото, {video_count} видео"
+            
             send_message_with_retry(
                 c.message.chat.id,
-                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}",
+                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}{media_info}",
                 parse_mode="HTML",
                 reply_markup=post_action_kb("threads")
             )
@@ -2934,7 +2984,79 @@ def on_post_channel_select(c):
             bot.answer_callback_query(c.id, "❌ Нет текста для публикации")
             return
         
-        bot.send_message(target_channel, post_text, parse_mode="HTML")
+        # Получаем медиа из состояния
+        media_group = st.get("media_group", {"photos": [], "videos": []})
+        photo_bytes = st.get("photo_bytes")
+        video_info = st.get("video_info")
+        
+        has_media = False
+        
+        # Если есть фото - отправляем с текстом
+        if photo_bytes:
+            send_photo_with_retry(
+                target_channel,
+                BytesIO(photo_bytes),
+                caption=post_text,
+                parse_mode="HTML"
+            )
+            has_media = True
+            logger.info(f"Published photo to {channel_name} with post text")
+            
+        # Если есть альбом
+        elif media_group.get("photos") or media_group.get("videos"):
+            media_list = []
+            first = True
+            
+            for photo in media_group.get("photos", []):
+                if first:
+                    media_list.append(InputMediaPhoto(BytesIO(photo), caption=post_text, parse_mode="HTML"))
+                    first = False
+                else:
+                    media_list.append(InputMediaPhoto(BytesIO(photo)))
+            
+            for video in media_group.get("videos", []):
+                file_id = video.get('file_id')
+                if file_id:
+                    if first:
+                        media_list.append(InputMediaVideo(file_id, caption=post_text, parse_mode="HTML"))
+                        first = False
+                    else:
+                        media_list.append(InputMediaVideo(file_id))
+            
+            if len(media_list) > 1:
+                send_media_group_with_retry(target_channel, media_list)
+                has_media = True
+                logger.info(f"Published {len(media_list)} media items to {channel_name}")
+            elif len(media_list) == 1:
+                if isinstance(media_list[0], InputMediaPhoto):
+                    send_photo_with_retry(target_channel, media_list[0].media, caption=media_list[0].caption, parse_mode="HTML")
+                elif isinstance(media_list[0], InputMediaVideo):
+                    bot.send_video(target_channel, media_list[0].media, caption=media_list[0].caption, parse_mode="HTML")
+                has_media = True
+                logger.info(f"Published single media to {channel_name}")
+        
+        # Если есть видео
+        elif video_info:
+            try:
+                file_id = video_info.get('file_id')
+                if file_id:
+                    bot.send_video(
+                        target_channel,
+                        file_id,
+                        caption=post_text,
+                        parse_mode="HTML"
+                    )
+                    has_media = True
+                    logger.info(f"Published video to {channel_name} with post text")
+            except Exception as e:
+                logger.error(f"Error sending video: {e}")
+                bot.send_message(target_channel, post_text, parse_mode="HTML")
+                has_media = True
+        
+        # Если нет медиа - только текст
+        if not has_media:
+            bot.send_message(target_channel, post_text, parse_mode="HTML")
+            logger.info(f"Published text only to {channel_name}")
         
         bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name}")
         try:
@@ -2952,11 +3074,26 @@ def on_post_channel_select(c):
     except Exception as e:
         logger.error(f"Error publishing post to channel: {e}")
         bot.answer_callback_query(c.id, "❌ Ошибка публикации")
-        send_message_with_retry(
-            c.message.chat.id,
-            f"❌ Не удалось опубликовать: {e}",
-            reply_markup=main_menu_kb()
-        )
+        
+        try:
+            if post_type == "tg":
+                post_text = st.get("tg_post_text", "")
+            else:
+                post_text = st.get("threads_post_text", "")
+            
+            if post_text:
+                bot.send_message(target_channel, post_text, parse_mode="HTML")
+                send_message_with_retry(
+                    c.message.chat.id,
+                    f"⚠️ Текст опубликован, но медиа не загрузились.",
+                    reply_markup=main_menu_kb()
+                )
+        except:
+            send_message_with_retry(
+                c.message.chat.id,
+                f"❌ Не удалось опубликовать: {e}",
+                reply_markup=main_menu_kb()
+            )
 
 @bot.callback_query_handler(func=lambda c: c.data == "publish_to_channel")
 def on_publish_to_channel(c):
