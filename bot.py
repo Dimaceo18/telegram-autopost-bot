@@ -1711,9 +1711,13 @@ def detect_topic_emoji(text: str) -> str:
 
 
 # =========================
-# Функции для извлечения контента из статей через ИИ
+# Функция для извлечения контента из статей через ИИ (УЛУЧШЕННАЯ)
 # =========================
 async def extract_article_content(url: str) -> Dict[str, any]:
+    """
+    Извлекает содержимое статьи по ссылке через ИИ (DeepSeek)
+    DeepSeek сам читает страницу и возвращает текст
+    """
     if not DEEPSEEK_API_KEY:
         return {
             "text": "❌ API ключ DeepSeek не настроен. Добавьте DEEPSEEK_API_KEY в переменные окружения.",
@@ -1723,109 +1727,104 @@ async def extract_article_content(url: str) -> Dict[str, any]:
         }
     
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            })
-            html_content = response.text
-        
-        title_match = re.search(r'<title>(.*?)</title>', html_content, re.IGNORECASE)
-        page_title = title_match.group(1).strip() if title_match else "Статья"
-        
-        clean_html = re.sub(r'<script.*?>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
-        clean_html = re.sub(r'<style.*?>.*?</style>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-        clean_html = re.sub(r'<nav.*?>.*?</nav>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-        clean_html = re.sub(r'<header.*?>.*?</header>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-        clean_html = re.sub(r'<footer.*?>.*?</footer>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-        
-        image_urls = []
-        img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>', html_content, re.IGNORECASE)
-        
-        for img_url in img_matches:
-            if img_url.startswith('http'):
-                image_urls.append(img_url)
-            elif img_url.startswith('/'):
-                parsed = urlparse(url)
-                base_url = f"{parsed.scheme}://{parsed.netloc}"
-                image_urls.append(base_url + img_url)
-            elif img_url.startswith('data:image'):
-                continue
-            else:
-                image_urls.append(urljoin(url, img_url))
-        
-        image_urls = list(dict.fromkeys(image_urls))[:10]
-        
-        prompt = f"""Ты помощник по извлечению контента из веб-страниц. Извлеки основной текст статьи из HTML кода.
+        # Отправляем запрос в DeepSeek с просьбой прочитать страницу
+        prompt = f"""Прочитай статью по ссылке ниже и извлеки из неё основной текст.
+
+URL статьи: {url}
 
 Правила:
-1. Извлеки ТОЛЬКО основной текст статьи
-2. Убери всю рекламу, баннеры, меню, навигацию
-3. Убери подписи к фото, авторские права
-4. Убери комментарии и блоки "похожие статьи"
-5. Сохрани структуру абзацев (расставь переносы строк между абзацами)
-6. НЕ изменяй текст, НЕ переписывай его - просто извлеки
-7. Верни только чистый текст статьи
-
-Заголовок страницы: {page_title}
-URL: {url}
-
-HTML код страницы (сокращенный):
-{clean_html[:15000]}
+1. Прочитай страницу по ссылке
+2. Извлеки ТОЛЬКО основной текст статьи
+3. Убери всю рекламу, баннеры, меню, навигацию
+4. Убери подписи к фото, авторские права
+5. Убери комментарии и блоки "похожие статьи"
+6. Сохрани структуру абзацев (расставь переносы строк между абзацами)
+7. НЕ изменяй текст, НЕ переписывай его - просто извлеки
+8. Верни только чистый текст статьи
+9. Если на странице есть заголовок статьи - включи его в начало текста
 
 Верни только текст статьи, без пояснений.
 """
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:  # Увеличиваем таймаут до 90 секунд
             response = await client.post(
                 DEEPSEEK_API_URL,
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты помощник по извлечению контента. Отвечай только извлеченным текстом статьи, без пояснений. НЕ переписывай текст, только извлекай."},
+                        {"role": "system", "content": "Ты помощник по извлечению контента. Ты умеешь читать веб-страницы по ссылкам и извлекать из них чистый текст. Отвечай только извлеченным текстом статьи, без пояснений. НЕ переписывай текст, только извлекай."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.3,
-                    "max_tokens": 4000
+                    "max_tokens": 6000  # Увеличиваем для больших статей
                 }
             )
             
             if response.status_code == 200:
-                extracted_text = response.json()["choices"][0]["message"]["content"]
+                result = response.json()["choices"][0]["message"]["content"]
                 
-                extracted_text = re.sub(r'^Вот извлеченный текст статьи.*?:', '', extracted_text, flags=re.IGNORECASE)
-                extracted_text = re.sub(r'^Текст статьи.*?:', '', extracted_text, flags=re.IGNORECASE)
-                extracted_text = re.sub(r'^Извлеченный текст.*?:', '', extracted_text, flags=re.IGNORECASE)
-                extracted_text = extracted_text.strip()
+                # Очищаем результат от лишних фраз
+                result = re.sub(r'^Вот извлеченный текст статьи.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Текст статьи.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Извлеченный текст.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Вот текст статьи.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Ссылка.*?:', '', result, flags=re.IGNORECASE)
+                result = result.strip()
                 
+                # Пытаемся извлечь заголовок из текста
+                title_match = re.search(r'^(.*?)(?:\n|$)', result)
+                page_title = title_match.group(1).strip() if title_match else "Статья"
+                
+                # Извлекаем изображения из текста (если DeepSeek их упомянул)
                 images = []
-                async with httpx.AsyncClient(timeout=30.0) as img_client:
-                    for img_url in image_urls[:5]:
-                        try:
-                            img_response = await img_client.get(img_url, headers={
-                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                            })
-                            if img_response.status_code == 200:
-                                content_type = img_response.headers.get('content-type', '')
-                                if 'image' in content_type:
-                                    images.append(img_response.content)
-                        except Exception as e:
-                            logger.error(f"Error downloading image {img_url}: {e}")
+                # Ищем упоминания изображений в тексте
+                img_matches = re.findall(r'\[изображение\s*[:]?\s*([^\]]+)\]', result, re.IGNORECASE)
+                if img_matches:
+                    # Пытаемся загрузить изображения по упомянутым URL
+                    for img_url in img_matches[:5]:
+                        if img_url.startswith('http'):
+                            try:
+                                async with httpx.AsyncClient(timeout=15.0) as img_client:
+                                    img_response = await img_client.get(img_url, headers={
+                                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                                    })
+                                    if img_response.status_code == 200:
+                                        content_type = img_response.headers.get('content-type', '')
+                                        if 'image' in content_type:
+                                            images.append(img_response.content)
+                            except Exception as e:
+                                logger.error(f"Error downloading image: {e}")
                 
                 return {
-                    "text": extracted_text,
+                    "text": result,
                     "images": images,
                     "title": page_title,
                     "url": url
                 }
             else:
+                error_text = f"❌ Ошибка API DeepSeek: {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if "error" in error_data:
+                        error_text += f"\n{error_data['error'].get('message', '')}"
+                except:
+                    pass
                 return {
-                    "text": f"❌ Ошибка API: {response.status_code}",
+                    "text": error_text,
                     "images": [],
-                    "title": page_title,
+                    "title": "",
                     "url": url
                 }
                 
+    except httpx.TimeoutException:
+        logger.error(f"Timeout extracting article: {url}")
+        return {
+            "text": "❌ Превышено время ожидания при извлечении статьи. Попробуйте позже или отправьте текст вручную.",
+            "images": [],
+            "title": "",
+            "url": url
+        }
     except Exception as e:
         logger.error(f"Error extracting article: {e}")
         return {
