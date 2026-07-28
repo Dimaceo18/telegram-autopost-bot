@@ -2320,15 +2320,34 @@ async def process_text_with_deepseek(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка при обращении к API: {str(e)}"
 
+# =========================
+# Функции для создания постов с точным количеством символов
+# =========================
+
 async def process_text_with_deepseek_tg(text: str) -> str:
+    """
+    Создает пост для Telegram ровно на 500 символов
+    Без многоточия, текст адаптирован под нужный размер
+    """
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
-    prompt = """Ты редактор новостного канала в Telegram. Сократи новость до 500 символов. Сохрани главные факты, сделай интересный заголовок. Не используй символы # и **. Расставь абзацы.
+    prompt = """Ты редактор новостного канала в Telegram. Создай пост из статьи ровно на 500 символов.
 
-Важно: НЕ добавляй эмодзи в текст! Эмодзи будет добавлен автоматически.
+Правила:
+1. Пост должен быть ровно 500 символов (включая пробелы и знаки препинания)
+2. НЕ используй многоточие в конце
+3. Сохрани главную суть статьи
+4. Сделай интересный, цепляющий заголовок
+5. Пост должен быть логически завершенным
+6. Используй эмодзи в тексте для выделения (но не более 2-3)
+7. Разбей текст на абзацы (2-3 абзаца)
+8. Не используй символы # и ** в ответе
+9. Верни ТОЛЬКО готовый пост, без пояснений
 
-Вот текст:"""
+Важно: Текст должен быть ровно 500 символов! Посчитай символы перед отправкой.
+
+Вот исходный текст:"""
     
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
@@ -2336,47 +2355,142 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                 DEEPSEEK_API_URL,
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
                 json={
-                    "model": "deepseek-chat", 
+                    "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного канала. Отвечай только готовым текстом для Telegram, без пояснений. Не используй символы # и **. НЕ добавляй эмодзи в текст."}, 
+                        {"role": "system", "content": "Ты редактор новостного канала. Твоя задача - создать идеальный пост для Telegram ровно на 500 символов. Текст должен быть завершенным, без многоточия. Используй эмодзи для выделения. Проверяй количество символов перед ответом."},
                         {"role": "user", "content": f"{prompt}\n\n{text}"}
-                    ], 
-                    "temperature": 0.7, 
+                    ],
+                    "temperature": 0.7,
                     "max_tokens": 800
                 }
             )
+            
             if response.status_code == 200:
                 result = response.json()["choices"][0]["message"]["content"]
+                
+                # Очищаем результат от лишних фраз
                 result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
                 result = result.strip()
                 
+                # Если текст больше 500 символов - сокращаем без многоточия
                 if len(result) > 500:
-                    cut_point = 500
-                    while cut_point > 0 and result[cut_point] not in [' ', '.', ',', '!', '?', '\n']:
-                        cut_point -= 1
-                    if cut_point > 0:
-                        result = result[:cut_point] + "..."
-                    else:
-                        result = result[:497] + "..."
+                    # Пробуем обрезать по последнему предложению
+                    sentences = re.split(r'(?<=[.!?])\s+', result)
+                    shortened = ""
+                    for sent in sentences:
+                        if len(shortened) + len(sent) + 1 <= 500:
+                            if shortened:
+                                shortened += " " + sent
+                            else:
+                                shortened = sent
+                        else:
+                            # Если последнее предложение не влезает, пробуем обрезать его
+                            remaining = 500 - len(shortened)
+                            if remaining > 10 and sent:
+                                # Обрезаем предложение без многоточия
+                                words = sent.split()
+                                temp = ""
+                                for word in words:
+                                    if len(shortened) + len(temp) + len(word) + 1 <= 500:
+                                        if temp:
+                                            temp += " " + word
+                                        else:
+                                            temp = word
+                                    else:
+                                        break
+                                if temp:
+                                    shortened += " " + temp
+                            break
+                    
+                    result = shortened.strip()
                 
+                # Если текст меньше 500 символов - дополняем
+                elif len(result) < 500:
+                    # Добавляем дополнительную информацию из исходного текста
+                    additional = text.replace(result, "").strip()
+                    if additional:
+                        # Берем недостающие символы из дополнительного текста
+                        needed = 500 - len(result)
+                        words = additional.split()
+                        temp = ""
+                        for word in words:
+                            if len(result) + len(temp) + len(word) + 1 <= 500:
+                                if temp:
+                                    temp += " " + word
+                                else:
+                                    temp = word
+                            else:
+                                break
+                        if temp:
+                            # Добавляем только если есть место
+                            if len(result) + len(temp) + 1 <= 500:
+                                result += " " + temp
+                
+                # Добавляем эмодзи в начало
                 emoji = detect_topic_emoji(result)
-                result = f"{emoji} {result}"
+                # Проверяем, чтобы с эмодзи не превысить 500
+                if len(emoji) + 1 + len(result) <= 500:
+                    result = f"{emoji} {result}"
+                else:
+                    # Если не влезает, сокращаем текст
+                    result = result[:500 - len(emoji) - 2]
+                    result = f"{emoji} {result}"
+                
+                # Финальная проверка длины
+                if len(result) > 500:
+                    result = result[:500]
+                elif len(result) < 500:
+                    # Дополняем до 500 символов, если возможно
+                    if len(result) < 480:
+                        # Добавляем информацию из исходного текста
+                        additional = text.replace(result, "").strip()
+                        if additional:
+                            needed = 500 - len(result)
+                            words = additional.split()
+                            temp = ""
+                            for word in words:
+                                if len(result) + len(temp) + len(word) + 1 <= 500:
+                                    if temp:
+                                        temp += " " + word
+                                    else:
+                                        temp = word
+                                else:
+                                    break
+                            if temp and len(result) + len(temp) + 1 <= 500:
+                                result += " " + temp
                 
                 return result
+                
             return f"❌ Ошибка API: {response.status_code}"
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
 
+
 async def process_text_with_deepseek_threads(text: str) -> str:
+    """
+    Создает пост для Threads ровно на 400 символов
+    Без многоточия, текст адаптирован под нужный размер
+    """
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
-    prompt = """Ты редактор для соцсети Тредс (Threads). Сократи новость до 400 символов. Сделай текст живым, с интригующим заголовком. Не используй символы # и **. Расставь абзацы.
+    prompt = """Ты редактор для соцсети Threads. Создай пост из статьи ровно на 400 символов.
 
-Важно: НЕ добавляй эмодзи в текст! Эмодзи будет добавлен автоматически.
+Правила:
+1. Пост должен быть ровно 400 символов (включая пробелы и знаки препинания)
+2. НЕ используй многоточие в конце
+3. Сохрани главную суть статьи
+4. Сделай живой, интригующий заголовок
+5. Пост должен быть логически завершенным
+6. Используй эмодзи в тексте для эмоциональности (не более 2-3)
+7. Текст должен быть динамичным, вовлекающим
+8. Не используй символы # и ** в ответе
+9. Верни ТОЛЬКО готовый пост, без пояснений
 
-Вот текст:"""
+Важно: Текст должен быть ровно 400 символов! Посчитай символы перед отправкой.
+
+Вот исходный текст:"""
     
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
@@ -2384,34 +2498,104 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                 DEEPSEEK_API_URL,
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
                 json={
-                    "model": "deepseek-chat", 
+                    "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор для Тредс. Отвечай только готовым текстом, без пояснений. Не используй символы # и **. НЕ добавляй эмодзи в текст."}, 
+                        {"role": "system", "content": "Ты редактор для Threads. Твоя задача - создать идеальный пост ровно на 400 символов. Текст должен быть завершенным, без многоточия. Используй эмодзи для эмоциональности. Проверяй количество символов перед ответом."},
                         {"role": "user", "content": f"{prompt}\n\n{text}"}
-                    ], 
-                    "temperature": 0.8, 
+                    ],
+                    "temperature": 0.8,
                     "max_tokens": 600
                 }
             )
+            
             if response.status_code == 200:
                 result = response.json()["choices"][0]["message"]["content"]
+                
+                # Очищаем результат от лишних фраз
                 result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
                 result = result.strip()
                 
+                # Если текст больше 400 символов - сокращаем без многоточия
                 if len(result) > 400:
-                    cut_point = 400
-                    while cut_point > 0 and result[cut_point] not in [' ', '.', ',', '!', '?', '\n']:
-                        cut_point -= 1
-                    if cut_point > 0:
-                        result = result[:cut_point] + "..."
-                    else:
-                        result = result[:397] + "..."
+                    # Пробуем обрезать по последнему предложению
+                    sentences = re.split(r'(?<=[.!?])\s+', result)
+                    shortened = ""
+                    for sent in sentences:
+                        if len(shortened) + len(sent) + 1 <= 400:
+                            if shortened:
+                                shortened += " " + sent
+                            else:
+                                shortened = sent
+                        else:
+                            remaining = 400 - len(shortened)
+                            if remaining > 10 and sent:
+                                words = sent.split()
+                                temp = ""
+                                for word in words:
+                                    if len(shortened) + len(temp) + len(word) + 1 <= 400:
+                                        if temp:
+                                            temp += " " + word
+                                        else:
+                                            temp = word
+                                    else:
+                                        break
+                                if temp:
+                                    shortened += " " + temp
+                            break
+                    
+                    result = shortened.strip()
                 
+                # Если текст меньше 400 символов - дополняем
+                elif len(result) < 400:
+                    additional = text.replace(result, "").strip()
+                    if additional:
+                        needed = 400 - len(result)
+                        words = additional.split()
+                        temp = ""
+                        for word in words:
+                            if len(result) + len(temp) + len(word) + 1 <= 400:
+                                if temp:
+                                    temp += " " + word
+                                else:
+                                    temp = word
+                            else:
+                                break
+                        if temp:
+                            if len(result) + len(temp) + 1 <= 400:
+                                result += " " + temp
+                
+                # Добавляем эмодзи в начало
                 emoji = detect_topic_emoji(result)
-                result = f"{emoji} {result}"
+                if len(emoji) + 1 + len(result) <= 400:
+                    result = f"{emoji} {result}"
+                else:
+                    result = result[:400 - len(emoji) - 2]
+                    result = f"{emoji} {result}"
+                
+                # Финальная проверка длины
+                if len(result) > 400:
+                    result = result[:400]
+                elif len(result) < 400:
+                    if len(result) < 380:
+                        additional = text.replace(result, "").strip()
+                        if additional:
+                            needed = 400 - len(result)
+                            words = additional.split()
+                            temp = ""
+                            for word in words:
+                                if len(result) + len(temp) + len(word) + 1 <= 400:
+                                    if temp:
+                                        temp += " " + word
+                                    else:
+                                        temp = word
+                                else:
+                                    break
+                            if temp and len(result) + len(temp) + 1 <= 400:
+                                result += " " + temp
                 
                 return result
+                
             return f"❌ Ошибка API: {response.status_code}"
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
