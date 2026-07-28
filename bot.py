@@ -1763,7 +1763,7 @@ async def process_text_with_deepseek(text: str) -> str:
 
 
 # =========================
-# Функция для создания поста в Telegram (ТОЛЬКО СОКРАЩЕНИЕ)
+# Функция для создания поста в Telegram (с жирным заголовком и абзацами)
 # =========================
 async def process_text_with_deepseek_tg(text: str) -> str:
     if not DEEPSEEK_API_KEY:
@@ -1775,12 +1775,23 @@ async def process_text_with_deepseek_tg(text: str) -> str:
 1. Текст должен быть не более 500 символов (включая пробелы и знаки препинания)
 2. Сохрани ВСЮ ключевую информацию: цифры, даты, имена, названия, события
 3. НЕ изменяй суть новости
-4. Заголовок: короткий, четкий, отражающий суть
-5. Текст: 2-3 предложения с главными фактами
+4. Заголовок: короткий, четкий, отражающий суть - сделай его отдельной строкой
+5. Текст: 2-3 абзаца с главными фактами для легкого чтения
 6. НЕ используй многоточие в конце - текст должен быть завершенным
 7. НЕ используй эмодзи в тексте (эмодзи добавится автоматически)
-8. НЕ используй маркдаун (#, **, и т.д.)
+8. НЕ используй маркдаун (#, **, и т.д.) - кроме жирного заголовка
 9. НЕ переписывай новость - только сократи
+10. Заголовок сделай жирным с помощью тега <b>Заголовок</b>
+11. Разбей текст на абзацы (2-3 абзаца) для удобного чтения
+
+Формат ответа:
+<b>Заголовок новости</b>
+
+Первый абзац с самой важной информацией.
+
+Второй абзац с дополнительными деталями.
+
+Третий абзац с итогом или последствиями (если нужно).
 
 Исходный текст:
 {text}
@@ -1795,7 +1806,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного канала. Сокращай новости, сохраняя всю важную информацию. НЕ используй эмодзи. Отвечай только готовым постом."},
+                        {"role": "system", "content": "Ты редактор новостного канала. Сокращай новости, сохраняя всю важную информацию. Разбивай текст на 2-3 абзаца для удобного чтения. НЕ используй эмодзи. Отвечай только готовым постом. Используй тег <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.3,
@@ -1812,21 +1823,66 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                 # Удаляем эмодзи
                 result = remove_emojis(result)
                 
-                # Обрезаем до 500 символов, но не разрывая предложения
+                # Проверяем, есть ли жирный заголовок
+                if not re.search(r'<b>.*?</b>', result):
+                    lines = result.split('\n')
+                    if lines:
+                        first_line = lines[0].strip()
+                        if first_line and len(first_line) < 100:
+                            result = f"<b>{first_line}</b>\n\n" + '\n\n'.join([line for line in lines[1:] if line.strip()])
+                
+                # Убеждаемся, что есть разделение на абзацы
+                if '\n\n' not in result.replace('<b>', '').replace('</b>', '').strip():
+                    # Если нет абзацев, разбиваем по предложениям
+                    sentences = re.split(r'(?<=[.!?])\s+', result)
+                    if len(sentences) > 2:
+                        # Убираем заголовок из предложений для разбивки
+                        title_match = re.search(r'<b>.*?</b>', result)
+                        if title_match:
+                            title = title_match.group(0)
+                            body = result.replace(title, '').strip()
+                            sentences = re.split(r'(?<=[.!?])\s+', body)
+                            if len(sentences) > 2:
+                                # Разбиваем на абзацы по 2-3 предложения
+                                paragraphs = []
+                                for i in range(0, len(sentences), 2):
+                                    para = ' '.join(sentences[i:i+2])
+                                    if para:
+                                        paragraphs.append(para)
+                                result = f"{title}\n\n" + '\n\n'.join(paragraphs)
+                
+                # Обрезаем до 500 символов (с учетом абзацев)
                 if len(result) > 500:
-                    # Ищем последнее предложение перед 500 символами
-                    cut_point = 500
-                    while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
-                        cut_point -= 1
-                    if cut_point > 10:  # Если нашли конец предложения
-                        result = result[:cut_point + 1]
+                    # Пытаемся обрезать по абзацам
+                    parts = result.split('\n\n')
+                    if len(parts) > 2:
+                        shortened = parts[0]
+                        for part in parts[1:]:
+                            if len(shortened) + len(part) + 2 <= 500:
+                                shortened += '\n\n' + part
+                            else:
+                                # Обрезаем последний абзац по предложению
+                                sentences = re.split(r'(?<=[.!?])\s+', part)
+                                for sent in sentences:
+                                    if len(shortened) + len(sent) + 2 <= 500:
+                                        shortened += '\n\n' + sent
+                                    else:
+                                        break
+                                break
+                        result = shortened
                     else:
-                        # Если не нашли, обрезаем по пробелу
+                        # Обрезаем по предложению
                         cut_point = 500
-                        while cut_point > 0 and result[cut_point] != ' ':
+                        while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
                             cut_point -= 1
                         if cut_point > 10:
-                            result = result[:cut_point]
+                            result = result[:cut_point + 1]
+                        else:
+                            cut_point = 500
+                            while cut_point > 0 and result[cut_point] != ' ':
+                                cut_point -= 1
+                            if cut_point > 10:
+                                result = result[:cut_point]
                 
                 # Добавляем 1 эмодзи в начало
                 emoji = detect_topic_emoji(result)
@@ -1843,7 +1899,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
 
 
 # =========================
-# Функция для создания поста в Тредс (ТОЛЬКО СОКРАЩЕНИЕ)
+# Функция для создания поста в Тредс (с жирным заголовком и абзацами)
 # =========================
 async def process_text_with_deepseek_threads(text: str) -> str:
     if not DEEPSEEK_API_KEY:
@@ -1855,13 +1911,21 @@ async def process_text_with_deepseek_threads(text: str) -> str:
 1. Текст должен быть не более 400 символов (включая пробелы и знаки препинания)
 2. Сохрани ВСЮ ключевую информацию: цифры, даты, имена, названия, события
 3. НЕ изменяй суть новости
-4. Заголовок: короткий, яркий, отражающий суть
-5. Текст: 2 предложения с главными фактами
+4. Заголовок: короткий, яркий, отражающий суть - сделай его отдельной строкой
+5. Текст: 2 абзаца с главными фактами для легкого чтения
 6. НЕ используй многоточие в конце - текст должен быть завершенным
 7. НЕ используй эмодзи в тексте (эмодзи добавится автоматически)
-8. НЕ используй маркдаун (#, **, и т.д.)
+8. НЕ используй маркдаун (#, **, и т.д.) - кроме жирного заголовка
 9. НЕ переписывай новость - только сократи
-10. Текст должен быть динамичным, вовлекающим
+10. Заголовок сделай жирным с помощью тега <b>Заголовок</b>
+11. Разбей текст на 2 абзаца для удобного чтения
+
+Формат ответа:
+<b>Заголовок новости</b>
+
+Первый абзац с самой важной информацией.
+
+Второй абзац с дополнительными деталями.
 
 Исходный текст:
 {text}
@@ -1876,7 +1940,7 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор для Threads. Сокращай новости, сохраняя всю важную информацию. НЕ используй эмодзи. Отвечай только готовым постом."},
+                        {"role": "system", "content": "Ты редактор для Threads. Сокращай новости, сохраняя всю важную информацию. Разбивай текст на 2 абзаца для удобного чтения. НЕ используй эмодзи. Отвечай только готовым постом. Используй тег <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.3,
@@ -1893,21 +1957,61 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                 # Удаляем эмодзи
                 result = remove_emojis(result)
                 
-                # Обрезаем до 400 символов, но не разрывая предложения
+                # Проверяем, есть ли жирный заголовок
+                if not re.search(r'<b>.*?</b>', result):
+                    lines = result.split('\n')
+                    if lines:
+                        first_line = lines[0].strip()
+                        if first_line and len(first_line) < 80:
+                            result = f"<b>{first_line}</b>\n\n" + '\n\n'.join([line for line in lines[1:] if line.strip()])
+                
+                # Убеждаемся, что есть разделение на абзацы
+                if '\n\n' not in result.replace('<b>', '').replace('</b>', '').strip():
+                    sentences = re.split(r'(?<=[.!?])\s+', result)
+                    if len(sentences) > 2:
+                        title_match = re.search(r'<b>.*?</b>', result)
+                        if title_match:
+                            title = title_match.group(0)
+                            body = result.replace(title, '').strip()
+                            sentences = re.split(r'(?<=[.!?])\s+', body)
+                            if len(sentences) > 2:
+                                mid = len(sentences) // 2
+                                para1 = ' '.join(sentences[:mid])
+                                para2 = ' '.join(sentences[mid:])
+                                if para1 and para2:
+                                    result = f"{title}\n\n{para1}\n\n{para2}"
+                                elif para1:
+                                    result = f"{title}\n\n{para1}"
+                
+                # Обрезаем до 400 символов
                 if len(result) > 400:
-                    # Ищем последнее предложение перед 400 символами
-                    cut_point = 400
-                    while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
-                        cut_point -= 1
-                    if cut_point > 10:  # Если нашли конец предложения
-                        result = result[:cut_point + 1]
+                    parts = result.split('\n\n')
+                    if len(parts) > 2:
+                        shortened = parts[0]
+                        for part in parts[1:]:
+                            if len(shortened) + len(part) + 2 <= 400:
+                                shortened += '\n\n' + part
+                            else:
+                                sentences = re.split(r'(?<=[.!?])\s+', part)
+                                for sent in sentences:
+                                    if len(shortened) + len(sent) + 2 <= 400:
+                                        shortened += '\n\n' + sent
+                                    else:
+                                        break
+                                break
+                        result = shortened
                     else:
-                        # Если не нашли, обрезаем по пробелу
                         cut_point = 400
-                        while cut_point > 0 and result[cut_point] != ' ':
+                        while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
                             cut_point -= 1
                         if cut_point > 10:
-                            result = result[:cut_point]
+                            result = result[:cut_point + 1]
+                        else:
+                            cut_point = 400
+                            while cut_point > 0 and result[cut_point] != ' ':
+                                cut_point -= 1
+                            if cut_point > 10:
+                                result = result[:cut_point]
                 
                 # Добавляем 1 эмодзи в начало
                 emoji = detect_topic_emoji(result)
@@ -1936,10 +2040,20 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
 1. Текст должен быть не более 500 символов
 2. Сохрани ВСЮ ключевую информацию: цифры, даты, имена, названия, события
 3. НЕ изменяй суть новости
-4. Заголовок: новый, но такой же информативный
+4. Заголовок: новый, но такой же информативный - сделай его жирным с помощью <b>
 5. НЕ используй многоточие в конце
 6. НЕ используй эмодзи в тексте (эмодзи добавится автоматически)
-7. НЕ используй маркдаун
+7. НЕ используй маркдаун (кроме <b> для заголовка)
+8. Разбей текст на 2-3 абзаца для удобного чтения
+
+Формат ответа:
+<b>Новый заголовок</b>
+
+Первый абзац с главной информацией.
+
+Второй абзац с деталями.
+
+Третий абзац с итогом (если нужно).
 
 Важно: Переделай текст в новый формат, но вся информация должна остаться
 
@@ -1956,7 +2070,7 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного канала. Переделывай новости в новые посты, сохраняя всю информацию. НЕ используй эмодзи. Отвечай только готовым постом."},
+                        {"role": "system", "content": "Ты редактор новостного канала. Переделывай новости в новые посты, сохраняя всю информацию. Разбивай текст на 2-3 абзаца. НЕ используй эмодзи. Отвечай только готовым постом. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.4,
@@ -1972,18 +2086,41 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                 
                 result = remove_emojis(result)
                 
+                if not re.search(r'<b>.*?</b>', result):
+                    lines = result.split('\n')
+                    if lines:
+                        first_line = lines[0].strip()
+                        if first_line and len(first_line) < 100:
+                            result = f"<b>{first_line}</b>\n\n" + '\n\n'.join([line for line in lines[1:] if line.strip()])
+                
                 if len(result) > 500:
-                    cut_point = 500
-                    while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
-                        cut_point -= 1
-                    if cut_point > 10:
-                        result = result[:cut_point + 1]
+                    parts = result.split('\n\n')
+                    if len(parts) > 2:
+                        shortened = parts[0]
+                        for part in parts[1:]:
+                            if len(shortened) + len(part) + 2 <= 500:
+                                shortened += '\n\n' + part
+                            else:
+                                sentences = re.split(r'(?<=[.!?])\s+', part)
+                                for sent in sentences:
+                                    if len(shortened) + len(sent) + 2 <= 500:
+                                        shortened += '\n\n' + sent
+                                    else:
+                                        break
+                                break
+                        result = shortened
                     else:
                         cut_point = 500
-                        while cut_point > 0 and result[cut_point] != ' ':
+                        while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
                             cut_point -= 1
                         if cut_point > 10:
-                            result = result[:cut_point]
+                            result = result[:cut_point + 1]
+                        else:
+                            cut_point = 500
+                            while cut_point > 0 and result[cut_point] != ' ':
+                                cut_point -= 1
+                            if cut_point > 10:
+                                result = result[:cut_point]
                 
                 emoji = detect_topic_emoji(result)
                 result = f"{emoji} {result}"
@@ -2011,10 +2148,18 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 1. Текст должен быть не более 400 символов
 2. Сохрани ВСЮ ключевую информацию: цифры, даты, имена, названия, события
 3. НЕ изменяй суть новости
-4. Заголовок: новый, интригующий
+4. Заголовок: новый, интригующий - сделай его жирным с помощью <b>
 5. НЕ используй многоточие в конце
 6. НЕ используй эмодзи в тексте (эмодзи добавится автоматически)
-7. НЕ используй маркдаун
+7. НЕ используй маркдаун (кроме <b> для заголовка)
+8. Разбей текст на 2 абзаца для удобного чтения
+
+Формат ответа:
+<b>Новый заголовок</b>
+
+Первый абзац с главной информацией.
+
+Второй абзац с дополнительными деталями.
 
 Важно: Переделай текст в новый формат, но вся информация должна остаться
 
@@ -2031,7 +2176,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор для Threads. Переделывай новости в новые посты, сохраняя всю информацию. НЕ используй эмодзи. Отвечай только готовым постом."},
+                        {"role": "system", "content": "Ты редактор для Threads. Переделывай новости в новые посты, сохраняя всю информацию. Разбивай текст на 2 абзаца. НЕ используй эмодзи. Отвечай только готовым постом. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.4,
@@ -2047,18 +2192,41 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                 
                 result = remove_emojis(result)
                 
+                if not re.search(r'<b>.*?</b>', result):
+                    lines = result.split('\n')
+                    if lines:
+                        first_line = lines[0].strip()
+                        if first_line and len(first_line) < 80:
+                            result = f"<b>{first_line}</b>\n\n" + '\n\n'.join([line for line in lines[1:] if line.strip()])
+                
                 if len(result) > 400:
-                    cut_point = 400
-                    while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
-                        cut_point -= 1
-                    if cut_point > 10:
-                        result = result[:cut_point + 1]
+                    parts = result.split('\n\n')
+                    if len(parts) > 2:
+                        shortened = parts[0]
+                        for part in parts[1:]:
+                            if len(shortened) + len(part) + 2 <= 400:
+                                shortened += '\n\n' + part
+                            else:
+                                sentences = re.split(r'(?<=[.!?])\s+', part)
+                                for sent in sentences:
+                                    if len(shortened) + len(sent) + 2 <= 400:
+                                        shortened += '\n\n' + sent
+                                    else:
+                                        break
+                                break
+                        result = shortened
                     else:
                         cut_point = 400
-                        while cut_point > 0 and result[cut_point] != ' ':
+                        while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
                             cut_point -= 1
                         if cut_point > 10:
-                            result = result[:cut_point]
+                            result = result[:cut_point + 1]
+                        else:
+                            cut_point = 400
+                            while cut_point > 0 and result[cut_point] != ' ':
+                                cut_point -= 1
+                            if cut_point > 10:
+                                result = result[:cut_point]
                 
                 emoji = detect_topic_emoji(result)
                 result = f"{emoji} {result}"
