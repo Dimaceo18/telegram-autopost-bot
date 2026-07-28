@@ -60,11 +60,15 @@ if CHANNEL_TEST and not CHANNEL_TEST.startswith("@"):
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-# Размеры
+MAX_FILE_SIZE = 50 * 1024 * 1024
+
 TARGET_W, TARGET_H = 720, 900
 STORY_W, STORY_H = 720, 1280
 
-# Шрифты
+FDR_POST_PURPLE_COLOR = (122, 58, 240)
+TEXT_POSITION_TOP = "top"
+TEXT_POSITION_BOTTOM = "bottom"
+
 FONT_MN = "CaviarDreams.ttf"
 FONT_MN_BOLD = "CaviarDreams_Bold.ttf"
 FONT_CHP = "Montserrat-Black.ttf"
@@ -75,17 +79,13 @@ FONT_FALLBACK = "Montserrat-Black.ttf"
 FONT_REGULAR = "Inter-Regular.ttf"
 
 FOOTER_TEXT = "MINSK NEWS"
-TEXT_POSITION_TOP = "top"
-TEXT_POSITION_BOTTOM = "bottom"
 
-# Параметры шаблонов
 MN_TITLE_ZONE_PCT = 0.23
 CHP_GRADIENT_PCT = 0.48
 AM_TOP_BLUR_PCT = 0.20
 AM_BLUR_RADIUS = 18
 AM_BLUR_BLEND = 0.50
 
-# Параметры АМ2
 BRIGHTNESS_FACTOR = 0.85
 GRADIENT_HEIGHT_PCT = 0.48
 GRADIENT_MAX_ALPHA = 220
@@ -94,6 +94,7 @@ TEXT_MAX_WIDTH_PCT = 0.80
 LINE_SPACING_RATIO = 0.22
 DATE_PLACE_BOTTOM_MARGIN = 180
 DATE_PLACE_TOP_MARGIN = 130
+DATE_PLACE_LINE_SPACING = 15
 DATE_PLACE_LEFT_MARGIN = 45
 RUBRIC_TOP_MARGIN = 40
 RUBRIC_PADDING = 20
@@ -101,11 +102,9 @@ RUBRIC_RADIUS = 25
 DATE_PLACE_PADDING = 15
 DATE_PLACE_RADIUS = 25
 
-# Цвета
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
 TEXT_COLOR = (255, 255, 255)
-FDR_POST_PURPLE_COLOR = (122, 58, 240)
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
 
 HIGHLIGHT_COLORS = {
     "red": (255, 80, 80),
@@ -358,6 +357,9 @@ def send_media_group_with_retry(chat_id, media_list, max_retries=3):
                         pass
                 return None
     return None
+
+def check_file_size(file_bytes: bytes) -> bool:
+    return len(file_bytes) <= MAX_FILE_SIZE
 
 def tg_file_bytes(file_id: str) -> bytes:
     try:
@@ -1819,7 +1821,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 
 
 # =========================
-# EXTRACT ARTICLE CONTENT
+# EXTRACT ARTICLE CONTENT (ТОЛЬКО КОПИРОВАЛЬЩИК)
 # =========================
 async def extract_article_content(url: str) -> Dict[str, any]:
     if not DEEPSEEK_API_KEY:
@@ -1831,19 +1833,23 @@ async def extract_article_content(url: str) -> Dict[str, any]:
         }
     
     try:
-        prompt = f"""Прочитай статью по ссылке ниже и извлеки из неё текст.
+        prompt = f"""Ты КОПИРОВАЛЬЩИК текста. Скопируй текст статьи по ссылке ТОЧНО как на сайте.
 
 URL статьи: {url}
 
-Правила:
-1. Прочитай страницу по ссылке
-2. Извлеки ТОЛЬКО текст статьи
-3. Убери рекламу, баннеры, меню, навигацию
-4. Сохрани структуру абзацев
-5. НЕ ИЗМЕНЯЙ ТЕКСТ - верни его точно как на сайте
-6. Верни полный текст без изменений
+КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА:
+1. Ты НЕ редактор, ты КОПИРОВАЛЬЩИК
+2. Скопируй ТОЧНО такой же текст, как на сайте - слово в слово
+3. НЕ МЕНЯЙ слова, НЕ ПЕРЕФРАЗИРУЙ, НЕ РЕДАКТИРУЙ
+4. НЕ добавляй свои слова, НЕ убирай слова
+5. НЕ меняй имена, названия, цифры, даты
+6. НЕ додумывай информацию, которой нет в тексте
+7. НЕ изменяй суть текста
+8. Сохрани все абзацы и структуру
+9. Убери только рекламу, баннеры, меню, навигацию
+10. Верни ПОЛНЫЙ текст статьи без изменений
 
-Верни только текст статьи, без пояснений.
+Верни только точную копию текста статьи, без пояснений.
 """
 
         async with httpx.AsyncClient(timeout=90.0) as client:
@@ -1853,10 +1859,10 @@ URL статьи: {url}
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты помощник по извлечению контента. Извлекай точный текст без изменений."},
+                        {"role": "system", "content": "Ты КОПИРОВАЛЬЩИК текста. Твоя задача - скопировать текст ТОЧНО как на сайте, без изменений, без перефразирования, без редактирования. Ты НЕ редактор, ты КОПИРОВАЛЬЩИК. Скопируй текст слово в слово."},
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": 0.1,
+                    "temperature": 0.0,
                     "max_tokens": 8000
                 }
             )
@@ -1868,6 +1874,7 @@ URL статьи: {url}
                 result = re.sub(r'^Текст статьи.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Извлеченный текст.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Вот текст статьи.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Ссылка.*?:', '', result, flags=re.IGNORECASE)
                 result = result.strip()
                 
@@ -1976,7 +1983,7 @@ def run_http_server():
 
 
 # =========================
-# CALLBACK HANDLERS
+# CALLBACK HANDLERS (ОСНОВНЫЕ)
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("prices:"))
 def on_prices_callback(c):
@@ -2140,17 +2147,41 @@ def on_repost_action(c):
         try:
             original_text = st.get("original_text", "")
             result = loop.run_until_complete(process_text_with_deepseek_tg(original_text))
+            
             st["tg_post_text"] = result
             st["post_type"] = "tg"
             st["step"] = "waiting_post_action"
+            
+            if st.get("photo_bytes"):
+                st["saved_photo_bytes"] = st["photo_bytes"]
+                logger.info(f"Saved photo for TG post for user {uid}")
+            
             user_state[uid] = st
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
-            send_message_with_retry(c.message.chat.id, f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}", parse_mode="HTML", reply_markup=post_action_kb("tg"))
+            
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            elif st.get("video_info"):
+                media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+            elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+                photo_count = len(st["media_group"].get("photos", []))
+                video_count = len(st["media_group"].get("videos", []))
+                media_info = f"\n📸 <b>Медиа:</b> {photo_count} фото, {video_count} видео"
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("tg")
+            )
+            
             try:
                 bot.delete_message(c.message.chat.id, c.message.message_id)
             except:
                 pass
+            
         except Exception as e:
             logger.error(f"TG post error: {e}")
             bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
@@ -2170,17 +2201,41 @@ def on_repost_action(c):
         try:
             original_text = st.get("original_text", "")
             result = loop.run_until_complete(process_text_with_deepseek_threads(original_text))
+            
             st["threads_post_text"] = result
             st["post_type"] = "threads"
             st["step"] = "waiting_post_action"
+            
+            if st.get("photo_bytes"):
+                st["saved_photo_bytes"] = st["photo_bytes"]
+                logger.info(f"Saved photo for Threads post for user {uid}")
+            
             user_state[uid] = st
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
-            send_message_with_retry(c.message.chat.id, f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}", parse_mode="HTML", reply_markup=post_action_kb("threads"))
+            
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            elif st.get("video_info"):
+                media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+            elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+                photo_count = len(st["media_group"].get("photos", []))
+                video_count = len(st["media_group"].get("videos", []))
+                media_info = f"\n📸 <b>Медиа:</b> {photo_count} фото, {video_count} видео"
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("threads")
+            )
+            
             try:
                 bot.delete_message(c.message.chat.id, c.message.message_id)
             except:
                 pass
+            
         except Exception as e:
             logger.error(f"Threads post error: {e}")
             bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
@@ -2291,20 +2346,47 @@ def on_tg_action(c):
         asyncio.set_event_loop(loop)
         try:
             original_text = st.get("original_text_for_ai") or st.get("original_text") or st.get("extracted_text")
+            
             if not original_text:
-                bot.edit_message_text("❌ Нет исходного текста для переделки.", c.message.chat.id, processing_msg.message_id)
+                bot.edit_message_text(
+                    "❌ Нет исходного текста для переделки. Отправьте новую ссылку или текст.",
+                    c.message.chat.id,
+                    processing_msg.message_id
+                )
                 return
             
             result = loop.run_until_complete(process_text_with_deepseek_tg_redo(original_text))
+            
             st["tg_post_text"] = result
             user_state[uid] = st
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            if st.get("photo_bytes"):
+                st["saved_photo_bytes"] = st["photo_bytes"]
+            
             try:
                 bot.delete_message(c.message.chat.id, c.message.message_id)
             except:
                 pass
-            send_message_with_retry(c.message.chat.id, f"📱 <b>Пост для Telegram (500 символов) - версия 2</b>\n\n{result}", parse_mode="HTML", reply_markup=post_action_kb("tg"))
+            
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            elif st.get("video_info"):
+                media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+            elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+                photo_count = len(st["media_group"].get("photos", []))
+                video_count = len(st["media_group"].get("videos", []))
+                media_info = f"\n📸 <b>Медиа:</b> {photo_count} фото, {video_count} видео"
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Telegram (500 символов) - версия 2</b>\n\n{result}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("tg")
+            )
+                
         except Exception as e:
             logger.error(f"TG redo error: {e}")
             bot.edit_message_text(f"❌ Ошибка при переделке: {e}", c.message.chat.id, processing_msg.message_id)
@@ -2313,7 +2395,12 @@ def on_tg_action(c):
     
     elif action == "select_channel":
         bot.answer_callback_query(c.id, "📢 Выбери канал")
-        send_message_with_retry(c.message.chat.id, "📢 <b>Выбери канал для публикации поста:</b>", parse_mode="HTML", reply_markup=post_channel_selection_kb("tg"))
+        send_message_with_retry(
+            c.message.chat.id,
+            "📢 <b>Выбери канал для публикации поста:</b>",
+            parse_mode="HTML",
+            reply_markup=post_channel_selection_kb("tg")
+        )
     
     elif action == "back":
         bot.answer_callback_query(c.id, "◀️ Назад")
@@ -2334,20 +2421,47 @@ def on_threads_action(c):
         asyncio.set_event_loop(loop)
         try:
             original_text = st.get("original_text_for_ai") or st.get("original_text") or st.get("extracted_text")
+            
             if not original_text:
-                bot.edit_message_text("❌ Нет исходного текста для переделки.", c.message.chat.id, processing_msg.message_id)
+                bot.edit_message_text(
+                    "❌ Нет исходного текста для переделки. Отправьте новую ссылку или текст.",
+                    c.message.chat.id,
+                    processing_msg.message_id
+                )
                 return
             
             result = loop.run_until_complete(process_text_with_deepseek_threads_redo(original_text))
+            
             st["threads_post_text"] = result
             user_state[uid] = st
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            if st.get("photo_bytes"):
+                st["saved_photo_bytes"] = st["photo_bytes"]
+            
             try:
                 bot.delete_message(c.message.chat.id, c.message.message_id)
             except:
                 pass
-            send_message_with_retry(c.message.chat.id, f"📱 <b>Пост для Threads (400 символов) - версия 2</b>\n\n{result}", parse_mode="HTML", reply_markup=post_action_kb("threads"))
+            
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            elif st.get("video_info"):
+                media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+            elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+                photo_count = len(st["media_group"].get("photos", []))
+                video_count = len(st["media_group"].get("videos", []))
+                media_info = f"\n📸 <b>Медиа:</b> {photo_count} фото, {video_count} видео"
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Threads (400 символов) - версия 2</b>\n\n{result}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("threads")
+            )
+                
         except Exception as e:
             logger.error(f"Threads redo error: {e}")
             bot.edit_message_text(f"❌ Ошибка при переделке: {e}", c.message.chat.id, processing_msg.message_id)
@@ -2356,7 +2470,12 @@ def on_threads_action(c):
     
     elif action == "select_channel":
         bot.answer_callback_query(c.id, "📢 Выбери канал")
-        send_message_with_retry(c.message.chat.id, "📢 <b>Выбери канал для публикации поста:</b>", parse_mode="HTML", reply_markup=post_channel_selection_kb("threads"))
+        send_message_with_retry(
+            c.message.chat.id,
+            "📢 <b>Выбери канал для публикации поста:</b>",
+            parse_mode="HTML",
+            reply_markup=post_channel_selection_kb("threads")
+        )
     
     elif action == "back":
         bot.answer_callback_query(c.id, "◀️ Назад")
@@ -2376,9 +2495,25 @@ def on_post_channel_select(c):
         except:
             pass
         if post_type == "tg" and st.get("tg_post_text"):
-            send_message_with_retry(c.message.chat.id, f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{st['tg_post_text']}", parse_mode="HTML", reply_markup=post_action_kb("tg"))
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{st['tg_post_text']}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("tg")
+            )
         elif post_type == "threads" and st.get("threads_post_text"):
-            send_message_with_retry(c.message.chat.id, f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{st['threads_post_text']}", parse_mode="HTML", reply_markup=post_action_kb("threads"))
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{st['threads_post_text']}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("threads")
+            )
         return
     
     if channel_type == "mn":
@@ -2411,19 +2546,110 @@ def on_post_channel_select(c):
             bot.answer_callback_query(c.id, "❌ Нет текста для публикации")
             return
         
-        bot.send_message(target_channel, post_text, parse_mode="HTML")
+        media_group = st.get("media_group", {"photos": [], "videos": []})
+        photo_bytes = st.get("photo_bytes") or st.get("saved_photo_bytes")
+        video_info = st.get("video_info")
+        
+        has_media = False
+        
+        if photo_bytes:
+            send_photo_with_retry(
+                target_channel,
+                BytesIO(photo_bytes),
+                caption=post_text,
+                parse_mode="HTML"
+            )
+            has_media = True
+            logger.info(f"Published photo to {channel_name} with post text")
+            
+        elif media_group.get("photos") or media_group.get("videos"):
+            media_list = []
+            first = True
+            
+            for photo in media_group.get("photos", []):
+                if first:
+                    media_list.append(InputMediaPhoto(BytesIO(photo), caption=post_text, parse_mode="HTML"))
+                    first = False
+                else:
+                    media_list.append(InputMediaPhoto(BytesIO(photo)))
+            
+            for video in media_group.get("videos", []):
+                file_id = video.get('file_id')
+                if file_id:
+                    if first:
+                        media_list.append(InputMediaVideo(file_id, caption=post_text, parse_mode="HTML"))
+                        first = False
+                    else:
+                        media_list.append(InputMediaVideo(file_id))
+            
+            if len(media_list) > 1:
+                send_media_group_with_retry(target_channel, media_list)
+                has_media = True
+                logger.info(f"Published {len(media_list)} media items to {channel_name}")
+            elif len(media_list) == 1:
+                if isinstance(media_list[0], InputMediaPhoto):
+                    send_photo_with_retry(target_channel, media_list[0].media, caption=media_list[0].caption, parse_mode="HTML")
+                elif isinstance(media_list[0], InputMediaVideo):
+                    bot.send_video(target_channel, media_list[0].media, caption=media_list[0].caption, parse_mode="HTML")
+                has_media = True
+        
+        elif video_info:
+            try:
+                file_id = video_info.get('file_id')
+                if file_id:
+                    bot.send_video(
+                        target_channel,
+                        file_id,
+                        caption=post_text,
+                        parse_mode="HTML"
+                    )
+                    has_media = True
+                    logger.info(f"Published video to {channel_name} with post text")
+            except Exception as e:
+                logger.error(f"Error sending video: {e}")
+                bot.send_message(target_channel, post_text, parse_mode="HTML")
+                has_media = True
+        
+        if not has_media:
+            bot.send_message(target_channel, post_text, parse_mode="HTML")
+            logger.info(f"Published text only to {channel_name}")
+        
         bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name}")
         try:
             bot.delete_message(c.message.chat.id, c.message.message_id)
         except:
             pass
+        
         clear_state(uid)
-        send_message_with_retry(c.message.chat.id, f"✅ Пост опубликован в канале {channel_name}!", reply_markup=main_menu_kb())
+        send_message_with_retry(
+            c.message.chat.id,
+            f"✅ Пост опубликован в канале {channel_name}!",
+            reply_markup=main_menu_kb()
+        )
         
     except Exception as e:
         logger.error(f"Error publishing post to channel: {e}")
         bot.answer_callback_query(c.id, "❌ Ошибка публикации")
-        send_message_with_retry(c.message.chat.id, f"❌ Не удалось опубликовать: {e}", reply_markup=main_menu_kb())
+        
+        try:
+            if post_type == "tg":
+                post_text = st.get("tg_post_text", "")
+            else:
+                post_text = st.get("threads_post_text", "")
+            
+            if post_text:
+                bot.send_message(target_channel, post_text, parse_mode="HTML")
+                send_message_with_retry(
+                    c.message.chat.id,
+                    f"⚠️ Текст опубликован, но медиа не загрузились.",
+                    reply_markup=main_menu_kb()
+                )
+        except:
+            send_message_with_retry(
+                c.message.chat.id,
+                f"❌ Не удалось опубликовать: {e}",
+                reply_markup=main_menu_kb()
+            )
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("select_channel:"))
 def on_select_channel(c):
@@ -2496,7 +2722,7 @@ def on_action(call):
     uid = call.from_user.id
     st = user_state.get(uid)
     if not st or st.get("step") != "waiting_action":
-        bot.answer_callback_query(call.id, "Нет активного превью. Начни с «Оформить пост».")
+        bot.answer_callback_query(call.id, "Нет активного превью.")
         return
     if call.data == "publish":
         try:
@@ -2505,8 +2731,15 @@ def on_action(call):
             if photo_to_send is None:
                 photo_to_send = st.get("card_bytes")
             if photo_to_send:
-                send_photo_with_retry(CHANNEL, BytesIO(photo_to_send), caption=caption, parse_mode="HTML")
-                bot.answer_callback_query(call.id, "Опубликовано ✅")
+                # Используем CHANNEL из ENV
+                channel = os.getenv("CHANNEL_USERNAME", "").strip()
+                if channel and not channel.startswith("@"):
+                    channel = "@" + channel
+                if channel:
+                    send_photo_with_retry(channel, BytesIO(photo_to_send), caption=caption, parse_mode="HTML")
+                    bot.answer_callback_query(call.id, "Опубликовано ✅")
+                else:
+                    bot.answer_callback_query(call.id, "❌ Канал не настроен")
                 send_message_with_retry(call.message.chat.id, "Готово ✅", reply_markup=main_menu_kb())
             else:
                 bot.answer_callback_query(call.id, "❌ Нет фото для публикации")
@@ -2794,10 +3027,25 @@ def on_article_action(c):
             st["tg_post_text"] = result
             st["post_type"] = "tg"
             st["step"] = "waiting_post_action"
+            
+            if st.get("extracted_images"):
+                st["photo_bytes"] = st["extracted_images"][0]
+                st["saved_photo_bytes"] = st["extracted_images"][0]
+            
             user_state[uid] = st
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
-            send_message_with_retry(c.message.chat.id, f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}", parse_mode="HTML", reply_markup=post_action_kb("tg"))
+            
+            media_info = ""
+            if st.get("extracted_images"):
+                media_info = f"\n📸 <b>Медиа:</b> {len(st['extracted_images'])} фото сохранено"
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("tg")
+            )
             try:
                 bot.delete_message(c.message.chat.id, c.message.message_id)
             except:
@@ -2824,10 +3072,25 @@ def on_article_action(c):
             st["threads_post_text"] = result
             st["post_type"] = "threads"
             st["step"] = "waiting_post_action"
+            
+            if st.get("extracted_images"):
+                st["photo_bytes"] = st["extracted_images"][0]
+                st["saved_photo_bytes"] = st["extracted_images"][0]
+            
             user_state[uid] = st
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
-            send_message_with_retry(c.message.chat.id, f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}", parse_mode="HTML", reply_markup=post_action_kb("threads"))
+            
+            media_info = ""
+            if st.get("extracted_images"):
+                media_info = f"\n📸 <b>Медиа:</b> {len(st['extracted_images'])} фото сохранено"
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("threads")
+            )
             try:
                 bot.delete_message(c.message.chat.id, c.message.message_id)
             except:
@@ -2839,10 +3102,18 @@ def on_article_action(c):
             loop.close()
     
     elif action == "watermark":
-        bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
-        st["step"] = "waiting_watermark_type"
-        user_state[uid] = st
-        send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>", parse_mode="HTML", reply_markup=watermark_type_kb())
+        if st.get("extracted_images") and len(st["extracted_images"]) > 0:
+            st["photo_bytes"] = st["extracted_images"][0]
+            st["saved_photo_bytes"] = st["extracted_images"][0]
+            st["step"] = "waiting_watermark_type"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
+            send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>", parse_mode="HTML", reply_markup=watermark_type_kb())
+        else:
+            st["step"] = "waiting_watermark_type"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
+            send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>", parse_mode="HTML", reply_markup=watermark_type_kb())
         try:
             bot.delete_message(c.message.chat.id, c.message.message_id)
         except:
@@ -3063,6 +3334,7 @@ def handle_article_link(message):
         st["extracted_text"] = result.get("text", "")
         st["extracted_title"] = result.get("title", "")
         st["extracted_url"] = result.get("url", url)
+        st["extracted_images"] = []
         st["step"] = "waiting_extracted_article"
         user_state[uid] = st
         
@@ -3332,7 +3604,6 @@ def on_text(message):
     else:
         user_state[uid] = st
         send_message_with_retry(message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
-
 
 # =========================
 # HANDLE PHOTO
