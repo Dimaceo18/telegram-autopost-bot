@@ -2242,7 +2242,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 
 
 # =========================
-# Функция для извлечения контента из статей через ИИ
+# Функция для извлечения контента из статей через ИИ (ИСПРАВЛЕННАЯ)
 # =========================
 async def extract_article_content(url: str) -> Dict[str, any]:
     if not DEEPSEEK_API_KEY:
@@ -2254,27 +2254,71 @@ async def extract_article_content(url: str) -> Dict[str, any]:
         }
     
     try:
-        prompt = f"""Прочитай статью по ссылке ниже и извлеки из неё текст И все URL изображений.
-
-URL статьи: {url}
+        # Сначала загружаем HTML страницы
+        logger.info(f"Loading article from URL: {url}")
+        
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            })
+            html_content = response.text
+            logger.info(f"Loaded {len(html_content)} bytes of HTML")
+        
+        # Извлекаем заголовок страницы
+        title_match = re.search(r'<title>(.*?)</title>', html_content, re.IGNORECASE)
+        page_title = title_match.group(1).strip() if title_match else "Статья"
+        
+        # Очищаем HTML от скриптов и стилей для уменьшения объема
+        clean_html = re.sub(r'<script.*?>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
+        clean_html = re.sub(r'<style.*?>.*?</style>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
+        clean_html = re.sub(r'<nav.*?>.*?</nav>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
+        clean_html = re.sub(r'<header.*?>.*?</header>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
+        clean_html = re.sub(r'<footer.*?>.*?</footer>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Извлекаем все изображения из HTML
+        image_urls = []
+        img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>', html_content, re.IGNORECASE)
+        
+        for img_url in img_matches:
+            if img_url.startswith('http'):
+                image_urls.append(img_url)
+            elif img_url.startswith('/'):
+                parsed = urlparse(url)
+                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                image_urls.append(base_url + img_url)
+            elif img_url.startswith('data:image'):
+                continue
+            else:
+                image_urls.append(urljoin(url, img_url))
+        
+        # Удаляем дубликаты и ограничиваем количество
+        image_urls = list(dict.fromkeys(image_urls))[:10]
+        logger.info(f"Found {len(image_urls)} images in article")
+        
+        # Отправляем HTML в DeepSeek для извлечения текста
+        prompt = f"""Ты помощник по извлечению контента. Извлеки основной текст статьи из HTML кода.
 
 Правила:
-1. Прочитай страницу по ссылке
-2. Извлеки ТОЛЬКО текст статьи
-3. Убери всю рекламу, баннеры, меню, навигацию
-4. Убери подписи к фото, авторские права
-5. Убери комментарии и блоки "похожие статьи"
-6. Сохрани структуру абзацев
-7. НЕ ИЗМЕНЯЙ ТЕКСТ - верни его точно таким же, как на сайте
-8. НЕ сокращай, НЕ переписывай, НЕ редактируй текст
-9. Если в тексте УЖЕ есть день недели - оставь его. НЕ добавляй день недели, если его нет
-10. Если место УЖЕ указано - оставь его. НЕ придумывай место, если его нет
-11. Верни полный текст статьи без изменений
-12. В конце текста перечисли ВСЕ URL изображений из статьи
+1. Извлеки ТОЛЬКО основной текст статьи
+2. Убери всю рекламу, баннеры, меню, навигацию
+3. Убери подписи к фото, авторские права
+4. Убери комментарии и блоки "похожие статьи"
+5. Сохрани структуру абзацев (расставь переносы строк между абзацами)
+6. НЕ ИЗМЕНЯЙ ТЕКСТ - верни его точно таким же, как на сайте
+7. НЕ сокращай, НЕ переписывай, НЕ редактируй текст
+8. Если в тексте УЖЕ есть день недели - оставь его. НЕ добавляй день недели, если его нет
+9. Если место УЖЕ указано - оставь его. НЕ придумывай место, если его нет
+10. Верни полный текст статьи без изменений
 
-Верни текст статьи и список изображений."""
+Заголовок страницы: {page_title}
+URL: {url}
 
-        async with httpx.AsyncClient(timeout=90.0) as client:
+HTML код страницы (сокращенный):
+{clean_html[:20000]}
+
+Верни ТОЛЬКО текст статьи, без пояснений."""
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 DEEPSEEK_API_URL,
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
@@ -2290,41 +2334,22 @@ URL статьи: {url}
             )
             
             if response.status_code == 200:
-                result = response.json()["choices"][0]["message"]["content"]
+                extracted_text = response.json()["choices"][0]["message"]["content"]
                 
-                images = []
-                img_urls_from_text = []
+                # Очищаем результат от лишних фраз
+                extracted_text = re.sub(r'^Вот извлеченный текст статьи.*?:', '', extracted_text, flags=re.IGNORECASE)
+                extracted_text = re.sub(r'^Текст статьи.*?:', '', extracted_text, flags=re.IGNORECASE)
+                extracted_text = re.sub(r'^Извлеченный текст.*?:', '', extracted_text, flags=re.IGNORECASE)
+                extracted_text = re.sub(r'^Вот текст статьи.*?:', '', extracted_text, flags=re.IGNORECASE)
+                extracted_text = re.sub(r'^Ссылка.*?:', '', extracted_text, flags=re.IGNORECASE)
+                extracted_text = extracted_text.strip()
                 
-                img_section_match = re.search(r'ИЗОБРАЖЕНИЯ:\s*(.*?)(?:\n\n|$)', result, re.IGNORECASE | re.DOTALL)
-                if img_section_match:
-                    img_urls_text = img_section_match.group(1)
-                    img_urls_from_text = re.findall(r'https?://[^\s]+', img_urls_text)
-                    result = re.sub(r'ИЗОБРАЖЕНИЯ:\s*.*?(?:\n\n|$)', '', result, flags=re.IGNORECASE | re.DOTALL)
+                logger.info(f"Extracted {len(extracted_text)} characters of text")
                 
-                all_img_urls = re.findall(r'https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp|svg)', result, re.IGNORECASE)
-                all_img_urls.extend(img_urls_from_text)
-                all_img_urls = list(dict.fromkeys(all_img_urls))
-                
-                result = re.sub(r'^Вот извлеченный текст статьи.*?:', '', result, flags=re.IGNORECASE)
-                result = re.sub(r'^Текст статьи.*?:', '', result, flags=re.IGNORECASE)
-                result = re.sub(r'^Извлеченный текст.*?:', '', result, flags=re.IGNORECASE)
-                result = re.sub(r'^Вот текст статьи.*?:', '', result, flags=re.IGNORECASE)
-                result = re.sub(r'^Ссылка.*?:', '', result, flags=re.IGNORECASE)
-                result = result.strip()
-                
-                lines = result.split('\n')
-                page_title = lines[0].strip() if lines else ""
-                body_text = '\n'.join(lines[1:]).strip() if len(lines) > 1 else ""
-                
-                if len(page_title) < 10 or 'http' in page_title:
-                    title_match = re.search(r'^(.{10,200}?)(?:\n|$)', result)
-                    if title_match:
-                        page_title = title_match.group(1).strip()
-                        body_text = result[len(page_title):].strip()
-                
+                # Загружаем изображения
                 downloaded_images = []
                 async with httpx.AsyncClient(timeout=30.0) as img_client:
-                    for img_url in all_img_urls[:10]:
+                    for img_url in image_urls[:5]:
                         try:
                             if img_url.startswith('//'):
                                 img_url = 'https:' + img_url
@@ -2346,7 +2371,7 @@ URL статьи: {url}
                             logger.error(f"Error downloading image: {e}")
                 
                 return {
-                    "text": body_text,
+                    "text": extracted_text,
                     "title": page_title,
                     "images": downloaded_images,
                     "url": url
@@ -2362,14 +2387,14 @@ URL статьи: {url}
                 return {
                     "text": error_text,
                     "images": [],
-                    "title": "",
+                    "title": page_title,
                     "url": url
                 }
                 
     except httpx.TimeoutException:
         logger.error(f"Timeout extracting article: {url}")
         return {
-            "text": "❌ Превышено время ожидания при извлечении статьи. Попробуйте позже.",
+            "text": "❌ Превышено время ожидания при загрузке статьи. Попробуйте позже.",
             "images": [],
             "title": "",
             "url": url
