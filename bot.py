@@ -34,7 +34,7 @@ from urllib3.util.retry import Retry
 
 
 # =========================
-# Проверка на единственный экземпляр (УЛУЧШЕННАЯ)
+# Проверка на единственный экземпляр
 # =========================
 lock_file = '/tmp/bot_instance.lock'
 lock_fd = None
@@ -193,7 +193,6 @@ HIGHLIGHT_COLORS = {
 # =========================
 bot = telebot.TeleBot(TOKEN)
 
-# Удаляем вебхук при запуске
 try:
     bot.remove_webhook()
     logger.info("Webhook removed successfully")
@@ -1132,7 +1131,7 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
 
 
 # =========================
-# Card making functions - ВСЕ ШАБЛОНЫ (сокращенно)
+# Card making functions - ВСЕ ШАБЛОНЫ
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
@@ -1731,15 +1730,7 @@ async def process_text_with_deepseek(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
-    prompt = """Ты редактор новостного сайта. Перепиши новость в строгом городском формате, объемом около 650 символов.
-
-Правила:
-1. Убери лишнюю воду, сделай интересный заголовок
-2. НЕ используй символы # и ** в ответе
-3. Сохрани главные факты, расставь абзацы
-4. Если в тексте УЖЕ есть день недели - оставь его. НЕ добавляй день недели, если его нет в исходном тексте
-5. Если место события УЖЕ указано - оставь его. НЕ придумывай место, если его нет в исходном тексте
-6. НЕ додумывай информацию - работай только с тем, что есть в тексте
+    prompt = """Ты редактор новостного сайта. Перепиши новость в строгом городском формате, объемом около 650 символов. Убери лишнюю воду, сделай интересный заголовок. Не используй символы # и ** в ответе. Сохрани главные факты. Расставь абзацы.
 
 Вот текст:"""
     
@@ -1751,10 +1742,10 @@ async def process_text_with_deepseek(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного сайта. Отвечай только готовым новостным текстом. НЕ добавляй дни недели и места, если их нет в тексте. Работай ТОЛЬКО с информацией из текста."},
+                        {"role": "system", "content": "Ты редактор новостного сайта. Отвечай только готовым новостным текстом, без пояснений и вступлений. Не используй символы # и ** в ответе."},
                         {"role": "user", "content": f"{prompt}\n\n{text}"}
                     ],
-                    "temperature": 0.3,
+                    "temperature": 0.7,
                     "max_tokens": 1000
                 }
             )
@@ -1784,15 +1775,10 @@ async def process_text_with_deepseek_tg(text: str) -> str:
 1. Текст должен быть не более 500 символов (включая пробелы и знаки препинания)
 2. Сохрани ВСЮ ключевую информацию: цифры, даты, имена, названия, события
 3. НЕ изменяй суть новости
-4. Заголовок: короткий, четкий, отражающий суть - сделай его отдельной строкой
+4. Заголовок: короткий, четкий, отражающий суть - сделай его отдельной строкой и жирным с помощью <b>
 5. Текст: 2-3 абзаца с главными фактами
 6. НЕ используй многоточие в конце
 7. НЕ используй эмодзи в тексте (эмодзи добавится автоматически)
-8. Заголовок сделай жирным с помощью тега <b>Заголовок</b>
-9. Разбей текст на абзацы (2-3 абзаца)
-10. Если в тексте УЖЕ есть день недели - оставь его. НЕ добавляй день недели, если его нет в исходном тексте
-11. Если место события УЖЕ указано - оставь его. НЕ придумывай место, если его нет в исходном тексте
-12. НЕ додумывай информацию - работай ТОЛЬКО с тем, что есть в исходном тексте
 
 Формат ответа:
 <b>Заголовок новости</b>
@@ -1814,7 +1800,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного канала. Сокращай новости, сохраняя всю важную информацию. Если день недели есть в тексте - оставляй. Если места нет - не придумывай. Разбивай на абзацы. Используй <b> для заголовка."},
+                        {"role": "system", "content": "Ты редактор новостного канала. Сокращай новости, сохраняя всю важную информацию. НЕ используй эмодзи. Отвечай только готовым постом. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.2,
@@ -1837,50 +1823,18 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                         if first_line and len(first_line) < 100:
                             result = f"<b>{first_line}</b>\n\n" + '\n\n'.join([line for line in lines[1:] if line.strip()])
                 
-                if '\n\n' not in result.replace('<b>', '').replace('</b>', '').strip():
-                    sentences = re.split(r'(?<=[.!?])\s+', result)
-                    if len(sentences) > 2:
-                        title_match = re.search(r'<b>.*?</b>', result)
-                        if title_match:
-                            title = title_match.group(0)
-                            body = result.replace(title, '').strip()
-                            sentences = re.split(r'(?<=[.!?])\s+', body)
-                            if len(sentences) > 2:
-                                paragraphs = []
-                                for i in range(0, len(sentences), 2):
-                                    para = ' '.join(sentences[i:i+2])
-                                    if para:
-                                        paragraphs.append(para)
-                                result = f"{title}\n\n" + '\n\n'.join(paragraphs)
-                
                 if len(result) > 500:
-                    parts = result.split('\n\n')
-                    if len(parts) > 2:
-                        shortened = parts[0]
-                        for part in parts[1:]:
-                            if len(shortened) + len(part) + 2 <= 500:
-                                shortened += '\n\n' + part
-                            else:
-                                sentences = re.split(r'(?<=[.!?])\s+', part)
-                                for sent in sentences:
-                                    if len(shortened) + len(sent) + 2 <= 500:
-                                        shortened += '\n\n' + sent
-                                    else:
-                                        break
-                                break
-                        result = shortened
+                    cut_point = 500
+                    while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
+                        cut_point -= 1
+                    if cut_point > 10:
+                        result = result[:cut_point + 1]
                     else:
                         cut_point = 500
-                        while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
+                        while cut_point > 0 and result[cut_point] != ' ':
                             cut_point -= 1
                         if cut_point > 10:
-                            result = result[:cut_point + 1]
-                        else:
-                            cut_point = 500
-                            while cut_point > 0 and result[cut_point] != ' ':
-                                cut_point -= 1
-                            if cut_point > 10:
-                                result = result[:cut_point]
+                            result = result[:cut_point]
                 
                 emoji = detect_topic_emoji(result)
                 result = f"{emoji} {result}"
@@ -1908,15 +1862,10 @@ async def process_text_with_deepseek_threads(text: str) -> str:
 1. Текст должен быть не более 400 символов (включая пробелы и знаки препинания)
 2. Сохрани ВСЮ ключевую информацию: цифры, даты, имена, названия, события
 3. НЕ изменяй суть новости
-4. Заголовок: короткий, яркий, отражающий суть - сделай его отдельной строкой
+4. Заголовок: короткий, яркий, отражающий суть - сделай его отдельной строкой и жирным с помощью <b>
 5. Текст: 2 абзаца с главными фактами
 6. НЕ используй многоточие в конце
 7. НЕ используй эмодзи в тексте (эмодзи добавится автоматически)
-8. Заголовок сделай жирным с помощью тега <b>Заголовок</b>
-9. Разбей текст на 2 абзаца
-10. Если в тексте УЖЕ есть день недели - оставь его. НЕ добавляй день недели, если его нет в исходном тексте
-11. Если место события УЖЕ указано - оставь его. НЕ придумывай место, если его нет в исходном тексте
-12. НЕ додумывай информацию - работай ТОЛЬКО с тем, что есть в исходном тексте
 
 Формат ответа:
 <b>Заголовок новости</b>
@@ -1938,7 +1887,7 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор для Threads. Сокращай новости, сохраняя всю важную информацию. Если день недели есть в тексте - оставляй. Если места нет - не придумывай. Разбивай на 2 абзаца. Используй <b> для заголовка."},
+                        {"role": "system", "content": "Ты редактор для Threads. Сокращай новости, сохраняя всю важную информацию. НЕ используй эмодзи. Отвечай только готовым постом. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.2,
@@ -1961,51 +1910,18 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                         if first_line and len(first_line) < 80:
                             result = f"<b>{first_line}</b>\n\n" + '\n\n'.join([line for line in lines[1:] if line.strip()])
                 
-                if '\n\n' not in result.replace('<b>', '').replace('</b>', '').strip():
-                    sentences = re.split(r'(?<=[.!?])\s+', result)
-                    if len(sentences) > 2:
-                        title_match = re.search(r'<b>.*?</b>', result)
-                        if title_match:
-                            title = title_match.group(0)
-                            body = result.replace(title, '').strip()
-                            sentences = re.split(r'(?<=[.!?])\s+', body)
-                            if len(sentences) > 2:
-                                mid = len(sentences) // 2
-                                para1 = ' '.join(sentences[:mid])
-                                para2 = ' '.join(sentences[mid:])
-                                if para1 and para2:
-                                    result = f"{title}\n\n{para1}\n\n{para2}"
-                                elif para1:
-                                    result = f"{title}\n\n{para1}"
-                
                 if len(result) > 400:
-                    parts = result.split('\n\n')
-                    if len(parts) > 2:
-                        shortened = parts[0]
-                        for part in parts[1:]:
-                            if len(shortened) + len(part) + 2 <= 400:
-                                shortened += '\n\n' + part
-                            else:
-                                sentences = re.split(r'(?<=[.!?])\s+', part)
-                                for sent in sentences:
-                                    if len(shortened) + len(sent) + 2 <= 400:
-                                        shortened += '\n\n' + sent
-                                    else:
-                                        break
-                                break
-                        result = shortened
+                    cut_point = 400
+                    while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
+                        cut_point -= 1
+                    if cut_point > 10:
+                        result = result[:cut_point + 1]
                     else:
                         cut_point = 400
-                        while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
+                        while cut_point > 0 and result[cut_point] != ' ':
                             cut_point -= 1
                         if cut_point > 10:
-                            result = result[:cut_point + 1]
-                        else:
-                            cut_point = 400
-                            while cut_point > 0 and result[cut_point] != ' ':
-                                cut_point -= 1
-                            if cut_point > 10:
-                                result = result[:cut_point]
+                            result = result[:cut_point]
                 
                 emoji = detect_topic_emoji(result)
                 result = f"{emoji} {result}"
@@ -2036,10 +1952,6 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
 4. Заголовок: новый, но такой же информативный - сделай его жирным с помощью <b>
 5. НЕ используй многоточие в конце
 6. НЕ используй эмодзи в тексте (эмодзи добавится автоматически)
-7. Разбей текст на 2-3 абзаца
-8. Если в тексте УЖЕ есть день недели - оставь его. НЕ добавляй день недели, если его нет
-9. Если место события УЖЕ указано - оставь его. НЕ придумывай место, если его нет
-10. НЕ додумывай информацию - работай ТОЛЬКО с тем, что есть
 
 Формат ответа:
 <b>Новый заголовок</b>
@@ -2047,6 +1959,8 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
 Первый абзац с главной информацией.
 
 Второй абзац с деталями.
+
+Важно: Переделай текст в новый формат, но вся информация должна остаться
 
 Исходный текст новости:
 {text}
@@ -2061,7 +1975,7 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного канала. Переделывай новости в новые посты, сохраняя всю информацию. Если день недели есть в тексте - оставляй. Если места нет - не придумывай. Используй <b> для заголовка."},
+                        {"role": "system", "content": "Ты редактор новостного канала. Переделывай новости в новые посты, сохраняя всю информацию. НЕ используй эмодзи. Отвечай только готовым постом. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.3,
@@ -2085,33 +1999,17 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                             result = f"<b>{first_line}</b>\n\n" + '\n\n'.join([line for line in lines[1:] if line.strip()])
                 
                 if len(result) > 500:
-                    parts = result.split('\n\n')
-                    if len(parts) > 2:
-                        shortened = parts[0]
-                        for part in parts[1:]:
-                            if len(shortened) + len(part) + 2 <= 500:
-                                shortened += '\n\n' + part
-                            else:
-                                sentences = re.split(r'(?<=[.!?])\s+', part)
-                                for sent in sentences:
-                                    if len(shortened) + len(sent) + 2 <= 500:
-                                        shortened += '\n\n' + sent
-                                    else:
-                                        break
-                                break
-                        result = shortened
+                    cut_point = 500
+                    while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
+                        cut_point -= 1
+                    if cut_point > 10:
+                        result = result[:cut_point + 1]
                     else:
                         cut_point = 500
-                        while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
+                        while cut_point > 0 and result[cut_point] != ' ':
                             cut_point -= 1
                         if cut_point > 10:
-                            result = result[:cut_point + 1]
-                        else:
-                            cut_point = 500
-                            while cut_point > 0 and result[cut_point] != ' ':
-                                cut_point -= 1
-                            if cut_point > 10:
-                                result = result[:cut_point]
+                            result = result[:cut_point]
                 
                 emoji = detect_topic_emoji(result)
                 result = f"{emoji} {result}"
@@ -2142,10 +2040,6 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 4. Заголовок: новый, интригующий - сделай его жирным с помощью <b>
 5. НЕ используй многоточие в конце
 6. НЕ используй эмодзи в тексте (эмодзи добавится автоматически)
-7. Разбей текст на 2 абзаца
-8. Если в тексте УЖЕ есть день недели - оставь его. НЕ добавляй день недели, если его нет
-9. Если место события УЖЕ указано - оставь его. НЕ придумывай место, если его нет
-10. НЕ додумывай информацию - работай ТОЛЬКО с тем, что есть
 
 Формат ответа:
 <b>Новый заголовок</b>
@@ -2153,6 +2047,8 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 Первый абзац с главной информацией.
 
 Второй абзац с дополнительными деталями.
+
+Важно: Переделай текст в новый формат, но вся информация должна остаться
 
 Исходный текст новости:
 {text}
@@ -2167,7 +2063,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор для Threads. Переделывай новости в новые посты, сохраняя всю информацию. Если день недели есть в тексте - оставляй. Если места нет - не придумывай. Используй <b> для заголовка."},
+                        {"role": "system", "content": "Ты редактор для Threads. Переделывай новости в новые посты, сохраняя всю информацию. НЕ используй эмодзи. Отвечай только готовым постом. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.3,
@@ -2191,33 +2087,17 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                             result = f"<b>{first_line}</b>\n\n" + '\n\n'.join([line for line in lines[1:] if line.strip()])
                 
                 if len(result) > 400:
-                    parts = result.split('\n\n')
-                    if len(parts) > 2:
-                        shortened = parts[0]
-                        for part in parts[1:]:
-                            if len(shortened) + len(part) + 2 <= 400:
-                                shortened += '\n\n' + part
-                            else:
-                                sentences = re.split(r'(?<=[.!?])\s+', part)
-                                for sent in sentences:
-                                    if len(shortened) + len(sent) + 2 <= 400:
-                                        shortened += '\n\n' + sent
-                                    else:
-                                        break
-                                break
-                        result = shortened
+                    cut_point = 400
+                    while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
+                        cut_point -= 1
+                    if cut_point > 10:
+                        result = result[:cut_point + 1]
                     else:
                         cut_point = 400
-                        while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
+                        while cut_point > 0 and result[cut_point] != ' ':
                             cut_point -= 1
                         if cut_point > 10:
-                            result = result[:cut_point + 1]
-                        else:
-                            cut_point = 400
-                            while cut_point > 0 and result[cut_point] != ' ':
-                                cut_point -= 1
-                            if cut_point > 10:
-                                result = result[:cut_point]
+                            result = result[:cut_point]
                 
                 emoji = detect_topic_emoji(result)
                 result = f"{emoji} {result}"
@@ -2233,7 +2113,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 
 
 # =========================
-# Функция для извлечения контента из статей через ИИ (РАБОЧАЯ)
+# Функция для извлечения контента из статей через ИИ
 # =========================
 async def extract_article_content(url: str) -> Dict[str, any]:
     if not DEEPSEEK_API_KEY:
@@ -2245,24 +2125,18 @@ async def extract_article_content(url: str) -> Dict[str, any]:
         }
     
     try:
-        prompt = f"""Прочитай статью по ссылке ниже и скопируй из неё текст ТОЧНО как на сайте.
+        prompt = f"""Прочитай статью по ссылке ниже и извлеки из неё текст.
 
 URL статьи: {url}
 
-КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА:
-1. Скопируй ТОЧНО такой же текст, как на сайте - слово в слово
-2. НЕ МЕНЯЙ слова, НЕ ПЕРЕФРАЗИРУЙ, НЕ РЕДАКТИРУЙ
-3. НЕ добавляй свои слова, НЕ убирай слова
-4. НЕ меняй имена, названия, цифры, даты
-5. НЕ додумывай информацию, которой нет в тексте
-6. НЕ изменяй суть текста
-7. Сохрани все абзацы и структуру
-8. Убери только рекламу, баннеры, меню, навигацию
-9. НЕ добавляй дни недели - оставляй только то, что есть в тексте
-10. НЕ придумывай места - только то, что указано в тексте
-11. Верни ПОЛНЫЙ текст статьи без изменений
-
-ВАЖНО: Ты должен быть КОПИРОВАЛЬЩИКОМ, а не редактором. Скопируй текст ТОЧНО как на сайте.
+Правила:
+1. Прочитай страницу по ссылке
+2. Извлеки ТОЛЬКО текст статьи
+3. Убери всю рекламу, баннеры, меню, навигацию
+4. Сохрани структуру абзацев
+5. НЕ ИЗМЕНЯЙ ТЕКСТ - верни его точно таким же, как на сайте
+6. НЕ сокращай, НЕ переписывай, НЕ редактируй текст
+7. Верни полный текст статьи без изменений
 
 Верни только текст статьи, без пояснений.
 """
@@ -2274,10 +2148,10 @@ URL статьи: {url}
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты КОПИРОВАЛЬЩИК текста. Твоя задача - скопировать текст ТОЧНО как на сайте, без изменений, без перефразирования, без редактирования. Ты НЕ редактор, ты КОПИРОВАЛЬЩИК. Скопируй текст слово в слово."},
+                        {"role": "system", "content": "Ты помощник по извлечению контента. Извлекай точный текст без изменений. НЕ переписывай текст."},
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": 0.0,
+                    "temperature": 0.1,
                     "max_tokens": 8000
                 }
             )
@@ -2290,7 +2164,6 @@ URL статьи: {url}
                 result = re.sub(r'^Извлеченный текст.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Вот текст статьи.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Ссылка.*?:', '', result, flags=re.IGNORECASE)
-                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
                 result = result.strip()
                 
                 lines = result.split('\n')
@@ -2343,63 +2216,8 @@ URL статьи: {url}
 
 
 # =========================
-# Caption formatting (сокращенно)
+# Caption formatting
 # =========================
-RU_STOP = {"и", "в", "во", "на", "но", "а", "что", "это", "как", "к", "по", "из", "за", "для", "с", "со", "у", "от", "до", "при", "без", "над", "под", "же", "ли", "то", "не", "ни", "да", "нет", "уже", "еще", "ещё", "там", "тут"}
-
-CATEGORY_RULES = [
-    ("🚨", ["дтп", "авар", "пожар", "взрыв", "происшеств", "чп", "полици", "милици"]),
-    ("✈️", ["белавиа", "рейс", "аэропорт", "самолет", "полет"]),
-    ("🚇", ["метро", "станци", "маршрут", "автобус", "троллейбус", "трамвай"]),
-    ("💳", ["банк", "технобанк", "карта", "налог", "выплат"]),
-    ("🏷️", ["скидк", "распрод", "акци", "дешев", "бесплат"]),
-    ("🎫", ["концерт", "афиша", "выставк", "фестиваль"]),
-    ("🌦️", ["погод", "шторм", "ветер", "снег", "дожд"]),
-    ("🏥", ["больниц", "врач", "здоров", "вакцин"]),
-]
-
-def pick_category_emoji(title: str, body: str) -> str:
-    text = (title + " " + body).lower()
-    for emoji_, keys in CATEGORY_RULES:
-        for k in keys:
-            if k in text:
-                return emoji_
-    return "📰"
-
-def pick_keywords(title: str, body: str, max_words: int = 6):
-    txt = (title + " " + body).lower()
-    nums = re.findall(r"\b\d+[.,]?\d*\b|[%₽$€]|byn|usd|eur|rub", txt, flags=re.IGNORECASE)
-    words = re.findall(r"[а-яёa-z]{4,}", txt, flags=re.IGNORECASE)
-    candidates = []
-    for w in words:
-        wl = w.strip().lower()
-        if wl in RU_STOP or len(wl) < 7:
-            continue
-        candidates.append(wl)
-    seen, out = set(), []
-    for w in nums + candidates:
-        w2 = w.lower()
-        if w2 in seen:
-            continue
-        seen.add(w2)
-        out.append(w)
-        if len(out) >= max_words:
-            break
-    return out
-
-def highlight_keywords_html(text: str, keywords):
-    safe = html.escape(text or "")
-    for kw in keywords:
-        kw_safe = html.escape(kw)
-        if not kw_safe.strip():
-            continue
-        if re.match(r"^[а-яёa-z0-9]+$", kw, flags=re.IGNORECASE):
-            pattern = re.compile(rf"(?<![а-яёa-z0-9])({re.escape(kw_safe)})(?![а-яёa-z0-9])", re.IGNORECASE)
-        else:
-            pattern = re.compile(rf"({re.escape(kw_safe)})", re.IGNORECASE)
-        safe = pattern.sub(r"<b>\1</b>", safe)
-    return safe
-
 def build_caption_html(title: str, body: str, max_length: int = 950) -> str:
     title_safe = html.escape((title or "").strip())
     body_safe = html.escape((body or "").strip())
@@ -2416,509 +2234,175 @@ def build_caption_html(title: str, body: str, max_length: int = 950) -> str:
     
     return caption
 
-def build_caption_with_buttons(title: str, body: str, channel_type: str, max_length: int = 950) -> Tuple[str, InlineKeyboardMarkup]:
-    title_safe = html.escape((title or "").strip())
-    body_safe = html.escape((body or "").strip())
-    
-    if title_safe and body_safe:
-        caption = f"<b>{title_safe}</b>\n\n{body_safe}"
-    elif title_safe:
-        caption = f"<b>{title_safe}</b>"
-    else:
-        caption = body_safe
-    
-    if len(caption) > max_length:
-        caption = caption[:max_length - 3] + "..."
-    
-    if channel_type == "mn":
-        kb = InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
-            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/vestiminska")
-        )
-    elif channel_type == "chp":
-        kb = InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
-            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/minskchpidtp")
-        )
-    elif channel_type == "afisha":
-        kb = InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
-            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/afishaminsk")
-        )
-    else:
-        kb = InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            InlineKeyboardButton("📝 Прислать новость", url="https://t.me/prishlinews_bot"),
-            InlineKeyboardButton("🔗 Подписаться на канал", url="https://t.me/test_channel")
-        )
-    return caption, kb
-
-def build_caption_tg(full_text: str, max_length: int = 950) -> str:
-    paragraphs = full_text.strip().split('\n\n')
-    if not paragraphs:
-        return ""
-    
-    title = paragraphs[0].strip()
-    title_safe = html.escape(title)
-    
-    body_parts = []
-    for p in paragraphs[1:]:
-        if p.strip():
-            body_parts.append(html.escape(p.strip()))
-    body_text = '\n\n'.join(body_parts) if body_parts else ""
-    
-    if title_safe and body_text:
-        caption = f"<b>{title_safe}</b>\n\n{body_text}"
-    elif title_safe:
-        caption = f"<b>{title_safe}</b>"
-    else:
-        caption = body_text
-    
-    links = "\n\n🔗 <a href='https://t.me/vestiminska'>Все новости Минска</a>\n📝 <a href='https://t.me/prishlinews_bot'>Прислать новость</a>"
-    caption = caption + links
-    
-    if len(caption) > max_length:
-        caption = caption[:max_length - 3] + "..."
-    
-    return caption
-
 
 # =========================
-# Prices and terms (сокращенно)
+# Callback handlers (основные)
 # =========================
-def get_prices_text() -> str:
-    return """
-💰 <b>НАШИ ЦЕНЫ</b>
-
-Можем предложить вам несколько вариантов размещений, от одиночных постов до полного комплекса:
-
-🔻 <b>Размещение только в</b> https://www.instagram.com/minsk_news/ 478.000 чел. 
-Пост + stories — 550 руб.
-
-🔻 <b>Пакет «МИНИ»</b> (более 860.000 подписчиков) — 685 рублей.
-
-1. https://www.instagram.com/minsk_news/
-2. https://www.instagram.com/afishaminsk/
-3. https://www.instagram.com/tvoyminsk/
-4. https://www.instagram.com/minskgood/
-5. https://www.instagram.com/novostiminska/
-6. https://www.instagram.com/minskhot/
-7. https://www.instagram.com/minsksmile/
-
-Публикации во всех 7 городских медиа со сторис в minsk_news, afishaminsk и tvoyminsk.
-
-🔻 <b>Пакет «СТАНДАРТ»</b> (более 1 300.000 подписчиков): 745 рублей.
-
-1. https://www.instagram.com/minsk_news/
-2. https://www.instagram.com/minskchp/
-3. https://www.instagram.com/afishaminsk/
-4. https://www.instagram.com/tvoyminsk/
-5. https://www.instagram.com/vestiminska/
-6. https://www.instagram.com/minskpress/
-7. https://www.instagram.com/xxminsk/
-8. https://www.instagram.com/minskgood/
-9. https://www.instagram.com/novostiminska/
-10. https://www.instagram.com/minskhot/
-11. https://www.instagram.com/minsksmile/
-
-Публикации во всех 11 городских медиа со сторис в minsk_news, afishaminsk, minskchp, tvoyminsk, vestiminska, xxminsk.
-
-🔻 <b>Пакет «ПРЕМИУМ»</b> (более 1 700.000 подписчиков): <b>905 рублей</b>.
-
-<b>Instagram:</b>
-1. https://www.instagram.com/minsk_news/
-2. https://www.instagram.com/minskchp/
-3. https://www.instagram.com/afishaminsk/
-4. https://www.instagram.com/tvoyminsk/
-5. https://www.instagram.com/vestiminska/
-6. https://www.instagram.com/minskpress/
-7. https://www.instagram.com/xxminsk/
-8. https://www.instagram.com/minskgood/
-9. https://www.instagram.com/novostiminska/
-10. https://www.instagram.com/minskhot/
-11. https://www.instagram.com/minsksmile/
-
-<b>Вконтакте:</b>
-1. vk.com/etominsk
-2. vk.com/belaruschp
-3. vk.com/ominske
-4. vk.com/7rabota
-5. vk.com/minsktime
-6. vk.com/belaris
-7. vk.com/belarusfood
-8. vk.com/minsksmile
-9. vk.com/minskrepost
-
-<b>Телеграм:</b>
-1. t.me/vestiminska 47 000 чел. — стоимость одиночного размещения 400 белорусских рублей.
-2. t.me/minskchpdtp 16 000 чел.
-
-Публикации во всех 11 городских медиа в Instagram со сторис в minsk_news, afishaminsk, minskchp, tvoyminsk, vestiminska, xxminsk + 9 сообществ в Вконтакте + в 2 канала в Телеграм.
-"""
-
-def get_terms_text() -> str:
-    return """
-🔔 <b>УСЛОВИЯ РАЗМЕЩЕНИЯ:</b>
-
-1. Инстаграм и Вконтакте — пост 1 час на первом месте в ленте, далее пост перекрывается другими новостями.
-
-2. Телеграм — пост на 30 минут на первом месте, далее пост перекрывается другими новостями.
-
-Рекламные посты размещаются на 7 дней в ленте, затем они удаляются.
-
-При заказе комплекса ПРЕМИУМ — посты размещаются на 30 дней в ленте, затем удаление.
-
-Оставить посты можно навсегда, без их удаления. Данная услуга платная: + 50 рублей к стоимости размещений.
-
-🔔 <b>ВАЖНЫЙ МОМЕНТ:</b> Все рекламные посты мы размещаем в новостной стилистике от третьего лица, как обычная новость. Фотографии для публикаций мы используем живые и тематические, рекламные баннеры - мы не размещаем.
-"""
-
-def get_schedule_text() -> str:
-    text = "📊 График аккаунтов:\n\n"
-    text += "<a href='https://instagram.com/minsk_news'>instagram.com/minsk_news</a> -\n"
-    text += "<a href='https://instagram.com/minskchp'>instagram.com/minskchp</a> -\n"
-    text += "<a href='https://instagram.com/afishaminsk'>instagram.com/afishaminsk</a> -\n"
-    text += "<a href='https://instagram.com/tvoyminsk'>instagram.com/tvoyminsk</a> -\n"
-    text += "<a href='https://instagram.com/vestiminska'>instagram.com/vestiminska</a> -\n"
-    text += "<a href='https://instagram.com/minskpress'>instagram.com/minskpress</a> -\n"
-    text += "<a href='https://instagram.com/xxminsk'>instagram.com/xxminsk</a> -\n"
-    text += "<a href='https://instagram.com/minskgood'>instagram.com/minskgood</a> -\n"
-    text += "<a href='https://instagram.com/novostiminska'>instagram.com/novostiminska</a> -\n"
-    text += "<a href='https://instagram.com/minskhot'>instagram.com/minskhot</a> -\n"
-    text += "<a href='https://instagram.com/minsksmile'>instagram.com/minsksmile</a> -"
-    return text
-
-
-# =========================
-# Health check server
-# =========================
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html; charset=utf-8')
-        self.end_headers()
-        self.wfile.write("Бот запущен! 🤖".encode('utf-8'))
-    def log_message(self, format, *args):
-        return
-
-def run_http_server():
-    try:
-        port = int(os.environ.get('PORT', 10000))
-        server_address = ('0.0.0.0', port)
-        httpd = HTTPServer(server_address, HealthCheckHandler)
-        logger.info(f"🌐 Health check server started on port {port}")
-        httpd.serve_forever()
-    except Exception as e:
-        logger.error(f"Failed to start health check server: {e}")
-
-
-# =========================
-# Callback handlers
-# =========================
-@bot.callback_query_handler(func=lambda c: c.data.startswith("prices:"))
-def on_prices_callback(c):
-    action = c.data.split(":", 1)[1]
-    if action == "list":
-        send_message_with_retry(c.message.chat.id, get_prices_text(), parse_mode="HTML", reply_markup=prices_menu_kb())
-    elif action == "terms":
-        send_message_with_retry(c.message.chat.id, get_terms_text(), parse_mode="HTML", reply_markup=prices_menu_kb())
-    elif action == "schedule":
-        send_message_with_retry(c.message.chat.id, get_schedule_text(), parse_mode="HTML", reply_markup=prices_menu_kb())
-    elif action == "close":
-        bot.delete_message(c.message.chat.id, c.message.message_id)
-    bot.answer_callback_query(c.id)
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("watermark:"))
-def on_watermark_type(c):
+@bot.callback_query_handler(func=lambda c: c.data.startswith("repost:"))
+def on_repost_action(c):
     uid = c.from_user.id
-    wm_type = c.data.split(":", 1)[1]
+    action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
-    if wm_type == "cancel":
-        st.pop("step", None)
+    if action == "design":
+        st["step"] = "waiting_template"
         user_state[uid] = st
-        send_message_with_retry(c.message.chat.id, "❌ Отменено")
-        bot.answer_callback_query(c.id)
-        return
+        bot.answer_callback_query(c.id, "Выбери шаблон для оформления поста ✅")
+        send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления. Фото и текст из репоста будут использованы автоматически! 🎉", reply_markup=template_kb())
     
-    if wm_type == "back":
-        st.pop("step", None)
-        user_state[uid] = st
+    elif action == "ai":
+        bot.answer_callback_query(c.id, "🤖 Обрабатываю текст через ИИ...")
         
-        if st.get("card_bytes"):
-            caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
-            send_photo_with_retry(
-                c.message.chat.id, 
-                BytesIO(st["card_bytes"]), 
-                caption=caption, 
-                parse_mode="HTML", 
-                reply_markup=preview_kb()
-            )
-            bot.delete_message(c.message.chat.id, c.message.message_id)
-        elif st.get("original_text"):
-            title, body, formatted_text = format_ai_response(st.get("original_text", ""))
-            bot.send_message(c.message.chat.id, formatted_text, parse_mode="HTML", reply_markup=after_ai_kb())
-            bot.delete_message(c.message.chat.id, c.message.message_id)
-        else:
-            send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Обрабатываю текст в DeepSeek AI... (до 30 секунд)")
         
-        bot.answer_callback_query(c.id, "◀️ Возврат")
-        return
-    
-    if not st.get("photo_bytes") and not st.get("saved_photo_bytes"):
-        st["watermark_type"] = wm_type
-        st["step"] = "waiting_watermark_photo"
-        user_state[uid] = st
-        send_message_with_retry(c.message.chat.id, f"✅ Выбран водяной знак. Отправь фото:", parse_mode="HTML")
-        bot.answer_callback_query(c.id)
-        return
-    
-    if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
-        st["photo_bytes"] = st["saved_photo_bytes"]
-    
-    bot.answer_callback_query(c.id, f"✅ Наношу водяной знак {wm_type.upper()}...")
-    
-    try:
-        if wm_type == "mn":
-            result = apply_watermark_mn(st["photo_bytes"])
-            watermark_name = "MINSK NEWS"
-        else:
-            result = apply_watermark_chp(st["photo_bytes"])
-            watermark_name = "ЧП Минск"
-        
-        watermarked_photo = result.getvalue()
-        
-        st["photo_bytes"] = watermarked_photo
-        st["saved_photo_bytes"] = watermarked_photo
-        st["watermarked_photo"] = watermarked_photo
-        st["watermark_applied"] = True
-        
-        if st.get("card_bytes") and st.get("template") and st.get("title"):
-            card = make_card(
-                st["photo_bytes"],
-                st["title"], 
-                st.get("template", "MN"),
-                text_position=st.get("text_position", TEXT_POSITION_TOP),
-                bold_phrase=st.get("bold_phrase", ""),
-                date=st.get("date", ""),
-                place=st.get("place", ""),
-                rubric=st.get("rubric", ""),
-                highlight_word=st.get("highlight_word", ""),
-                highlight_color=st.get("highlight_color"),
-                is_yellow=st.get("is_yellow", False)
-            )
-            st["card_bytes"] = card.getvalue()
-            st["step"] = "waiting_action"
-            user_state[uid] = st
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("original_text", "")
+            if not original_text:
+                bot.edit_message_text("❌ Нет текста для обработки.", c.message.chat.id, processing_msg.message_id)
+                return
             
-            caption_html = build_caption_html(st["title"], st["body_raw"])
+            result = loop.run_until_complete(process_text_with_deepseek(original_text))
             
-            bot.delete_message(c.message.chat.id, c.message.message_id)
-            send_photo_with_retry(
-                c.message.chat.id, 
-                BytesIO(st["card_bytes"]), 
-                caption=f"💧 <b>Водяной знак «{watermark_name}» нанесён!</b>\n\n{caption_html}", 
-                parse_mode="HTML", 
-                reply_markup=preview_kb()
-            )
-            return
-        
-        elif st.get("original_text"):
+            st["ai_processed_text"] = result
+            st["original_text"] = result
+            
+            title, body, formatted_text = format_ai_response(result)
+            st["title"] = title
+            st["body_raw"] = body
+            
             st["step"] = "waiting_after_ai"
             user_state[uid] = st
             
-            bot.delete_message(c.message.chat.id, c.message.message_id)
-            send_photo_with_retry(
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            send_message_with_retry(
                 c.message.chat.id, 
-                BytesIO(watermarked_photo), 
-                caption=f"💧 <b>Водяной знак «{watermark_name}» нанесён на фото!</b>\n\nТекст:\n{st.get('original_text', '')[:300]}...", 
+                formatted_text,
                 parse_mode="HTML", 
                 reply_markup=after_ai_kb()
             )
+        except Exception as e:
+            logger.error(f"AI processing error: {e}")
+            bot.edit_message_text(f"❌ Ошибка при обработке ИИ: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
+    
+    elif action == "tg":
+        if not st.get("original_text"):
+            bot.answer_callback_query(c.id, "❌ Нет текста для обработки")
             return
         
-        else:
-            st["photo_bytes"] = watermarked_photo
-            st["saved_photo_bytes"] = watermarked_photo
-            st["step"] = "waiting_watermark_photo"
-            user_state[uid] = st
-            
-            bot.delete_message(c.message.chat.id, c.message.message_id)
-            send_photo_with_retry(
-                c.message.chat.id, 
-                BytesIO(watermarked_photo), 
-                caption=f"💧 <b>Водяной знак «{watermark_name}» нанесён!</b>", 
-                parse_mode="HTML"
-            )
-            send_message_with_retry(c.message.chat.id, "✅ Водяной знак нанесён! Теперь можешь оформить пост.", reply_markup=main_menu_kb())
-            return
-            
-    except Exception as e:
-        logger.error(f"Error applying watermark: {e}")
-        send_message_with_retry(c.message.chat.id, f"❌ Ошибка при нанесении водяного знака: {e}")
-    
-    st["watermark_type"] = wm_type
-    st["step"] = "waiting_watermark_photo"
-    user_state[uid] = st
-    send_message_with_retry(c.message.chat.id, f"✅ Выбран водяной знак. Отправь фото:", parse_mode="HTML")
-    bot.answer_callback_query(c.id)
-
-def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
-    time.sleep(2)
-    if media_group_id not in user_album_cache:
-        return
-    
-    album_data = user_album_cache.pop(media_group_id)
-    st = user_state.get(uid) or {}
-    
-    caption = album_data.get("caption", "")
-    photos = album_data.get("photos", [])
-    videos = album_data.get("videos", [])
-    
-    if caption:
-        title, body = split_title_and_body(caption)
-        st["title"] = title
-        st["body_raw"] = body
-        st["original_text"] = caption
-        st["original_text_for_ai"] = caption
-        logger.info(f"Saved caption from album for user {uid}: {caption[:100]}...")
-    
-    st["media_group"] = {"photos": photos, "videos": videos}
-    
-    if photos:
-        st["photo_bytes"] = photos[0]
-        st["saved_photo_bytes"] = photos[0]
-        logger.info(f"Saved first photo from album for user {uid}")
-    
-    if videos:
-        st["video_info"] = videos[0]
-        logger.info(f"Saved first video info from album for user {uid}")
-    
-    st["step"] = "waiting_repost_action"
-    user_state[uid] = st
-    
-    text_preview = caption[:200] if caption else "(без текста)"
-    photo_count = len(photos)
-    video_count = len(videos)
-    media_status = []
-    if photo_count > 0:
-        media_status.append(f"✅ <b>Фото:</b> {photo_count} шт")
-    if video_count > 0:
-        total_size = sum(v.get('file_size', 0) for v in videos) / (1024 * 1024)
-        media_status.append(f"✅ <b>Видео:</b> {video_count} шт ({total_size:.1f}MB)")
-    if not media_status:
-        media_status.append("⚠️ <b>Медиа:</b> не найдено")
-    
-    send_message_with_retry(
-        chat_id,
-        f"📸 <b>Альбом обнаружен!</b>\n\n{', '.join(media_status)}\n📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
-        parse_mode="HTML",
-        reply_markup=repost_action_kb()
-    )
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:"))
-def on_tpl(c):
-    uid = c.from_user.id
-    parts = c.data.split(":", 1)
-    tpl = parts[1]
-    st = user_state.get(uid) or {}
-    
-    if tpl == "watermark":
-        st["step"] = "waiting_watermark_type"
-        user_state[uid] = st
-        bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
-        send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>", parse_mode="HTML", reply_markup=watermark_type_kb())
+        bot.answer_callback_query(c.id, "📱 Сокращаю текст для Telegram...")
+        
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Сокращаю текст до 500 символов...")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            bot.delete_message(c.message.chat.id, c.message.message_id)
-        except:
-            pass
-        return
-    
-    st["is_square"] = False
-    st["template"] = tpl
-    
-    if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
-        st["photo_bytes"] = st["saved_photo_bytes"]
-        logger.info(f"Restored photo for user {uid} in template selection")
-    
-    has_photo = st.get("photo_bytes") is not None
-    
-    if tpl in ["MN", "CHP", "AM", "MN_TG"]:
-        if has_photo:
-            st["step"] = "waiting_text_position"
+            original_text = st.get("original_text", "")
+            result = loop.run_until_complete(process_text_with_deepseek_tg(original_text))
+            
+            st["tg_post_text"] = result
+            st["post_type"] = "tg"
+            st["step"] = "waiting_post_action"
+            
+            if st.get("photo_bytes"):
+                st["saved_photo_bytes"] = st["photo_bytes"]
+            
             user_state[uid] = st
-            template_names = {"MN": "МН", "AM": "АМ", "MN_TG": "МН ТГ", "CHP": "ЧП ВМ"}
-            template_name = template_names.get(tpl, tpl)
-            bot.answer_callback_query(c.id, f"Шаблон {template_name} выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"📰 Выбран шаблон <b>{template_name}</b>\n\n📸 Фото уже есть!\n\nГде разместить текст?", parse_mode="HTML", reply_markup=text_position_kb())
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            elif st.get("video_info"):
+                media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("tg")
+            )
+            
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            
+        except Exception as e:
+            logger.error(f"TG post error: {e}")
+            bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
+    
+    elif action == "threads":
+        if not st.get("original_text"):
+            bot.answer_callback_query(c.id, "❌ Нет текста для обработки")
+            return
+        
+        bot.answer_callback_query(c.id, "📱 Сокращаю текст для Тредс...")
+        
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Сокращаю текст до 400 символов...")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("original_text", "")
+            result = loop.run_until_complete(process_text_with_deepseek_threads(original_text))
+            
+            st["threads_post_text"] = result
+            st["post_type"] = "threads"
+            st["step"] = "waiting_post_action"
+            
+            if st.get("photo_bytes"):
+                st["saved_photo_bytes"] = st["photo_bytes"]
+            
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            elif st.get("video_info"):
+                media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("threads")
+            )
+            
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            
+        except Exception as e:
+            logger.error(f"Threads post error: {e}")
+            bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
+    
+    elif action == "watermark":
+        if st.get("photo_bytes") or st.get("saved_photo_bytes"):
+            if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
+                st["photo_bytes"] = st["saved_photo_bytes"]
+            st["step"] = "waiting_watermark_type"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
+            send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>\n\n📸 Фото из репоста будет использовано автоматически!", parse_mode="HTML", reply_markup=watermark_type_kb())
         else:
-            st["step"] = "waiting_photo"
+            st["step"] = "waiting_watermark_type"
             user_state[uid] = st
-            template_names = {"MN": "МН", "AM": "АМ", "MN_TG": "МН ТГ", "CHP": "ЧП ВМ"}
-            template_name = template_names.get(tpl, tpl)
-            bot.answer_callback_query(c.id, f"Шаблон {template_name} выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"📰 Выбран шаблон <b>{template_name}</b>\n\nТеперь пришли фото 📷", parse_mode="HTML")
-    
-    elif tpl == "AM2":
-        if has_photo:
-            st["step"] = "waiting_text_position_am2"
-            user_state[uid] = st
-            bot.answer_callback_query(c.id, "Шаблон АМ 2 выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"🎨 Выбран шаблон <b>АМ 2</b>\n\n📸 Фото уже есть!\n\n📐 <b>Выбери расположение текста:</b>", parse_mode="HTML", reply_markup=text_position_kb_am2())
-        else:
-            st["step"] = "waiting_photo_am2"
-            user_state[uid] = st
-            bot.answer_callback_query(c.id, "Шаблон АМ 2 выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"🎨 Выбран шаблон <b>АМ 2</b>\n\n📸 Пришли фото:", parse_mode="HTML")
-    
-    elif tpl == "MN2":
-        if has_photo:
-            st["step"] = "waiting_text_position"
-            user_state[uid] = st
-            bot.answer_callback_query(c.id, f"Шаблон МН 2 выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"📰 Выбран шаблон <b>МН 2</b>\n\n📸 Фото уже есть!\n\nГде разместить текст?", parse_mode="HTML", reply_markup=text_position_kb())
-        else:
-            st["step"] = "waiting_photo"
-            user_state[uid] = st
-            bot.answer_callback_query(c.id, f"Шаблон МН 2 выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"📰 Выбран шаблон <b>МН 2</b>\n\nТеперь пришли фото 📷", parse_mode="HTML")
-    
-    elif tpl == "FDR_POST":
-        if has_photo:
-            st["step"] = "waiting_title_fdr_post"
-            user_state[uid] = st
-            bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"💜 Выбран шаблон <b>Пост ФДР</b>\n\n📸 Фото уже есть!\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:", parse_mode="HTML")
-        else:
-            st["step"] = "waiting_photo_fdr_post"
-            user_state[uid] = st
-            bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"💜 Выбран шаблон <b>Пост ФДР</b>\n\n📸 Пришли фото:", parse_mode="HTML")
-    
-    elif tpl == "FDR_STORY":
-        if has_photo:
-            st["step"] = "waiting_title_fdr"
-            user_state[uid] = st
-            bot.answer_callback_query(c.id, "Шаблон 'Сторис ФДР' выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"📱 Выбран шаблон <b>Сторис ФДР</b>\n\n📸 Фото уже есть!\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b> для сторис:", parse_mode="HTML")
-        else:
-            st["step"] = "waiting_photo_fdr_story"
-            user_state[uid] = st
-            bot.answer_callback_query(c.id, "Шаблон 'Сторис ФДР' выбран ✅")
-            send_message_with_retry(c.message.chat.id, "📱 Выбран шаблон <b>Сторис ФДР</b>\n\n📸 Пришли фото:", parse_mode="HTML")
-    
-    try:
-        bot.delete_message(c.message.chat.id, c.message.message_id)
-    except:
-        pass
+            bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
+            send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>\n\n⚠️ В репосте не найдено фото. Отправь фото отдельно.", parse_mode="HTML", reply_markup=watermark_type_kb())
 
-# =========================
-# Продолжение callback handlers (am2_pos, am2_date_place, am2_color, text_pos, add_watermark, repost, ai, tg, threads, post_channel, publish_to_channel, select_channel, publish, edit_text, cancel)
-# Из-за ограничения длины ответа, эти функции уже есть в полном коде выше
-# =========================
 
 # =========================
 # Обработчик ссылок на статьи
@@ -2962,7 +2446,6 @@ def handle_article_link(message):
         st = user_state.get(uid) or {}
         st["extracted_text"] = result.get("text", "")
         st["extracted_title"] = result.get("title", "")
-        st["extracted_images"] = result.get("images", [])
         st["extracted_url"] = result.get("url", url)
         st["step"] = "waiting_extracted_article"
         user_state[uid] = st
@@ -3008,7 +2491,7 @@ def handle_article_link(message):
             else:
                 bot.send_message(message.chat.id, full_message, parse_mode="HTML")
             
-            # КНОПКИ ДЛЯ ДЕЙСТВИЙ
+            # Кнопки для действий
             kb = InlineKeyboardMarkup(row_width=2)
             kb.add(
                 InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
@@ -3066,130 +2549,185 @@ def handle_article_link(message):
 
 
 # =========================
-# Обработчик пересылаемых сообщений (репостов)
+# Обработчики для кнопок article
 # =========================
-@bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
-                     func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
-def handle_forwarded_message(message):
-    uid = message.from_user.id
-    
-    if hasattr(message, 'media_group_id') and message.media_group_id:
-        media_group_id = message.media_group_id
-        
-        if media_group_id not in user_album_cache:
-            user_album_cache[media_group_id] = {
-                "photos": [],
-                "videos": [],
-                "caption": "",
-                "start_time": time.time(),
-                "message_id": message.message_id,
-                "chat_id": message.chat.id
-            }
-        
-        if message.photo:
-            try:
-                file_id = message.photo[-1].file_id
-                photo_bytes = tg_file_bytes(file_id)
-                if check_file_size(photo_bytes):
-                    user_album_cache[media_group_id]["photos"].append(photo_bytes)
-                    logger.info(f"Added photo to album {media_group_id}")
-            except Exception as e:
-                logger.error(f"Error extracting photo from album: {e}")
-        
-        if message.video:
-            try:
-                video_info = get_video_info(message.video.file_id, message.video)
-                user_album_cache[media_group_id]["videos"].append(video_info)
-                logger.info(f"Added video to album {media_group_id} (size: {video_info['file_size']} bytes)")
-            except Exception as e:
-                logger.error(f"Error extracting video from album: {e}")
-        
-        if message.caption:
-            user_album_cache[media_group_id]["caption"] = message.caption
-        
-        threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, True), daemon=True).start()
-        return
-    
-    original_text = ""
-    if message.text:
-        original_text = message.text
-    elif message.caption:
-        original_text = message.caption
-    
-    source_info = ""
-    source_url = ""
-    if message.forward_from_chat:
-        channel = message.forward_from_chat
-        source_info = f"@{channel.username}" if channel.username else channel.title
-        if channel.username:
-            source_url = f"https://t.me/{channel.username}"
-    elif message.forward_from:
-        user = message.forward_from
-        source_info = f"@{user.username}" if user.username else f"{user.first_name}"
-    
+@bot.callback_query_handler(func=lambda c: c.data.startswith("article:"))
+def on_article_action(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
-    st["original_text"] = original_text
-    st["original_text_for_ai"] = original_text
-    st["original_url"] = source_url
-    st["repost_type"] = "forward"
-    st["step"] = "waiting_repost_action"
-    st["photo_bytes"] = None
-    st["video_info"] = None
-    st["media_group"] = {"photos": [], "videos": []}
     
-    if message.photo:
-        try:
-            file_id = message.photo[-1].file_id
-            photo_bytes = tg_file_bytes(file_id)
-            if check_file_size(photo_bytes):
-                st["photo_bytes"] = photo_bytes
-                st["saved_photo_bytes"] = photo_bytes
-                st["media_group"]["photos"].append(photo_bytes)
-                logger.info(f"Saved photo from forward for user {uid}")
-        except Exception as e:
-            logger.error(f"Error extracting photo from forward: {e}")
-    
-    if message.video:
-        try:
-            video_info = get_video_info(message.video.file_id, message.video)
-            st["video_info"] = video_info
-            st["media_group"]["videos"].append(video_info)
-            logger.info(f"Saved video info from forward for user {uid} (size: {video_info['file_size']} bytes)")
-        except Exception as e:
-            logger.error(f"Error extracting video from forward: {e}")
-    
-    if not st["photo_bytes"] and (message.video or message.document or message.animation):
-        st["has_media"] = True
-        st["media_type"] = "video" if message.video else "document"
-        logger.info(f"User {uid} forwarded {st['media_type']} without photo")
-    
-    if original_text:
-        title, body = split_title_and_body(original_text)
-        st["title"] = title
+    if action == "design":
+        if not st.get("extracted_text"):
+            bot.answer_callback_query(c.id, "❌ Нет текста для оформления. Сначала отправьте ссылку на статью.")
+            return
+        
+        st["original_text"] = st.get("extracted_text", "")
+        st["original_text_for_ai"] = st.get("extracted_text", "")
+        title, body = split_title_and_body(st["extracted_text"])
+        st["title"] = title if title else "Статья"
         st["body_raw"] = body
+        st["step"] = "waiting_template"
+        user_state[uid] = st
+        
+        bot.answer_callback_query(c.id, "📝 Выбери шаблон для оформления")
+        send_message_with_retry(
+            c.message.chat.id,
+            "📝 Выбери шаблон оформления. Текст из статьи будет использован автоматически! 🎉",
+            parse_mode="HTML",
+            reply_markup=template_kb()
+        )
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
     
-    user_state[uid] = st
+    elif action == "ai":
+        if not st.get("extracted_text"):
+            bot.answer_callback_query(c.id, "❌ Нет текста для обработки")
+            return
+        
+        bot.answer_callback_query(c.id, "🤖 Обрабатываю текст через ИИ...")
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Обрабатываю текст в DeepSeek AI... (до 30 секунд)")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("extracted_text", "")
+            result = loop.run_until_complete(process_text_with_deepseek(original_text))
+            
+            st["ai_processed_text"] = result
+            st["original_text"] = result
+            title, body, formatted_text = format_ai_response(result)
+            st["title"] = title
+            st["body_raw"] = body
+            st["step"] = "waiting_after_ai"
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            send_message_with_retry(
+                c.message.chat.id,
+                f"✍️ <b>Обработанный текст:</b>\n\n{formatted_text}",
+                parse_mode="HTML",
+                reply_markup=after_ai_kb()
+            )
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+        except Exception as e:
+            logger.error(f"AI processing error: {e}")
+            bot.edit_message_text(f"❌ Ошибка при обработке ИИ: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
     
-    text_preview = original_text[:200] if original_text else "(без текста)"
-    source_text = f"📢 <b>Источник:</b> {source_info}\n" if source_info else ""
+    elif action == "tg":
+        if not st.get("extracted_text"):
+            bot.answer_callback_query(c.id, "❌ Нет текста для обработки")
+            return
+        
+        bot.answer_callback_query(c.id, "📱 Сокращаю текст для Telegram...")
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Сокращаю текст до 500 символов...")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("extracted_text", "")
+            result = loop.run_until_complete(process_text_with_deepseek_tg(original_text))
+            
+            st["tg_post_text"] = result
+            st["post_type"] = "tg"
+            st["step"] = "waiting_post_action"
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("tg")
+            )
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+        except Exception as e:
+            logger.error(f"TG post error: {e}")
+            bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
     
-    media_status = []
-    if st["photo_bytes"]:
-        media_status.append("✅ <b>Фото:</b> сохранено")
-    if st["video_info"]:
-        file_size_mb = st["video_info"].get('file_size', 0) / (1024 * 1024)
-        media_status.append(f"✅ <b>Видео:</b> сохранено ({file_size_mb:.1f}MB)")
-    if not st["photo_bytes"] and not st["video_info"] and st.get("has_media"):
-        media_status.append(f"⚠️ <b>Медиа:</b> {st['media_type']}")
-    if not media_status:
-        media_status.append("⚠️ <b>Медиа:</b> не найдено")
+    elif action == "threads":
+        if not st.get("extracted_text"):
+            bot.answer_callback_query(c.id, "❌ Нет текста для обработки")
+            return
+        
+        bot.answer_callback_query(c.id, "📱 Сокращаю текст для Тредс...")
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Сокращаю текст до 400 символов...")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("extracted_text", "")
+            result = loop.run_until_complete(process_text_with_deepseek_threads(original_text))
+            
+            st["threads_post_text"] = result
+            st["post_type"] = "threads"
+            st["step"] = "waiting_post_action"
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("threads")
+            )
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+        except Exception as e:
+            logger.error(f"Threads post error: {e}")
+            bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
     
-    send_message_with_retry(
-        message.chat.id,
-        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{'<br>'.join(media_status)}\n📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
-        parse_mode="HTML",
-        reply_markup=repost_action_kb()
-    )
+    elif action == "watermark":
+        bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
+        st["step"] = "waiting_watermark_type"
+        user_state[uid] = st
+        send_message_with_retry(
+            c.message.chat.id,
+            "💧 <b>Выбери тип водяного знака:</b>",
+            parse_mode="HTML",
+            reply_markup=watermark_type_kb()
+        )
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+    
+    elif action == "publish":
+        if not CHANNEL_MN and not CHANNEL_CHP and not CHANNEL_AFISHA and not CHANNEL_TEST:
+            bot.answer_callback_query(c.id, "❌ Каналы не настроены")
+            send_message_with_retry(c.message.chat.id, "❌ Ни один канал для публикации не настроен.", reply_markup=main_menu_kb())
+            return
+        
+        bot.answer_callback_query(c.id, "📢 Выбери канал для публикации")
+        st["original_text"] = st.get("extracted_text", "")
+        st["title"], st["body_raw"] = split_title_and_body(st["original_text"])
+        user_state[uid] = st
+        send_message_with_retry(
+            c.message.chat.id,
+            "📢 <b>Выбери канал для публикации текста:</b>",
+            parse_mode="HTML",
+            reply_markup=channel_selection_kb()
+        )
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
 
 
 # =========================
@@ -3215,16 +2753,14 @@ def cmd_start(message):
         f"👋 <b>Привет! Я бот для оформления постов</b>\n\n"
         f"<b>📝 Основные функции:</b>\n"
         f"• 📝 Оформление постов с фото (7 шаблонов)\n"
-        f"• ✨ Улучшение качества фото (+20% резкость, +15% насыщенность)\n"
-        f"• 💧 Водяные знаки - нанеси \"MINSK NEWS\" или \"ЧП Минск\" на фото\n"
-        f"• 🤖 Текст в ИИ - отправь текст, ИИ сократит его до 650 символов\n"
-        f"• 📱 Пост для ТГ - сократит текст до 500 символов с автоматическим эмодзи\n"
-        f"• 📱 Пост для Тредс - сократит текст до 400 символов с автоматическим эмодзи\n"
-        f"• 📰 Извлечение статьи - отправь ссылку, бот извлечет текст\n"
+        f"• ✨ Улучшение качества фото\n"
+        f"• 💧 Водяные знаки\n"
+        f"• 🤖 Текст в ИИ - сокращение до 650 символов\n"
+        f"• 📱 Пост для ТГ - сокращение до 500 символов\n"
+        f"• 📱 Пост для Тредс - сокращение до 400 символов\n"
+        f"• 📰 Извлечение статьи - отправь ссылку\n"
         f"• 💰 Цены и условия размещения\n"
-        f"• 📎 Репосты из каналов - отправь ссылку на пост или перешли его\n"
-        f"• 🎬 Поддержка видео - бот сохраняет видео и публикует его с текстом\n"
-        f"• 📸 Альбомы - поддерживает несколько фото и видео\n\n"
+        f"• 📎 Репосты из каналов\n\n"
         f"<b>📌 Доступные каналы для публикации:</b> {channels_text}\n\n"
         f"Выбери действие 👇",
         parse_mode="HTML",
@@ -3238,59 +2774,6 @@ def cmd_post(message):
     st["step"] = "waiting_photo_first"
     user_state[uid] = st
     send_message_with_retry(message.chat.id, "📸 Отправь фото для оформления поста:", reply_markup=main_menu_kb())
-
-@bot.message_handler(commands=["enhance"])
-def cmd_enhance(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    st["step"] = "waiting_enhance_photo"
-    user_state[uid] = st
-    send_message_with_retry(message.chat.id, "✨ <b>Улучшение качества фото</b>\n\nОтправь фото, и я увеличу резкость на +20% и насыщенность на +15%", parse_mode="HTML", reply_markup=main_menu_kb())
-
-@bot.message_handler(commands=["watermark"])
-def cmd_watermark(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    st["step"] = "waiting_watermark_type"
-    user_state[uid] = st
-    send_message_with_retry(message.chat.id, "💧 <b>Водяные знаки</b>\n\nВыбери тип водяного знака:", parse_mode="HTML", reply_markup=watermark_type_kb())
-
-@bot.message_handler(commands=["prices"])
-def cmd_prices(message):
-    send_message_with_retry(message.chat.id, "💰 <b>Цены и условия размещения</b>\n\nВыбери интересующий раздел:", parse_mode="HTML", reply_markup=prices_menu_kb())
-
-@bot.message_handler(commands=["ai_text"])
-def cmd_ai_text(message):
-    uid = message.from_user.id
-    st = user_state.get(uid) or {}
-    st["step"] = "waiting_ai_text"
-    user_state[uid] = st
-    send_message_with_retry(message.chat.id, "🤖 <b>Текст в ИИ</b>\n\nОтправь текст новости, и я сокращу его до 650 символов.\n\n<i>Обработка может занять до 30 секунд...</i>", parse_mode="HTML", reply_markup=main_menu_kb())
-
-@bot.message_handler(commands=["stop"])
-def cmd_stop(message):
-    clear_state(message.from_user.id)
-    send_message_with_retry(message.chat.id, "🛑 Бот сброшен в исходное состояние.", reply_markup=main_menu_kb())
-
-@bot.message_handler(func=lambda message: message.text == BTN_POST)
-def handle_post_button(message):
-    cmd_post(message)
-
-@bot.message_handler(func=lambda message: message.text == BTN_ENHANCE)
-def handle_enhance_button(message):
-    cmd_enhance(message)
-
-@bot.message_handler(func=lambda message: message.text == BTN_WATERMARK)
-def handle_watermark_button(message):
-    cmd_watermark(message)
-
-@bot.message_handler(func=lambda message: message.text == BTN_PRICES)
-def handle_prices_button(message):
-    cmd_prices(message)
-
-@bot.message_handler(func=lambda message: message.text == BTN_AI_TEXT)
-def handle_ai_text_button(message):
-    cmd_ai_text(message)
 
 
 # =========================
@@ -3314,7 +2797,7 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 
 # =========================
-# Main execution (ОБНОВЛЕННЫЙ - с защитой от 409)
+# Main execution
 # =========================
 if __name__ == "__main__":
     logger.info("Starting bot...")
@@ -3323,7 +2806,6 @@ if __name__ == "__main__":
         ensure_fonts()
         logger.info("Fonts loaded successfully")
         
-        # Многократная попытка удалить вебхук
         for attempt in range(3):
             try:
                 bot.remove_webhook()
@@ -3334,29 +2816,20 @@ if __name__ == "__main__":
                 logger.warning(f"Failed to remove webhook (attempt {attempt + 1}): {e}")
                 time.sleep(2)
         
-        # Запускаем health check сервер
         http_thread = threading.Thread(target=run_http_server, daemon=True)
         http_thread.start()
         logger.info("🌐 Health check server thread started")
         
-        # Запускаем polling с защитой от конфликтов
-        logger.info("🤖 Bot started polling with conflict protection...")
+        logger.info("🤖 Bot started polling...")
         while True:
             try:
-                bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+                bot.infinity_polling(timeout=60, long_polling_timeout=60)
             except Exception as e:
                 logger.error(f"Polling error: {e}")
                 if "409" in str(e):
                     logger.error("Conflict detected! Waiting 30 seconds...")
-                    # Пытаемся удалить вебхук
-                    try:
-                        bot.remove_webhook()
-                        logger.info("Webhook removed after conflict")
-                    except:
-                        pass
                     time.sleep(30)
                 else:
-                    logger.info("Restarting polling in 10 seconds...")
                     time.sleep(10)
                 continue
                 
