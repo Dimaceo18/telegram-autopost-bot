@@ -2917,7 +2917,6 @@ async def process_text_with_deepseek_threads(text: str) -> str:
 9. Верни ТОЛЬКО готовый пост, без пояснений
 
 Важно: Текст должен быть ровно 400 символов! Посчитай символы перед отправкой.
-
 Вот исходный текст:"""
     
     async with httpx.AsyncClient(timeout=60.0) as client:
