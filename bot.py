@@ -2748,35 +2748,46 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
 
+# =========================
+# Функции для создания постов в Telegram и Threads (ОБНОВЛЕННЫЕ)
+# =========================
 
-# =========================
-# Обновленная функция для создания поста для Telegram (первая версия)
-# =========================
 async def process_text_with_deepseek_tg(text: str) -> str:
     """
-    Создает пост для Telegram ровно на 500 символов
-    Только 1 эмодзи в начале
+    Создает пост для Telegram в новостном формате до 500 символов
+    Сохраняет всю информацию из исходного текста
     """
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
-    prompt = """Ты редактор новостного канала в Telegram. Создай пост из статьи ровно на 500 символов.
+    prompt = f"""Ты профессиональный редактор новостного СМИ. Создай новостной пост для Telegram на основе текста ниже.
 
-Правила:
-1. Пост должен быть ровно 500 символов (включая пробелы и знаки препинания)
-2. НЕ используй многоточие в конце
-3. Сохрани все главные факты и суть статьи
-4. Сделай интересный, цепляющий заголовок
-5. Пост должен быть логически завершенным
-6. Только 1 эмодзи в начале поста (перед заголовком), больше эмодзи НЕ используй
-7. Разбей текст на 2-3 абзаца
-8. Не используй символы # и ** в ответе
-9. Верни ТОЛЬКО готовый пост, без пояснений
+Требования к посту:
+1. Формат: строгий новостной, как в серьезных СМИ
+2. Длина: не более 500 символов (включая пробелы и знаки препинания)
+3. Заголовок: яркий, информативный, привлекающий внимание
+4. Содержание: сохрани ВСЮ ключевую информацию из исходного текста:
+   - Все цифры и даты
+   - Все имена и названия
+   - Все важные события и факты
+   - Причинно-следственные связи
+5. Структура: 
+   - Заголовок (1 строка)
+   - Основной текст с абзацами (2-3 абзаца)
+6. Стиль: строгий новостной, без разговорных выражений
+7. Эмодзи: ТОЛЬКО 1 эмодзи в самом начале поста (перед заголовком), определяемый по тематике новости
+8. Запрещено: многоточие, маркдаун (#, **), лишние эмодзи в тексте
 
-Важно: Текст должен быть ровно 500 символов! Посчитай символы перед отправкой.
+Важно: 
+- Сократи текст, но НЕ потеряй ни одного важного факта
+- Информация должна быть полной, несмотря на ограничение по длине
+- Пост должен быть логически завершенным
 
-Вот исходный текст:"""
-    
+Исходный текст для обработки:
+{text}
+
+Верни ТОЛЬКО готовый пост, без пояснений и комментариев."""
+
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.post(
@@ -2785,10 +2796,10 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного канала. Твоя задача - создать идеальный пост для Telegram ровно на 500 символов. Текст должен быть завершенным, без многоточия. Используй эмодзи для выделения. Проверяй количество символов перед ответом."},
-                        {"role": "user", "content": f"{prompt}\n\n{text}"}
+                        {"role": "system", "content": "Ты профессиональный редактор новостного СМИ. Создавай качественные новостные посты, сохраняя всю важную информацию. Отвечай только готовым постом, без пояснений."},
+                        {"role": "user", "content": prompt}
                     ],
-                    "temperature": 0.7,
+                    "temperature": 0.5,
                     "max_tokens": 800
                 }
             )
@@ -2801,9 +2812,13 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                 result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
                 result = result.strip()
                 
-                # Если текст больше 500 символов - сокращаем без многоточия
+                # Убираем все эмодзи из текста (оставляем только в начале)
+                emoji_pattern = re.compile(r'[\U00010000-\U0010FFFF]|[\u2600-\u27BF]|[\u{1F300}-\u{1F5FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]', flags=re.UNICODE)
+                result = emoji_pattern.sub('', result)
+                
+                # Если текст больше 500 символов - сокращаем
                 if len(result) > 500:
-                    # Пробуем обрезать по последнему предложению
+                    # Обрезаем по предложениям
                     sentences = re.split(r'(?<=[.!?])\s+', result)
                     shortened = ""
                     for sent in sentences:
@@ -2813,10 +2828,9 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                             else:
                                 shortened = sent
                         else:
-                            # Если последнее предложение не влезает, пробуем обрезать его
+                            # Если предложение не влезает, пробуем обрезать его
                             remaining = 500 - len(shortened)
-                            if remaining > 10 and sent:
-                                # Обрезаем предложение без многоточия
+                            if remaining > 20 and sent:
                                 words = sent.split()
                                 temp = ""
                                 for word in words:
@@ -2830,63 +2844,315 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                                 if temp:
                                     shortened += " " + temp
                             break
-                    
                     result = shortened.strip()
                 
-                # Если текст меньше 500 символов - дополняем
-                elif len(result) < 500:
-                    # Добавляем дополнительную информацию из исходного текста
-                    additional = text.replace(result, "").strip()
-                    if additional:
-                        # Берем недостающие символы из дополнительного текста
-                        needed = 500 - len(result)
-                        words = additional.split()
-                        temp = ""
-                        for word in words:
-                            if len(result) + len(temp) + len(word) + 1 <= 500:
-                                if temp:
-                                    temp += " " + word
-                                else:
-                                    temp = word
-                            else:
-                                break
-                        if temp:
-                            # Добавляем только если есть место
-                            if len(result) + len(temp) + 1 <= 500:
-                                result += " " + temp
-                
-                # Добавляем эмодзи в начало
+                # Добавляем 1 эмодзи в начало
                 emoji = detect_topic_emoji(result)
-                # Проверяем, чтобы с эмодзи не превысить 500
-                if len(emoji) + 1 + len(result) <= 500:
-                    result = f"{emoji} {result}"
-                else:
-                    # Если не влезает, сокращаем текст
-                    result = result[:500 - len(emoji) - 2]
-                    result = f"{emoji} {result}"
+                result = f"{emoji} {result}"
                 
                 # Финальная проверка длины
                 if len(result) > 500:
                     result = result[:500]
-                elif len(result) < 500:
-                    # Дополняем до 500 символов, если возможно
-                    if len(result) < 480:
-                        # Добавляем информацию из исходного текста
-                        additional = text.replace(result, "").strip()
-                        if additional:
-                            needed = 500 - len(result)
-                            words = additional.split()
-                            temp = ""
-                            for word in words:
-                                if len(result) + len(temp) + len(word) + 1 <= 500:
-                                    if temp:
-                                        temp += " " + word
+                
+                return result
+                
+            return f"❌ Ошибка API: {response.status_code}"
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)}"
+
+
+async def process_text_with_deepseek_threads(text: str) -> str:
+    """
+    Создает пост для Threads в новостном формате до 400 символов
+    Сохраняет всю информацию из исходного текста
+    """
+    if not DEEPSEEK_API_KEY:
+        return "❌ API ключ DeepSeek не настроен."
+    
+    prompt = f"""Ты профессиональный редактор для соцсети Threads. Создай новостной пост на основе текста ниже.
+
+Требования к посту:
+1. Формат: новостной, но более живой и динамичный, чем в Telegram
+2. Длина: не более 400 символов (включая пробелы и знаки препинания)
+3. Заголовок: яркий, интригующий, привлекающий внимание
+4. Содержание: сохрани ВСЮ ключевую информацию из исходного текста:
+   - Все цифры и даты
+   - Все имена и названия
+   - Все важные события и факты
+5. Структура:
+   - Заголовок (1 строка)
+   - Основной текст с абзацами (2 абзаца)
+6. Стиль: новостной, но более вовлекающий, чем в Telegram
+7. Эмодзи: ТОЛЬКО 1 эмодзи в самом начале поста (перед заголовком), определяемый по тематике новости
+8. Запрещено: многоточие, маркдаун (#, **), лишние эмодзи в тексте
+
+Важно:
+- Сократи текст максимально эффективно, но НЕ потеряй ни одного важного факта
+- Информация должна быть полной, несмотря на ограничение по длине
+- Пост должен быть логически завершенным и цепляющим
+
+Исходный текст для обработки:
+{text}
+
+Верни ТОЛЬКО готовый пост, без пояснений и комментариев."""
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(
+                DEEPSEEK_API_URL,
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "Ты профессиональный редактор для Threads. Создавай качественные новостные посты, сохраняя всю важную информацию. Отвечай только готовым постом, без пояснений."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.6,
+                    "max_tokens": 600
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()["choices"][0]["message"]["content"]
+                
+                # Очищаем результат от лишних фраз
+                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                result = result.strip()
+                
+                # Убираем все эмодзи из текста
+                emoji_pattern = re.compile(r'[\U00010000-\U0010FFFF]|[\u2600-\u27BF]|[\u{1F300}-\u{1F5FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]', flags=re.UNICODE)
+                result = emoji_pattern.sub('', result)
+                
+                # Если текст больше 400 символов - сокращаем
+                if len(result) > 400:
+                    sentences = re.split(r'(?<=[.!?])\s+', result)
+                    shortened = ""
+                    for sent in sentences:
+                        if len(shortened) + len(sent) + 1 <= 400:
+                            if shortened:
+                                shortened += " " + sent
+                            else:
+                                shortened = sent
+                        else:
+                            remaining = 400 - len(shortened)
+                            if remaining > 15 and sent:
+                                words = sent.split()
+                                temp = ""
+                                for word in words:
+                                    if len(shortened) + len(temp) + len(word) + 1 <= 400:
+                                        if temp:
+                                            temp += " " + word
+                                        else:
+                                            temp = word
                                     else:
-                                        temp = word
-                                else:
-                                    break
-                            if temp and len(result) + len(temp) + 1 <= 500:
-                                result += " " + temp
+                                        break
+                                if temp:
+                                    shortened += " " + temp
+                            break
+                    result = shortened.strip()
+                
+                # Добавляем 1 эмодзи в начало
+                emoji = detect_topic_emoji(result)
+                result = f"{emoji} {result}"
+                
+                # Финальная проверка длины
+                if len(result) > 400:
+                    result = result[:400]
+                
+                return result
+                
+            return f"❌ Ошибка API: {response.status_code}"
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)}"
+
+
+# =========================
+# Функции для ПЕРЕДЕЛКИ постов (сохраняют всю информацию)
+# =========================
+
+async def process_text_with_deepseek_tg_redo(text: str) -> str:
+    """
+    Переделывает пост для Telegram с сохранением всей информации
+    """
+    if not DEEPSEEK_API_KEY:
+        return "❌ API ключ DeepSeek не настроен."
+    
+    prompt = f"""Ты профессиональный редактор новостного СМИ. Переделай эту новость в НОВЫЙ пост для Telegram.
+
+Требования:
+1. Переделай новость в новый формат, но сохрани ВСЮ ключевую информацию
+2. Длина: не более 500 символов
+3. Заголовок: новый, но не менее интересный
+4. Сохрани все цифры, даты, имена, названия, события
+5. Структура: заголовок + 2-3 абзаца
+6. Только 1 эмодзи в начале поста (перед заголовком)
+7. Строгий новостной стиль
+
+Важно: Переделай текст так, чтобы он звучал по-новому, но вся информация осталась
+
+Исходный текст новости:
+{text}
+
+Верни ТОЛЬКО готовый пост, без пояснений."""
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(
+                DEEPSEEK_API_URL,
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "Ты профессиональный редактор. Переделывай новости в новые посты, сохраняя всю информацию. Отвечай только готовым постом."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.6,
+                    "max_tokens": 800
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()["choices"][0]["message"]["content"]
+                
+                # Очищаем результат
+                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                result = result.strip()
+                
+                # Убираем все эмодзи из текста
+                emoji_pattern = re.compile(r'[\U00010000-\U0010FFFF]|[\u2600-\u27BF]|[\u{1F300}-\u{1F5FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]', flags=re.UNICODE)
+                result = emoji_pattern.sub('', result)
+                
+                # Подгоняем под 500 символов
+                if len(result) > 500:
+                    sentences = re.split(r'(?<=[.!?])\s+', result)
+                    shortened = ""
+                    for sent in sentences:
+                        if len(shortened) + len(sent) + 1 <= 500:
+                            if shortened:
+                                shortened += " " + sent
+                            else:
+                                shortened = sent
+                        else:
+                            remaining = 500 - len(shortened)
+                            if remaining > 20 and sent:
+                                words = sent.split()
+                                temp = ""
+                                for word in words:
+                                    if len(shortened) + len(temp) + len(word) + 1 <= 500:
+                                        if temp:
+                                            temp += " " + word
+                                        else:
+                                            temp = word
+                                    else:
+                                        break
+                                if temp:
+                                    shortened += " " + temp
+                            break
+                    result = shortened.strip()
+                
+                # Добавляем эмодзи
+                emoji = detect_topic_emoji(result)
+                result = f"{emoji} {result}"
+                
+                if len(result) > 500:
+                    result = result[:500]
+                
+                return result
+                
+            return f"❌ Ошибка API: {response.status_code}"
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)}"
+
+
+async def process_text_with_deepseek_threads_redo(text: str) -> str:
+    """
+    Переделывает пост для Threads с сохранением всей информации
+    """
+    if not DEEPSEEK_API_KEY:
+        return "❌ API ключ DeepSeek не настроен."
+    
+    prompt = f"""Ты профессиональный редактор для Threads. Переделай эту новость в НОВЫЙ пост для Threads.
+
+Требования:
+1. Переделай новость в новый формат, но сохрани ВСЮ ключевую информацию
+2. Длина: не более 400 символов
+3. Заголовок: новый, интригующий
+4. Сохрани все цифры, даты, имена, названия, события
+5. Структура: заголовок + 2 абзаца
+6. Только 1 эмодзи в начале поста
+7. Новостной стиль, но более живой
+
+Важно: Переделай текст так, чтобы он звучал по-новому, но вся информация осталась
+
+Исходный текст новости:
+{text}
+
+Верни ТОЛЬКО готовый пост, без пояснений."""
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(
+                DEEPSEEK_API_URL,
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "Ты профессиональный редактор для Threads. Переделывай новости в новые посты, сохраняя всю информацию. Отвечай только готовым постом."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 600
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()["choices"][0]["message"]["content"]
+                
+                # Очищаем результат
+                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                result = result.strip()
+                
+                # Убираем все эмодзи из текста
+                emoji_pattern = re.compile(r'[\U00010000-\U0010FFFF]|[\u2600-\u27BF]|[\u{1F300}-\u{1F5FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]', flags=re.UNICODE)
+                result = emoji_pattern.sub('', result)
+                
+                # Подгоняем под 400 символов
+                if len(result) > 400:
+                    sentences = re.split(r'(?<=[.!?])\s+', result)
+                    shortened = ""
+                    for sent in sentences:
+                        if len(shortened) + len(sent) + 1 <= 400:
+                            if shortened:
+                                shortened += " " + sent
+                            else:
+                                shortened = sent
+                        else:
+                            remaining = 400 - len(shortened)
+                            if remaining > 15 and sent:
+                                words = sent.split()
+                                temp = ""
+                                for word in words:
+                                    if len(shortened) + len(temp) + len(word) + 1 <= 400:
+                                        if temp:
+                                            temp += " " + word
+                                        else:
+                                            temp = word
+                                    else:
+                                        break
+                                if temp:
+                                    shortened += " " + temp
+                            break
+                    result = shortened.strip()
+                
+                # Добавляем эмодзи
+                emoji = detect_topic_emoji(result)
+                result = f"{emoji} {result}"
+                
+                if len(result) > 400:
+                    result = result[:400]
                 
                 return result
                 
@@ -2918,7 +3184,6 @@ async def process_text_with_deepseek_threads(text: str) -> str:
 
 Важно: Текст должен быть ровно 400 символов! Посчитай символы перед отправкой.
 Вот исходный текст:"""
-    
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.post(
