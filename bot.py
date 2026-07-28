@@ -1728,22 +1728,23 @@ async def extract_article_content(url: str) -> Dict[str, any]:
     
     try:
         # Отправляем запрос в DeepSeek с просьбой прочитать страницу
-        prompt = f"""Прочитай статью по ссылке ниже и извлеки из неё основной текст.
+        prompt = f"""Прочитай статью по ссылке ниже и извлеки из неё текст.
 
 URL статьи: {url}
 
 Правила:
 1. Прочитай страницу по ссылке
-2. Извлеки ТОЛЬКО основной текст статьи
+2. Извлеки ТОЛЬКО текст статьи
 3. Убери всю рекламу, баннеры, меню, навигацию
 4. Убери подписи к фото, авторские права
 5. Убери комментарии и блоки "похожие статьи"
 6. Сохрани структуру абзацев (расставь переносы строк между абзацами)
-7. НЕ изменяй текст, НЕ переписывай его - просто извлеки
-8. Верни только чистый текст статьи
-9. Если на странице есть заголовок статьи - включи его в начало текста отдельной строкой
+7. НЕ ИЗМЕНЯЙ ТЕКСТ - верни его точно таким же, как на сайте
+8. НЕ сокращай, НЕ переписывай, НЕ редактируй текст
+9. Верни полный текст статьи без изменений
+10. Если на странице есть заголовок статьи - включи его в начало текста
 
-Верни только текст статьи, без пояснений.
+Верни только полный текст статьи, без пояснений.
 """
 
         async with httpx.AsyncClient(timeout=90.0) as client:
@@ -1753,11 +1754,11 @@ URL статьи: {url}
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты помощник по извлечению контента. Ты умеешь читать веб-страницы по ссылкам и извлекать из них чистый текст. Отвечай только извлеченным текстом статьи, без пояснений. НЕ переписывай текст, только извлекай."},
+                        {"role": "system", "content": "Ты помощник по извлечению контента. Ты умеешь читать веб-страницы по ссылкам и извлекать из них точный текст. Отвечай ТОЛЬКО извлеченным текстом статьи, без пояснений. НЕ изменяй, НЕ переписывай, НЕ сокращай текст. Верни его точно таким же, как на сайте."},
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": 0.3,
-                    "max_tokens": 6000
+                    "temperature": 0.1,  # Минимальная температура для точного извлечения
+                    "max_tokens": 8000  # Увеличиваем для больших статей
                 }
             )
             
@@ -1774,24 +1775,22 @@ URL статьи: {url}
                 
                 # Извлекаем заголовок (первая строка)
                 lines = result.split('\n')
-                page_title = lines[0].strip() if lines else "Статья"
+                page_title = lines[0].strip() if lines else ""
                 
                 # Остальной текст (без заголовка)
                 body_text = '\n'.join(lines[1:]).strip() if len(lines) > 1 else ""
                 
                 # Если заголовок слишком короткий или похож на ссылку, пытаемся найти реальный заголовок
                 if len(page_title) < 10 or 'http' in page_title:
-                    # Ищем заголовок в тексте
-                    title_match = re.search(r'^(.{10,100}?)(?:\n|$)', result)
+                    title_match = re.search(r'^(.{10,200}?)(?:\n|$)', result)
                     if title_match:
                         page_title = title_match.group(1).strip()
                         body_text = result[len(page_title):].strip()
                 
                 # Извлекаем изображения - пробуем найти URL изображений в тексте
                 images = []
-                # Ищем URL изображений
                 img_urls = re.findall(r'https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp)', result, re.IGNORECASE)
-                img_urls = list(dict.fromkeys(img_urls))[:5]  # Уникальные, максимум 5
+                img_urls = list(dict.fromkeys(img_urls))[:5]
                 
                 for img_url in img_urls:
                     try:
@@ -1808,8 +1807,8 @@ URL статьи: {url}
                         logger.error(f"Error downloading image: {e}")
                 
                 return {
-                    "text": body_text,  # Только текст без заголовка
-                    "title": page_title,  # Заголовок отдельно
+                    "text": body_text,
+                    "title": page_title,
                     "images": images,
                     "url": url
                 }
@@ -1894,43 +1893,58 @@ def handle_article_link(message):
         user_state[uid] = st
         
         try:
-            # ОТПРАВЛЯЕМ ЗАГОЛОВОК ЖИРНЫМ
-            title_text = result.get("title", "Статья")
-            if title_text:
-                # Отправляем заголовок жирным
-                bot.send_message(
-                    message.chat.id, 
-                    f"<b>{html.escape(title_text)}</b>", 
-                    parse_mode="HTML"
-                )
-            
-            # ОТПРАВЛЯЕМ ТЕКСТ СТАТЬИ
+            # ФОРМИРУЕМ ОДНО СООБЩЕНИЕ: ЗАГОЛОВОК + ТЕКСТ
+            title_text = result.get("title", "")
             article_text = result.get("text", "")
+            
+            # Собираем полный текст для отправки
+            full_message = ""
+            if title_text:
+                full_message = f"<b>{html.escape(title_text)}</b>\n\n"
             if article_text:
-                if len(article_text) > 4000:
-                    # Разбиваем на части
-                    parts = [article_text[i:i+4000] for i in range(0, len(article_text), 4000)]
-                    for i, part in enumerate(parts):
-                        if i == 0:
-                            bot.send_message(
-                                message.chat.id, 
-                                f"📝 <b>Текст статьи (часть 1/{len(parts)}):</b>\n\n{part}", 
-                                parse_mode="HTML"
-                            )
-                        else:
-                            bot.send_message(
-                                message.chat.id, 
-                                f"📝 <b>Текст статьи (часть {i+1}/{len(parts)}):</b>\n\n{part}", 
-                                parse_mode="HTML"
-                            )
-                else:
-                    bot.send_message(message.chat.id, article_text, parse_mode="HTML")
+                full_message += article_text
+            
+            # Проверяем длину сообщения (Telegram лимит - 4096 символов)
+            if len(full_message) > 4000:
+                # Разбиваем на части
+                parts = []
+                current_part = ""
+                
+                # Если есть заголовок, добавляем его в первую часть
+                if title_text:
+                    current_part = f"<b>{html.escape(title_text)}</b>\n\n"
+                
+                # Разбиваем текст по абзацам
+                paragraphs = article_text.split('\n\n')
+                for p in paragraphs:
+                    if len(current_part) + len(p) + 2 < 4000:
+                        current_part += p + '\n\n'
+                    else:
+                        if current_part:
+                            parts.append(current_part.strip())
+                        current_part = p + '\n\n'
+                
+                if current_part:
+                    parts.append(current_part.strip())
+                
+                # Отправляем части
+                for i, part in enumerate(parts):
+                    if i == 0:
+                        bot.send_message(message.chat.id, part, parse_mode="HTML")
+                    else:
+                        bot.send_message(
+                            message.chat.id, 
+                            f"📝 <b>Продолжение ({i+1}/{len(parts)}):</b>\n\n{part}", 
+                            parse_mode="HTML"
+                        )
+            else:
+                # Отправляем одним сообщением
+                bot.send_message(message.chat.id, full_message, parse_mode="HTML")
             
             # ОТПРАВЛЯЕМ МЕДИА (изображения)
             images = result.get("images", [])
             if images:
                 if len(images) == 1:
-                    # Одно фото
                     send_photo_with_retry(
                         message.chat.id,
                         BytesIO(images[0]),
@@ -1938,7 +1952,6 @@ def handle_article_link(message):
                         parse_mode="HTML"
                     )
                 else:
-                    # Несколько фото - группой
                     media_group = []
                     for i, img_bytes in enumerate(images[:5]):
                         try:
@@ -1957,7 +1970,6 @@ def handle_article_link(message):
                             bot.send_media_group(message.chat.id, media_group)
                         except Exception as e:
                             logger.error(f"Error sending media group: {e}")
-                            # Отправляем по одному
                             for media in media_group:
                                 try:
                                     bot.send_photo(message.chat.id, media.media)
@@ -1984,7 +1996,6 @@ def handle_article_link(message):
             
         except Exception as e:
             logger.error(f"Error sending article content: {e}")
-            # Если что-то пошло не так, отправляем хотя бы текст
             if result.get("text"):
                 bot.send_message(
                     message.chat.id,
@@ -1992,7 +2003,6 @@ def handle_article_link(message):
                     parse_mode="HTML"
                 )
             
-            # Все равно показываем кнопки
             kb = InlineKeyboardMarkup(row_width=2)
             kb.add(
                 InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
@@ -2021,7 +2031,6 @@ def handle_article_link(message):
             )
     finally:
         loop.close()
-
 
 # =========================
 # Caption formatting
