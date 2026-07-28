@@ -239,8 +239,10 @@ def repost_action_kb():
     kb.add(
         InlineKeyboardButton("📝 Оформить пост", callback_data="repost:design"),
         InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="repost:ai"),
-        InlineKeyboardButton("💧 Нанести водяной знак", callback_data="repost:watermark")
+        InlineKeyboardButton("📱 Пост для ТГ (500 симв.)", callback_data="repost:tg"),
+        InlineKeyboardButton("📱 Пост для Тредс (400 симв.)", callback_data="repost:threads")
     )
+    kb.add(InlineKeyboardButton("💧 Нанести водяной знак", callback_data="repost:watermark"))
     return kb
 
 def after_ai_kb():
@@ -252,6 +254,15 @@ def after_ai_kb():
         InlineKeyboardButton("🔄 Переделать через ИИ", callback_data="ai:redo"),
         InlineKeyboardButton("◀️ Вернуться назад", callback_data="ai:back")
     )
+    return kb
+
+def post_action_kb(post_type: str = "tg"):
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🔄 Переделать еще раз", callback_data=f"{post_type}:redo"),
+        InlineKeyboardButton("📢 Выбрать канал", callback_data=f"{post_type}:select_channel")
+    )
+    kb.add(InlineKeyboardButton("◀️ Назад", callback_data=f"{post_type}:back"))
     return kb
 
 def prices_menu_kb():
@@ -298,6 +309,19 @@ def channel_selection_kb():
     if CHANNEL_TEST:
         kb.add(InlineKeyboardButton("🧪 ТЕСТОВЫЙ КАНАЛ", callback_data="select_channel:test"))
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="select_channel:cancel"))
+    return kb
+
+def post_channel_selection_kb(post_type: str):
+    kb = InlineKeyboardMarkup(row_width=1)
+    if CHANNEL_MN:
+        kb.add(InlineKeyboardButton("📰 MINSK NEWS", callback_data=f"post_channel:{post_type}:mn"))
+    if CHANNEL_CHP:
+        kb.add(InlineKeyboardButton("🚨 МИНСК ЧП", callback_data=f"post_channel:{post_type}:chp"))
+    if CHANNEL_AFISHA:
+        kb.add(InlineKeyboardButton("🎫 Афиша Минска", callback_data=f"post_channel:{post_type}:afisha"))
+    if CHANNEL_TEST:
+        kb.add(InlineKeyboardButton("🧪 ТЕСТОВЫЙ КАНАЛ", callback_data=f"post_channel:{post_type}:test"))
+    kb.add(InlineKeyboardButton("❌ Отмена", callback_data=f"post_channel:{post_type}:cancel"))
     return kb
 
 def channel_kb():
@@ -1506,7 +1530,7 @@ def enhance_image_simple(image_bytes: bytes) -> BytesIO:
 
 
 # =========================
-# Watermark functions - ИСПРАВЛЕННЫЕ
+# Watermark functions
 # =========================
 def ensure_4x5_ratio(img: Image.Image) -> Image.Image:
     """Обрезает изображение до соотношения 4:5"""
@@ -1943,6 +1967,75 @@ async def process_text_with_deepseek(text: str) -> str:
             return f"❌ Ошибка API: {response.status_code}"
         except Exception as e:
             return f"❌ Ошибка при обращении к API: {str(e)}"
+
+async def process_text_with_deepseek_tg(text: str) -> str:
+    if not DEEPSEEK_API_KEY:
+        return "❌ API ключ DeepSeek не настроен."
+    
+    prompt = """Ты редактор новостного канала в Telegram. Сократи новость до 500 символов. Сохрани главные факты, сделай интересный заголовок. Используй эмодзи для разделения блоков. Не используй символы # и **. Расставь абзацы.
+
+Вот текст:"""
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(
+                DEEPSEEK_API_URL,
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat", 
+                    "messages": [
+                        {"role": "system", "content": "Ты редактор новостного канала. Отвечай только готовым текстом для Telegram, без пояснений. Не используй символы # и **."}, 
+                        {"role": "user", "content": f"{prompt}\n\n{text}"}
+                    ], 
+                    "temperature": 0.7, 
+                    "max_tokens": 800
+                }
+            )
+            if response.status_code == 200:
+                result = response.json()["choices"][0]["message"]["content"]
+                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                # Ограничиваем до 500 символов
+                if len(result) > 500:
+                    result = result[:497] + "..."
+                return result.strip()
+            return f"❌ Ошибка API: {response.status_code}"
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)}"
+
+async def process_text_with_deepseek_threads(text: str) -> str:
+    if not DEEPSEEK_API_KEY:
+        return "❌ API ключ DeepSeek не настроен."
+    
+    prompt = """Ты редактор для соцсети Тредс (Threads). Сократи новость до 400 символов. Сделай текст живым, с интригующим заголовком. Используй эмодзи. Не используй символы # и **. Расставь абзацы.
+
+Вот текст:"""
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(
+                DEEPSEEK_API_URL,
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat", 
+                    "messages": [
+                        {"role": "system", "content": "Ты редактор для Тредс. Отвечай только готовым текстом, без пояснений. Не используй символы # и **."}, 
+                        {"role": "user", "content": f"{prompt}\n\n{text}"}
+                    ], 
+                    "temperature": 0.8, 
+                    "max_tokens": 600
+                }
+            )
+            if response.status_code == 200:
+                result = response.json()["choices"][0]["message"]["content"]
+                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                if len(result) > 400:
+                    result = result[:397] + "..."
+                return result.strip()
+            return f"❌ Ошибка API: {response.status_code}"
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)}"
 
 
 # =========================
@@ -2410,7 +2503,7 @@ def on_repost_action(c):
         user_state[uid] = st
         bot.answer_callback_query(c.id, "Выбери шаблон для оформления поста ✅")
         send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления. Фото и текст из репоста будут использованы автоматически! 🎉", reply_markup=template_kb())
-        
+    
     elif action == "ai":
         bot.answer_callback_query(c.id, "🤖 Обрабатываю текст через ИИ...")
         
@@ -2458,7 +2551,94 @@ def on_repost_action(c):
             bot.edit_message_text(f"❌ Ошибка при обработке ИИ: {e}", c.message.chat.id, processing_msg.message_id)
         finally:
             loop.close()
+    
+    elif action == "tg":
+        if not st.get("original_text"):
+            bot.answer_callback_query(c.id, "❌ Нет текста для обработки")
+            return
+        
+        bot.answer_callback_query(c.id, "📱 Сокращаю текст для Telegram...")
+        
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Сокращаю текст до 500 символов...")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("original_text", "")
+            result = loop.run_until_complete(process_text_with_deepseek_tg(original_text))
             
+            st["tg_post_text"] = result
+            st["post_type"] = "tg"
+            st["step"] = "waiting_post_action"
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            # Редактируем исходное сообщение или отправляем новое
+            try:
+                bot.edit_message_text(
+                    f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}",
+                    c.message.chat.id,
+                    c.message.message_id,
+                    parse_mode="HTML",
+                    reply_markup=post_action_kb("tg")
+                )
+            except:
+                send_message_with_retry(
+                    c.message.chat.id,
+                    f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}",
+                    parse_mode="HTML",
+                    reply_markup=post_action_kb("tg")
+                )
+        except Exception as e:
+            logger.error(f"TG post error: {e}")
+            bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
+    
+    elif action == "threads":
+        if not st.get("original_text"):
+            bot.answer_callback_query(c.id, "❌ Нет текста для обработки")
+            return
+        
+        bot.answer_callback_query(c.id, "📱 Сокращаю текст для Тредс...")
+        
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Сокращаю текст до 400 символов...")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("original_text", "")
+            result = loop.run_until_complete(process_text_with_deepseek_threads(original_text))
+            
+            st["threads_post_text"] = result
+            st["post_type"] = "threads"
+            st["step"] = "waiting_post_action"
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            try:
+                bot.edit_message_text(
+                    f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}",
+                    c.message.chat.id,
+                    c.message.message_id,
+                    parse_mode="HTML",
+                    reply_markup=post_action_kb("threads")
+                )
+            except:
+                send_message_with_retry(
+                    c.message.chat.id,
+                    f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}",
+                    parse_mode="HTML",
+                    reply_markup=post_action_kb("threads")
+                )
+        except Exception as e:
+            logger.error(f"Threads post error: {e}")
+            bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
+    
     elif action == "watermark":
         if st.get("photo_bytes") or st.get("saved_photo_bytes"):
             if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
@@ -2565,6 +2745,184 @@ def on_ai_action(c):
         clear_state(uid)
         bot.answer_callback_query(c.id, "Отменено")
         send_message_with_retry(c.message.chat.id, "❌ Отменено", reply_markup=main_menu_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("tg:"))
+def on_tg_action(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
+    
+    if action == "redo":
+        bot.answer_callback_query(c.id, "🔄 Переделываю текст...")
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Переделываю текст...")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("original_text", "")
+            result = loop.run_until_complete(process_text_with_deepseek_tg(original_text))
+            
+            st["tg_post_text"] = result
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            bot.edit_message_text(
+                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}",
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML",
+                reply_markup=post_action_kb("tg")
+            )
+        except Exception as e:
+            bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
+    
+    elif action == "select_channel":
+        bot.answer_callback_query(c.id, "📢 Выбери канал")
+        send_message_with_retry(
+            c.message.chat.id,
+            "📢 <b>Выбери канал для публикации поста:</b>",
+            parse_mode="HTML",
+            reply_markup=post_channel_selection_kb("tg")
+        )
+    
+    elif action == "back":
+        bot.answer_callback_query(c.id, "◀️ Назад")
+        clear_state(uid)
+        send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("threads:"))
+def on_threads_action(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
+    
+    if action == "redo":
+        bot.answer_callback_query(c.id, "🔄 Переделываю текст...")
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Переделываю текст...")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("original_text", "")
+            result = loop.run_until_complete(process_text_with_deepseek_threads(original_text))
+            
+            st["threads_post_text"] = result
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            bot.edit_message_text(
+                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}",
+                c.message.chat.id,
+                c.message.message_id,
+                parse_mode="HTML",
+                reply_markup=post_action_kb("threads")
+            )
+        except Exception as e:
+            bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
+    
+    elif action == "select_channel":
+        bot.answer_callback_query(c.id, "📢 Выбери канал")
+        send_message_with_retry(
+            c.message.chat.id,
+            "📢 <b>Выбери канал для публикации поста:</b>",
+            parse_mode="HTML",
+            reply_markup=post_channel_selection_kb("threads")
+        )
+    
+    elif action == "back":
+        bot.answer_callback_query(c.id, "◀️ Назад")
+        clear_state(uid)
+        send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("post_channel:"))
+def on_post_channel_select(c):
+    uid = c.from_user.id
+    _, post_type, channel_type = c.data.split(":", 2)
+    st = user_state.get(uid) or {}
+    
+    if channel_type == "cancel":
+        bot.answer_callback_query(c.id, "Отменено")
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+        # Возвращаемся к предыдущему сообщению
+        if post_type == "tg" and st.get("tg_post_text"):
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{st['tg_post_text']}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("tg")
+            )
+        elif post_type == "threads" and st.get("threads_post_text"):
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{st['threads_post_text']}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("threads")
+            )
+        return
+    
+    # Определяем канал
+    if channel_type == "mn":
+        target_channel = CHANNEL_MN
+        channel_name = "MINSK NEWS"
+    elif channel_type == "chp":
+        target_channel = CHANNEL_CHP
+        channel_name = "МИНСК ЧП"
+    elif channel_type == "afisha":
+        target_channel = CHANNEL_AFISHA
+        channel_name = "Афиша Минска"
+    elif channel_type == "test":
+        target_channel = CHANNEL_TEST
+        channel_name = "ТЕСТОВЫЙ КАНАЛ"
+    else:
+        bot.answer_callback_query(c.id, "❌ Неизвестный канал")
+        return
+    
+    if not target_channel:
+        bot.answer_callback_query(c.id, f"❌ Канал {channel_name} не настроен")
+        return
+    
+    try:
+        # Получаем текст поста
+        if post_type == "tg":
+            post_text = st.get("tg_post_text", "")
+        else:
+            post_text = st.get("threads_post_text", "")
+        
+        if not post_text:
+            bot.answer_callback_query(c.id, "❌ Нет текста для публикации")
+            return
+        
+        # Публикуем в канал
+        bot.send_message(target_channel, post_text, parse_mode="HTML")
+        
+        bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name}")
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+        
+        clear_state(uid)
+        send_message_with_retry(
+            c.message.chat.id,
+            f"✅ Пост опубликован в канале {channel_name}!",
+            reply_markup=main_menu_kb()
+        )
+        
+    except Exception as e:
+        logger.error(f"Error publishing post to channel: {e}")
+        bot.answer_callback_query(c.id, "❌ Ошибка публикации")
+        send_message_with_retry(
+            c.message.chat.id,
+            f"❌ Не удалось опубликовать: {e}",
+            reply_markup=main_menu_kb()
+        )
 
 @bot.callback_query_handler(func=lambda c: c.data == "publish_to_channel")
 def on_publish_to_channel(c):
@@ -3479,6 +3837,8 @@ def cmd_start(message):
         f"• ✨ Улучшение качества фото (+20% резкость, +15% насыщенность)\n"
         f"• 💧 Водяные знаки - нанеси \"MINSK NEWS\" или \"ЧП Минск\" на фото\n"
         f"• 🤖 Текст в ИИ - отправь текст, ИИ сократит его до 650 символов\n"
+        f"• 📱 Пост для ТГ - сократит текст до 500 символов\n"
+        f"• 📱 Пост для Тредс - сократит текст до 400 символов\n"
         f"• 💰 Цены и условия размещения\n"
         f"• 📎 Репосты из каналов - отправь ссылку на пост или перешли его\n"
         f"• 🎬 Поддержка видео - бот сохраняет видео и публикует его с текстом\n"
