@@ -23,6 +23,33 @@ from urllib.parse import urlparse, urljoin
 import requests
 import httpx
 import telebot
+# =========================
+# Функция для удаления эмодзи из текста
+# =========================
+def remove_emojis(text: str) -> str:
+    """
+    Удаляет все эмодзи из текста
+    """
+    # Паттерн для удаления всех эмодзи
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # смайлики
+        "\U0001F300-\U0001F5FF"  # символы и пиктограммы
+        "\U0001F680-\U0001F6FF"  # транспорт и карты
+        "\U0001F700-\U0001F77F"  # алхимические символы
+        "\U0001F780-\U0001F7FF"  # геометрические фигуры
+        "\U0001F800-\U0001F8FF"  # дополнительные стрелки
+        "\U0001F900-\U0001F9FF"  # дополнительные символы
+        "\U0001FA00-\U0001FA6F"  # дополнительные символы
+        "\U0001FA70-\U0001FAFF"  # дополнительные символы
+        "\U00002702-\U000027B0"  # другие символы
+        "\U000024C2-\U0001F251"  # другие символы
+        "\u2600-\u27BF"  # разные символы
+        "]+",
+        flags=re.UNICODE
+    )
+    return emoji_pattern.sub('', text)
+
 from telebot.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton,
@@ -1895,13 +1922,16 @@ async def process_text_with_deepseek_tg(text: str) -> str:
             
             if response.status_code == 200:
                 result = response.json()["choices"][0]["message"]["content"]
+                
+                # Очищаем результат
                 result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
                 result = result.strip()
                 
-                emoji_pattern = re.compile(r'[\U00010000-\U0010FFFF]|[\u2600-\u27BF]|[\u{1F300}-\u{1F5FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]', flags=re.UNICODE)
-                result = emoji_pattern.sub('', result)
+                # Удаляем все эмодзи из текста (используем исправленную функцию)
+                result = remove_emojis(result)
                 
+                # Ограничиваем до 500 символов
                 if len(result) > 500:
                     sentences = re.split(r'(?<=[.!?])\s+', result)
                     shortened = ""
@@ -1929,9 +1959,11 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                             break
                     result = shortened.strip()
                 
+                # Добавляем 1 эмодзи в начало
                 emoji = detect_topic_emoji(result)
                 result = f"{emoji} {result}"
                 
+                # Финальная проверка длины
                 if len(result) > 500:
                     result = result[:500]
                 
@@ -1991,13 +2023,16 @@ async def process_text_with_deepseek_threads(text: str) -> str:
             
             if response.status_code == 200:
                 result = response.json()["choices"][0]["message"]["content"]
+                
+                # Очищаем результат
                 result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
                 result = result.strip()
                 
-                emoji_pattern = re.compile(r'[\U00010000-\U0010FFFF]|[\u2600-\u27BF]|[\u{1F300}-\u{1F5FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]', flags=re.UNICODE)
-                result = emoji_pattern.sub('', result)
+                # Удаляем все эмодзи из текста (используем исправленную функцию)
+                result = remove_emojis(result)
                 
+                # Ограничиваем до 400 символов
                 if len(result) > 400:
                     sentences = re.split(r'(?<=[.!?])\s+', result)
                     shortened = ""
@@ -2025,9 +2060,11 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                             break
                     result = shortened.strip()
                 
+                # Добавляем 1 эмодзи в начало
                 emoji = detect_topic_emoji(result)
                 result = f"{emoji} {result}"
                 
+                # Финальная проверка длины
                 if len(result) > 400:
                     result = result[:400]
                 
@@ -2078,13 +2115,16 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
             
             if response.status_code == 200:
                 result = response.json()["choices"][0]["message"]["content"]
+                
+                # Очищаем результат
                 result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
                 result = result.strip()
                 
-                emoji_pattern = re.compile(r'[\U00010000-\U0010FFFF]|[\u2600-\u27BF]|[\u{1F300}-\u{1F5FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]', flags=re.UNICODE)
-                result = emoji_pattern.sub('', result)
+                # Удаляем все эмодзи из текста
+                result = remove_emojis(result)
                 
+                # Ограничиваем до 500 символов
                 if len(result) > 500:
                     sentences = re.split(r'(?<=[.!?])\s+', result)
                     shortened = ""
@@ -2112,11 +2152,103 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                             break
                     result = shortened.strip()
                 
+                # Добавляем 1 эмодзи в начало
                 emoji = detect_topic_emoji(result)
                 result = f"{emoji} {result}"
                 
                 if len(result) > 500:
                     result = result[:500]
+                
+                return result
+                
+            return f"❌ Ошибка API: {response.status_code}"
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)}"
+
+
+async def process_text_with_deepseek_threads_redo(text: str) -> str:
+    if not DEEPSEEK_API_KEY:
+        return "❌ API ключ DeepSeek не настроен."
+    
+    prompt = f"""Ты профессиональный редактор для Threads. Переделай эту новость в НОВЫЙ пост для Threads.
+
+Требования:
+1. Переделай новость в новый формат, но сохрани ВСЮ ключевую информацию
+2. Длина: не более 400 символов
+3. Заголовок: новый, интригующий
+4. Сохрани все цифры, даты, имена, названия, события
+5. Структура: заголовок + 2 абзаца
+6. Только 1 эмодзи в начале поста
+7. Новостной стиль, но более живой
+
+Важно: Переделай текст так, чтобы он звучал по-новому, но вся информация осталась
+
+Исходный текст новости:
+{text}
+
+Верни ТОЛЬКО готовый пост, без пояснений."""
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(
+                DEEPSEEK_API_URL,
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "Ты профессиональный редактор для Threads. Переделывай новости в новые посты, сохраняя всю информацию. Отвечай только готовым постом."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 600
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()["choices"][0]["message"]["content"]
+                
+                # Очищаем результат
+                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                result = result.strip()
+                
+                # Удаляем все эмодзи из текста
+                result = remove_emojis(result)
+                
+                # Ограничиваем до 400 символов
+                if len(result) > 400:
+                    sentences = re.split(r'(?<=[.!?])\s+', result)
+                    shortened = ""
+                    for sent in sentences:
+                        if len(shortened) + len(sent) + 1 <= 400:
+                            if shortened:
+                                shortened += " " + sent
+                            else:
+                                shortened = sent
+                        else:
+                            remaining = 400 - len(shortened)
+                            if remaining > 15 and sent:
+                                words = sent.split()
+                                temp = ""
+                                for word in words:
+                                    if len(shortened) + len(temp) + len(word) + 1 <= 400:
+                                        if temp:
+                                            temp += " " + word
+                                        else:
+                                            temp = word
+                                    else:
+                                        break
+                                if temp:
+                                    shortened += " " + temp
+                            break
+                    result = shortened.strip()
+                
+                # Добавляем 1 эмодзи в начало
+                emoji = detect_topic_emoji(result)
+                result = f"{emoji} {result}"
+                
+                if len(result) > 400:
+                    result = result[:400]
                 
                 return result
                 
