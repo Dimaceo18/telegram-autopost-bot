@@ -2347,6 +2347,434 @@ async def process_text_with_deepseek_tg(text: str) -> str:
 
 Важно: Текст должен быть ровно 500 символов! Посчитай символы перед отправкой.
 
+# =========================
+# Обновленные обработчики для кнопок "Переделать"
+# =========================
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("tg:"))
+def on_tg_action(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
+    
+    if action == "redo":
+        bot.answer_callback_query(c.id, "🔄 Переделываю пост для Telegram...")
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Переделываю пост... (до 30 секунд)")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # Берем ИСХОДНЫЙ текст из репоста или статьи
+            original_text = st.get("original_text_for_ai") or st.get("original_text") or st.get("extracted_text")
+            
+            if not original_text:
+                bot.edit_message_text(
+                    "❌ Нет исходного текста для переделки. Отправьте новую ссылку или текст.",
+                    c.message.chat.id,
+                    processing_msg.message_id
+                )
+                return
+            
+            # Переделываем текст с тем же промтом, но с указанием "переделай еще раз"
+            result = loop.run_until_complete(process_text_with_deepseek_tg_redo(original_text))
+            
+            # Сохраняем новый текст
+            st["tg_post_text"] = result
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            # Отправляем новый пост, удаляя старое сообщение с кнопками
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            elif st.get("video_info"):
+                media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+            elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+                photo_count = len(st["media_group"].get("photos", []))
+                video_count = len(st["media_group"].get("videos", []))
+                media_info = f"\n📸 <b>Медиа:</b> {photo_count} фото, {video_count} видео"
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Telegram (500 символов) - версия 2</b>\n\n{result}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("tg")
+            )
+                
+        except Exception as e:
+            logger.error(f"TG redo error: {e}")
+            bot.edit_message_text(f"❌ Ошибка при переделке: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
+    
+    elif action == "select_channel":
+        bot.answer_callback_query(c.id, "📢 Выбери канал")
+        send_message_with_retry(
+            c.message.chat.id,
+            "📢 <b>Выбери канал для публикации поста:</b>",
+            parse_mode="HTML",
+            reply_markup=post_channel_selection_kb("tg")
+        )
+    
+    elif action == "back":
+        bot.answer_callback_query(c.id, "◀️ Назад")
+        clear_state(uid)
+        send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("threads:"))
+def on_threads_action(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
+    
+    if action == "redo":
+        bot.answer_callback_query(c.id, "🔄 Переделываю пост для Threads...")
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Переделываю пост... (до 30 секунд)")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # Берем ИСХОДНЫЙ текст из репоста или статьи
+            original_text = st.get("original_text_for_ai") or st.get("original_text") or st.get("extracted_text")
+            
+            if not original_text:
+                bot.edit_message_text(
+                    "❌ Нет исходного текста для переделки. Отправьте новую ссылку или текст.",
+                    c.message.chat.id,
+                    processing_msg.message_id
+                )
+                return
+            
+            # Переделываем текст с тем же промтом, но с указанием "переделай еще раз"
+            result = loop.run_until_complete(process_text_with_deepseek_threads_redo(original_text))
+            
+            # Сохраняем новый текст
+            st["threads_post_text"] = result
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            # Отправляем новый пост, удаляя старое сообщение с кнопками
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            
+            media_info = ""
+            if st.get("photo_bytes"):
+                media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+            elif st.get("video_info"):
+                media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+            elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+                photo_count = len(st["media_group"].get("photos", []))
+                video_count = len(st["media_group"].get("videos", []))
+                media_info = f"\n📸 <b>Медиа:</b> {photo_count} фото, {video_count} видео"
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Threads (400 символов) - версия 2</b>\n\n{result}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("threads")
+            )
+                
+        except Exception as e:
+            logger.error(f"Threads redo error: {e}")
+            bot.edit_message_text(f"❌ Ошибка при переделке: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
+    
+    elif action == "select_channel":
+        bot.answer_callback_query(c.id, "📢 Выбери канал")
+        send_message_with_retry(
+            c.message.chat.id,
+            "📢 <b>Выбери канал для публикации поста:</b>",
+            parse_mode="HTML",
+            reply_markup=post_channel_selection_kb("threads")
+        )
+    
+    elif action == "back":
+        bot.answer_callback_query(c.id, "◀️ Назад")
+        clear_state(uid)
+        send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
+
+
+# =========================
+# Функции для переделки постов с сохранением сути
+# =========================
+
+async def process_text_with_deepseek_tg_redo(text: str) -> str:
+    """
+    Переделывает пост для Telegram, сохраняя суть и новостной стиль
+    """
+    if not DEEPSEEK_API_KEY:
+        return "❌ API ключ DeepSeek не настроен."
+    
+    prompt = """Ты редактор новостного канала в Telegram. Переделай эту новость в новый пост ровно на 500 символов.
+
+Правила:
+1. Пост должен быть ровно 500 символов (включая пробелы и знаки препинания)
+2. НЕ используй многоточие в конце
+3. Сохрани ВСЮ главную суть новости - все ключевые факты должны остаться
+4. Новостной стиль должен сохраниться
+5. Сделай новый, но не менее интересный заголовок
+6. Пост должен быть логически завершенным
+7. Только 1 эмодзи в начале поста (перед заголовком), больше эмодзи НЕ используй
+8. Разбей текст на 2-3 абзаца
+9. Не используй символы # и ** в ответе
+10. Верни ТОЛЬКО готовый пост, без пояснений
+
+Важно: 
+- Сохрани все ключевые факты и цифры
+- Не теряй суть новости
+- Текст должен быть ровно 500 символов!
+
+Вот исходный текст новости:"""
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(
+                DEEPSEEK_API_URL,
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "Ты редактор новостного канала. Переделай новость в новый пост ровно на 500 символов. Сохрани все факты и суть. Только 1 эмодзи в начале. Никаких других эмодзи в тексте."},
+                        {"role": "user", "content": f"{prompt}\n\n{text}"}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 800
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()["choices"][0]["message"]["content"]
+                
+                # Очищаем результат от лишних фраз
+                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                result = result.strip()
+                
+                # Убираем все эмодзи из текста (оставляем только в начале)
+                emoji_pattern = re.compile(r'[\U00010000-\U0010FFFF]|[\u2600-\u27BF]|[\u{1F300}-\u{1F5FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]', flags=re.UNICODE)
+                result = emoji_pattern.sub('', result)
+                
+                # Подгоняем под 500 символов
+                if len(result) > 500:
+                    sentences = re.split(r'(?<=[.!?])\s+', result)
+                    shortened = ""
+                    for sent in sentences:
+                        if len(shortened) + len(sent) + 1 <= 500:
+                            if shortened:
+                                shortened += " " + sent
+                            else:
+                                shortened = sent
+                        else:
+                            remaining = 500 - len(shortened)
+                            if remaining > 10 and sent:
+                                words = sent.split()
+                                temp = ""
+                                for word in words:
+                                    if len(shortened) + len(temp) + len(word) + 1 <= 500:
+                                        if temp:
+                                            temp += " " + word
+                                        else:
+                                            temp = word
+                                    else:
+                                        break
+                                if temp:
+                                    shortened += " " + temp
+                            break
+                    result = shortened.strip()
+                
+                elif len(result) < 500:
+                    additional = text.replace(result, "").strip()
+                    if additional and len(additional) > 10:
+                        needed = 500 - len(result)
+                        words = additional.split()
+                        temp = ""
+                        for word in words:
+                            if len(result) + len(temp) + len(word) + 1 <= 500:
+                                if temp:
+                                    temp += " " + word
+                                else:
+                                    temp = word
+                            else:
+                                break
+                        if temp and len(result) + len(temp) + 1 <= 500:
+                            result += " " + temp
+                
+                # Добавляем 1 эмодзи в начало
+                emoji = detect_topic_emoji(result)
+                if len(emoji) + 1 + len(result) <= 500:
+                    result = f"{emoji} {result}"
+                else:
+                    result = result[:500 - len(emoji) - 2]
+                    result = f"{emoji} {result}"
+                
+                # Финальная проверка
+                if len(result) > 500:
+                    result = result[:500]
+                
+                return result
+                
+            return f"❌ Ошибка API: {response.status_code}"
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)}"
+
+
+async def process_text_with_deepseek_threads_redo(text: str) -> str:
+    """
+    Переделывает пост для Threads, сохраняя суть и новостной стиль
+    """
+    if not DEEPSEEK_API_KEY:
+        return "❌ API ключ DeepSeek не настроен."
+    
+    prompt = """Ты редактор для соцсети Threads. Переделай эту новость в новый пост ровно на 400 символов.
+
+Правила:
+1. Пост должен быть ровно 400 символов (включая пробелы и знаки препинания)
+2. НЕ используй многоточие в конце
+3. Сохрани ВСЮ главную суть новости - все ключевые факты должны остаться
+4. Новостной стиль должен сохраниться
+5. Сделай новый, но не менее интересный заголовок
+6. Пост должен быть логически завершенным
+7. Только 1 эмодзи в начале поста (перед заголовком), больше эмодзи НЕ используй
+8. Разбей текст на 2 абзаца
+9. Не используй символы # и ** в ответе
+10. Верни ТОЛЬКО готовый пост, без пояснений
+
+Важно: 
+- Сохрани все ключевые факты и цифры
+- Не теряй суть новости
+- Текст должен быть ровно 400 символов!
+
+Вот исходный текст новости:"""
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(
+                DEEPSEEK_API_URL,
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "Ты редактор для Threads. Переделай новость в новый пост ровно на 400 символов. Сохрани все факты и суть. Только 1 эмодзи в начале. Никаких других эмодзи в тексте."},
+                        {"role": "user", "content": f"{prompt}\n\n{text}"}
+                    ],
+                    "temperature": 0.8,
+                    "max_tokens": 600
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()["choices"][0]["message"]["content"]
+                
+                # Очищаем результат от лишних фраз
+                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                result = result.strip()
+                
+                # Убираем все эмодзи из текста
+                emoji_pattern = re.compile(r'[\U00010000-\U0010FFFF]|[\u2600-\u27BF]|[\u{1F300}-\u{1F5FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]', flags=re.UNICODE)
+                result = emoji_pattern.sub('', result)
+                
+                # Подгоняем под 400 символов
+                if len(result) > 400:
+                    sentences = re.split(r'(?<=[.!?])\s+', result)
+                    shortened = ""
+                    for sent in sentences:
+                        if len(shortened) + len(sent) + 1 <= 400:
+                            if shortened:
+                                shortened += " " + sent
+                            else:
+                                shortened = sent
+                        else:
+                            remaining = 400 - len(shortened)
+                            if remaining > 10 and sent:
+                                words = sent.split()
+                                temp = ""
+                                for word in words:
+                                    if len(shortened) + len(temp) + len(word) + 1 <= 400:
+                                        if temp:
+                                            temp += " " + word
+                                        else:
+                                            temp = word
+                                    else:
+                                        break
+                                if temp:
+                                    shortened += " " + temp
+                            break
+                    result = shortened.strip()
+                
+                elif len(result) < 400:
+                    additional = text.replace(result, "").strip()
+                    if additional and len(additional) > 10:
+                        needed = 400 - len(result)
+                        words = additional.split()
+                        temp = ""
+                        for word in words:
+                            if len(result) + len(temp) + len(word) + 1 <= 400:
+                                if temp:
+                                    temp += " " + word
+                                else:
+                                    temp = word
+                            else:
+                                break
+                        if temp and len(result) + len(temp) + 1 <= 400:
+                            result += " " + temp
+                
+                # Добавляем 1 эмодзи в начало
+                emoji = detect_topic_emoji(result)
+                if len(emoji) + 1 + len(result) <= 400:
+                    result = f"{emoji} {result}"
+                else:
+                    result = result[:400 - len(emoji) - 2]
+                    result = f"{emoji} {result}"
+                
+                # Финальная проверка
+                if len(result) > 400:
+                    result = result[:400]
+                
+                return result
+                
+            return f"❌ Ошибка API: {response.status_code}"
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)}"
+
+
+# =========================
+# Обновленная функция для создания поста для Telegram (первая версия)
+# =========================
+async def process_text_with_deepseek_tg(text: str) -> str:
+    """
+    Создает пост для Telegram ровно на 500 символов
+    Только 1 эмодзи в начале
+    """
+    if not DEEPSEEK_API_KEY:
+        return "❌ API ключ DeepSeek не настроен."
+    
+    prompt = """Ты редактор новостного канала в Telegram. Создай пост из статьи ровно на 500 символов.
+
+Правила:
+1. Пост должен быть ровно 500 символов (включая пробелы и знаки препинания)
+2. НЕ используй многоточие в конце
+3. Сохрани все главные факты и суть статьи
+4. Сделай интересный, цепляющий заголовок
+5. Пост должен быть логически завершенным
+6. Только 1 эмодзи в начале поста (перед заголовком), больше эмодзи НЕ используй
+7. Разбей текст на 2-3 абзаца
+8. Не используй символы # и ** в ответе
+9. Верни ТОЛЬКО готовый пост, без пояснений
+
+Важно: Текст должен быть ровно 500 символов! Посчитай символы перед отправкой.
+
 Вот исходный текст:"""
     
     async with httpx.AsyncClient(timeout=60.0) as client:
