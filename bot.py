@@ -18,7 +18,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from io import BytesIO
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import requests
 import httpx
@@ -34,7 +34,7 @@ from urllib3.util.retry import Retry
 
 
 # =========================
-# Проверка на единственный экземпляр
+# Проверка на единственный экземпляр (УЛУЧШЕННАЯ)
 # =========================
 lock_file = '/tmp/bot_instance.lock'
 lock_fd = None
@@ -42,6 +42,13 @@ lock_fd = None
 def check_single_instance():
     global lock_fd
     try:
+        # Удаляем старый lock файл, если он есть
+        if os.path.exists(lock_file):
+            try:
+                os.unlink(lock_file)
+            except:
+                pass
+        
         lock_fd = open(lock_file, 'w')
         fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         lock_fd.write(str(os.getpid()))
@@ -63,6 +70,12 @@ def check_single_instance():
     except IOError:
         if lock_fd:
             lock_fd.close()
+        if os.path.exists(lock_file):
+            try:
+                os.unlink(lock_file)
+                return check_single_instance()
+            except:
+                pass
         return False
     except Exception as e:
         print(f"Error checking single instance: {e}")
@@ -1162,7 +1175,6 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
         min_size=16, line_spacing_ratio=0.22
     )
     
-    # Межстрочное расстояние = размер шрифта
     line_height = font.size
     total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
@@ -1457,7 +1469,6 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     base_y = img.height - margin_bottom - total_text_height
     y = base_y
     
-    # Сначала рисуем подсветку
     for line_idx, line in enumerate(lines):
         line_words = line.split()
         current_x = margin_x
@@ -1474,7 +1485,6 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
                 current_x += text_width(draw, word, font)
         y += line_height + 2
     
-    # Затем рисуем текст
     y = base_y
     for line_idx, line in enumerate(lines):
         line_words = line.split()
@@ -1540,7 +1550,6 @@ def enhance_image_simple(image_bytes: bytes) -> BytesIO:
 # Watermark functions
 # =========================
 def ensure_4x5_ratio(img: Image.Image) -> Image.Image:
-    """Обрезает изображение до соотношения 4:5"""
     w, h = img.size
     target_ratio = 4 / 5
     current_ratio = w / h
@@ -1557,7 +1566,6 @@ def ensure_4x5_ratio(img: Image.Image) -> Image.Image:
     return img
 
 def apply_watermark_mn(photo_bytes: bytes) -> BytesIO:
-    """Наносит водяной знак MINSK NEWS без обрезки фото"""
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
         
@@ -1613,7 +1621,6 @@ def apply_watermark_mn(photo_bytes: bytes) -> BytesIO:
         raise
 
 def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
-    """Наносит водяной знак ЧП Минск без обрезки фото"""
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
         
@@ -1673,7 +1680,6 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
 # Определение тематики для эмодзи
 # =========================
 def detect_topic_emoji(text: str) -> str:
-    """Определяет эмодзи по тематике текста"""
     text_lower = text.lower()
     
     topics = {
@@ -1708,64 +1714,47 @@ def detect_topic_emoji(text: str) -> str:
 # Функции для извлечения контента из статей через ИИ
 # =========================
 async def extract_article_content(url: str) -> Dict[str, any]:
-    """
-    Извлекает содержимое статьи по ссылке через ИИ
-    Возвращает: {text: str, images: List[bytes], title: str}
-    """
     if not DEEPSEEK_API_KEY:
         return {
             "text": "❌ API ключ DeepSeek не настроен. Добавьте DEEPSEEK_API_KEY в переменные окружения.",
             "images": [],
-            "title": ""
+            "title": "",
+            "url": url
         }
     
     try:
-        # Получаем HTML страницы
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             response = await client.get(url, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             })
             html_content = response.text
         
-        # Извлекаем заголовок страницы
         title_match = re.search(r'<title>(.*?)</title>', html_content, re.IGNORECASE)
         page_title = title_match.group(1).strip() if title_match else "Статья"
         
-        # Очищаем HTML от скриптов и стилей для уменьшения объема
         clean_html = re.sub(r'<script.*?>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
         clean_html = re.sub(r'<style.*?>.*?</style>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
         clean_html = re.sub(r'<nav.*?>.*?</nav>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
         clean_html = re.sub(r'<header.*?>.*?</header>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
         clean_html = re.sub(r'<footer.*?>.*?</footer>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
         
-        # Извлекаем все изображения
         image_urls = []
         img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>', html_content, re.IGNORECASE)
         
-        # Фильтруем и нормализуем URL изображений
         for img_url in img_matches:
             if img_url.startswith('http'):
                 image_urls.append(img_url)
             elif img_url.startswith('/'):
-                # Относительный путь - добавляем домен
-                from urllib.parse import urlparse
                 parsed = urlparse(url)
                 base_url = f"{parsed.scheme}://{parsed.netloc}"
                 image_urls.append(base_url + img_url)
             elif img_url.startswith('data:image'):
-                # Data URL - пропускаем
                 continue
             else:
-                # Пробуем сформировать полный URL
-                from urllib.parse import urljoin
                 image_urls.append(urljoin(url, img_url))
         
-        # Ограничиваем количество изображений
-        image_urls = list(dict.fromkeys(image_urls))  # Удаляем дубликаты
-        max_images = 10
-        image_urls = image_urls[:max_images]
+        image_urls = list(dict.fromkeys(image_urls))[:10]
         
-        # Отправляем HTML в ИИ для извлечения текста
         prompt = f"""Ты помощник по извлечению контента из веб-страниц. Извлеки основной текст статьи из HTML кода.
 
 Правила:
@@ -1781,7 +1770,7 @@ async def extract_article_content(url: str) -> Dict[str, any]:
 URL: {url}
 
 HTML код страницы (сокращенный):
-{clean_html[:15000]}  # Берем первые 15000 символов для обработки
+{clean_html[:15000]}
 
 Верни только текст статьи, без пояснений.
 """
@@ -1796,7 +1785,7 @@ HTML код страницы (сокращенный):
                         {"role": "system", "content": "Ты помощник по извлечению контента. Отвечай только извлеченным текстом статьи, без пояснений. НЕ переписывай текст, только извлекай."},
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": 0.3,  # Низкая температура для точного извлечения
+                    "temperature": 0.3,
                     "max_tokens": 4000
                 }
             )
@@ -1804,22 +1793,19 @@ HTML код страницы (сокращенный):
             if response.status_code == 200:
                 extracted_text = response.json()["choices"][0]["message"]["content"]
                 
-                # Очищаем результат от лишних фраз
                 extracted_text = re.sub(r'^Вот извлеченный текст статьи.*?:', '', extracted_text, flags=re.IGNORECASE)
                 extracted_text = re.sub(r'^Текст статьи.*?:', '', extracted_text, flags=re.IGNORECASE)
                 extracted_text = re.sub(r'^Извлеченный текст.*?:', '', extracted_text, flags=re.IGNORECASE)
                 extracted_text = extracted_text.strip()
                 
-                # Загружаем изображения
                 images = []
                 async with httpx.AsyncClient(timeout=30.0) as img_client:
-                    for img_url in image_urls[:5]:  # Максимум 5 изображений
+                    for img_url in image_urls[:5]:
                         try:
                             img_response = await img_client.get(img_url, headers={
                                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                             })
                             if img_response.status_code == 200:
-                                # Проверяем, что это изображение
                                 content_type = img_response.headers.get('content-type', '')
                                 if 'image' in content_type:
                                     images.append(img_response.content)
@@ -2259,7 +2245,7 @@ def run_http_server():
 
 
 # =========================
-# Callback handlers
+# Callback handlers (основные)
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("prices:"))
 def on_prices_callback(c):
@@ -2558,6 +2544,9 @@ def on_tpl(c):
     except:
         pass
 
+# =========================
+# Продолжение callback handlers
+# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("am2_pos:"))
 def on_am2_text_position(c):
     uid = c.from_user.id
@@ -3137,14 +3126,12 @@ def on_post_channel_select(c):
             bot.answer_callback_query(c.id, "❌ Нет текста для публикации")
             return
         
-        # Получаем медиа из состояния
         media_group = st.get("media_group", {"photos": [], "videos": []})
         photo_bytes = st.get("photo_bytes")
         video_info = st.get("video_info")
         
         has_media = False
         
-        # Если есть фото - отправляем с текстом
         if photo_bytes:
             send_photo_with_retry(
                 target_channel,
@@ -3155,7 +3142,6 @@ def on_post_channel_select(c):
             has_media = True
             logger.info(f"Published photo to {channel_name} with post text")
             
-        # Если есть альбом
         elif media_group.get("photos") or media_group.get("videos"):
             media_list = []
             first = True
@@ -3188,7 +3174,6 @@ def on_post_channel_select(c):
                 has_media = True
                 logger.info(f"Published single media to {channel_name}")
         
-        # Если есть видео
         elif video_info:
             try:
                 file_id = video_info.get('file_id')
@@ -3206,7 +3191,6 @@ def on_post_channel_select(c):
                 bot.send_message(target_channel, post_text, parse_mode="HTML")
                 has_media = True
         
-        # Если нет медиа - только текст
         if not has_media:
             bot.send_message(target_channel, post_text, parse_mode="HTML")
             logger.info(f"Published text only to {channel_name}")
@@ -3398,7 +3382,6 @@ def on_select_channel(c):
         bot.answer_callback_query(c.id, "❌ Ошибка публикации")
         send_message_with_retry(c.message.chat.id, f"❌ Не удалось опубликовать: {e}", reply_markup=main_menu_kb())
 
-
 @bot.callback_query_handler(func=lambda c: c.data in ["publish", "edit_text", "cancel"])
 def on_action(call):
     uid = call.from_user.id
@@ -3444,37 +3427,32 @@ def on_action(call):
 
 
 # =========================
-# Обработчик ссылок на статьи
+# Обработчик ссылок на статьи (ИСПРАВЛЕННЫЙ)
 # =========================
 @bot.message_handler(func=lambda message: re.search(r'https?://[^\s]+', message.text) and not re.search(r't\.me/', message.text))
 def handle_article_link(message):
     uid = message.from_user.id
     text = message.text.strip()
     
-    # Извлекаем URL из текста
-    url_match = re.search(r'https?://[^\s]+', text)
+    url_match = re.search(r'(https?://[^\s]+)', text)
     if not url_match:
         bot.reply_to(message, "❌ Не найдена ссылка в сообщении")
         return
     
     url = url_match.group(1)
     
-    # Проверяем, не является ли ссылка ссылкой на Telegram
     if 't.me' in url:
         return
     
-    # Отправляем сообщение о начале обработки
     processing_msg = bot.reply_to(message, "🔍 Извлекаю содержимое статьи через ИИ...\n\n⏳ Это может занять до 30-60 секунд...")
     
-    # Запускаем асинхронную обработку
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     try:
-        # Извлекаем контент
         result = loop.run_until_complete(extract_article_content(url))
         
-        if not result["text"]:
+        if not result or not result.get("text"):
             bot.edit_message_text(
                 "❌ Не удалось извлечь текст статьи. Попробуйте другую ссылку или отправьте текст вручную.",
                 message.chat.id,
@@ -3482,64 +3460,61 @@ def handle_article_link(message):
             )
             return
         
-        # Удаляем сообщение о обработке
-        bot.delete_message(message.chat.id, processing_msg.message_id)
+        try:
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+        except:
+            pass
         
-        # Сохраняем в состояние пользователя
         st = user_state.get(uid) or {}
-        st["extracted_text"] = result["text"]
-        st["extracted_title"] = result["title"]
-        st["extracted_images"] = result["images"]
-        st["extracted_url"] = result["url"]
+        st["extracted_text"] = result.get("text", "")
+        st["extracted_title"] = result.get("title", "")
+        st["extracted_images"] = result.get("images", [])
+        st["extracted_url"] = result.get("url", url)
         st["step"] = "waiting_extracted_article"
         user_state[uid] = st
         
-        # Отправляем результат
         try:
-            # Отправляем заголовок
-            title_msg = f"📰 <b>{html.escape(result['title'])}</b>\n\n🔗 {url}"
+            title_text = result.get("title", "Статья")
+            title_msg = f"📰 <b>{html.escape(title_text)}</b>\n\n🔗 {url}"
             bot.send_message(message.chat.id, title_msg, parse_mode="HTML")
             
-            # Отправляем текст статьи
-            if len(result["text"]) > 4000:
-                # Разбиваем текст на части
-                parts = [result["text"][i:i+4000] for i in range(0, len(result["text"]), 4000)]
+            article_text = result.get("text", "")
+            if len(article_text) > 4000:
+                parts = [article_text[i:i+4000] for i in range(0, len(article_text), 4000)]
                 for i, part in enumerate(parts):
                     if i == 0:
                         bot.send_message(message.chat.id, f"📝 <b>Текст статьи (часть 1/{len(parts)}):</b>\n\n{part}", parse_mode="HTML")
                     else:
                         bot.send_message(message.chat.id, f"📝 <b>Текст статьи (часть {i+1}/{len(parts)}):</b>\n\n{part}", parse_mode="HTML")
             else:
-                bot.send_message(message.chat.id, f"📝 <b>Текст статьи:</b>\n\n{result['text']}", parse_mode="HTML")
+                bot.send_message(message.chat.id, f"📝 <b>Текст статьи:</b>\n\n{article_text}", parse_mode="HTML")
             
-            # Отправляем изображения
-            if result["images"]:
+            images = result.get("images", [])
+            if images:
                 media_group = []
-                for i, img_bytes in enumerate(result["images"][:5]):
+                for i, img_bytes in enumerate(images[:5]):
                     try:
                         if i == 0:
                             media_group.append(InputMediaPhoto(
                                 BytesIO(img_bytes),
-                                caption=f"📸 <b>Изображения из статьи ({len(result['images'])} шт.)</b>"
+                                caption=f"📸 <b>Изображения из статьи ({len(images)} шт.)</b>"
                             ))
                         else:
                             media_group.append(InputMediaPhoto(BytesIO(img_bytes)))
                     except Exception as e:
-                        logger.error(f"Error sending image: {e}")
+                        logger.error(f"Error preparing image: {e}")
                 
                 if media_group:
                     try:
                         bot.send_media_group(message.chat.id, media_group)
                     except Exception as e:
                         logger.error(f"Error sending media group: {e}")
-                        # Если не получилось отправить группой, отправляем по одному
                         for media in media_group:
                             try:
                                 bot.send_photo(message.chat.id, media.media)
                             except:
                                 pass
             
-            # Отправляем кнопки для действий
             kb = InlineKeyboardMarkup(row_width=2)
             kb.add(
                 InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
@@ -3561,11 +3536,10 @@ def handle_article_link(message):
             logger.error(f"Error sending article content: {e}")
             bot.send_message(
                 message.chat.id,
-                f"⚠️ Часть контента не отобразилась, но текст сохранен.\n\n{result['text'][:1000]}...",
+                f"⚠️ Часть контента не отобразилась, но текст сохранен.\n\n{article_text[:1000]}...",
                 parse_mode="HTML"
             )
             
-            # Все равно показываем кнопки
             kb = InlineKeyboardMarkup(row_width=2)
             kb.add(
                 InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
@@ -3580,11 +3554,18 @@ def handle_article_link(message):
             
     except Exception as e:
         logger.error(f"Error processing article: {e}")
-        bot.edit_message_text(
-            f"❌ Ошибка при обработке статьи: {str(e)}",
-            message.chat.id,
-            processing_msg.message_id
-        )
+        try:
+            bot.edit_message_text(
+                f"❌ Ошибка при обработке статьи: {str(e)}",
+                message.chat.id,
+                processing_msg.message_id
+            )
+        except:
+            bot.send_message(
+                message.chat.id,
+                f"❌ Ошибка при обработке статьи: {str(e)}",
+                parse_mode="HTML"
+            )
     finally:
         loop.close()
 
@@ -3805,7 +3786,6 @@ def on_article_action(c):
         
         bot.answer_callback_query(c.id, "📢 Выбери канал для публикации")
         
-        # Сохраняем текст в состояние для публикации
         st["original_text"] = st.get("extracted_text", "")
         st["title"], st["body_raw"] = split_title_and_body(st["original_text"])
         user_state[uid] = st
@@ -4655,19 +4635,36 @@ if __name__ == "__main__":
         ensure_fonts()
         logger.info("Fonts loaded successfully")
         
-        try:
-            bot.remove_webhook()
-            time.sleep(1)
-            logger.info("Webhook removed")
-        except Exception as e:
-            logger.warning(f"Failed to remove webhook: {e}")
+        # Многократная попытка удалить вебхук
+        for attempt in range(3):
+            try:
+                bot.remove_webhook()
+                time.sleep(1)
+                logger.info(f"Webhook removed (attempt {attempt + 1})")
+                break
+            except Exception as e:
+                logger.warning(f"Failed to remove webhook (attempt {attempt + 1}): {e}")
+                time.sleep(2)
         
         http_thread = threading.Thread(target=run_http_server, daemon=True)
         http_thread.start()
         logger.info("🌐 Health check server thread started")
         
         logger.info("🤖 Bot started polling...")
-        bot.infinity_polling(timeout=60, long_polling_timeout=60)
+        # Добавляем обработку ошибок для polling
+        while True:
+            try:
+                bot.infinity_polling(timeout=60, long_polling_timeout=60)
+            except Exception as e:
+                logger.error(f"Polling error: {e}")
+                if "409" in str(e):
+                    logger.error("Conflict detected! Waiting 30 seconds...")
+                    time.sleep(30)
+                else:
+                    logger.info("Restarting polling in 10 seconds...")
+                    time.sleep(10)
+                continue
+                
     except Exception as e:
         logger.error(f"❌ Bot crashed: {e}")
         try:
