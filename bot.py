@@ -190,6 +190,13 @@ HIGHLIGHT_COLORS = {
 # =========================
 bot = telebot.TeleBot(TOKEN)
 
+# Удаляем вебхук при запуске
+try:
+    bot.remove_webhook()
+    logger.info("Webhook removed successfully")
+except Exception as e:
+    logger.warning(f"Webhook removal failed: {e}")
+
 SESSION = requests.Session()
 retry_strategy = Retry(
     total=5,
@@ -1695,6 +1702,152 @@ def detect_topic_emoji(text: str) -> str:
                 return emoji
     
     return "📰"
+
+
+# =========================
+# Функции для извлечения контента из статей через ИИ
+# =========================
+async def extract_article_content(url: str) -> Dict[str, any]:
+    """
+    Извлекает содержимое статьи по ссылке через ИИ
+    Возвращает: {text: str, images: List[bytes], title: str}
+    """
+    if not DEEPSEEK_API_KEY:
+        return {
+            "text": "❌ API ключ DeepSeek не настроен. Добавьте DEEPSEEK_API_KEY в переменные окружения.",
+            "images": [],
+            "title": ""
+        }
+    
+    try:
+        # Получаем HTML страницы
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            })
+            html_content = response.text
+        
+        # Извлекаем заголовок страницы
+        title_match = re.search(r'<title>(.*?)</title>', html_content, re.IGNORECASE)
+        page_title = title_match.group(1).strip() if title_match else "Статья"
+        
+        # Очищаем HTML от скриптов и стилей для уменьшения объема
+        clean_html = re.sub(r'<script.*?>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
+        clean_html = re.sub(r'<style.*?>.*?</style>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
+        clean_html = re.sub(r'<nav.*?>.*?</nav>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
+        clean_html = re.sub(r'<header.*?>.*?</header>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
+        clean_html = re.sub(r'<footer.*?>.*?</footer>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Извлекаем все изображения
+        image_urls = []
+        img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>', html_content, re.IGNORECASE)
+        
+        # Фильтруем и нормализуем URL изображений
+        for img_url in img_matches:
+            if img_url.startswith('http'):
+                image_urls.append(img_url)
+            elif img_url.startswith('/'):
+                # Относительный путь - добавляем домен
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                image_urls.append(base_url + img_url)
+            elif img_url.startswith('data:image'):
+                # Data URL - пропускаем
+                continue
+            else:
+                # Пробуем сформировать полный URL
+                from urllib.parse import urljoin
+                image_urls.append(urljoin(url, img_url))
+        
+        # Ограничиваем количество изображений
+        image_urls = list(dict.fromkeys(image_urls))  # Удаляем дубликаты
+        max_images = 10
+        image_urls = image_urls[:max_images]
+        
+        # Отправляем HTML в ИИ для извлечения текста
+        prompt = f"""Ты помощник по извлечению контента из веб-страниц. Извлеки основной текст статьи из HTML кода.
+
+Правила:
+1. Извлеки ТОЛЬКО основной текст статьи
+2. Убери всю рекламу, баннеры, меню, навигацию
+3. Убери подписи к фото, авторские права
+4. Убери комментарии и блоки "похожие статьи"
+5. Сохрани структуру абзацев (расставь переносы строк между абзацами)
+6. НЕ изменяй текст, НЕ переписывай его - просто извлеки
+7. Верни только чистый текст статьи
+
+Заголовок страницы: {page_title}
+URL: {url}
+
+HTML код страницы (сокращенный):
+{clean_html[:15000]}  # Берем первые 15000 символов для обработки
+
+Верни только текст статьи, без пояснений.
+"""
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                DEEPSEEK_API_URL,
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "Ты помощник по извлечению контента. Отвечай только извлеченным текстом статьи, без пояснений. НЕ переписывай текст, только извлекай."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.3,  # Низкая температура для точного извлечения
+                    "max_tokens": 4000
+                }
+            )
+            
+            if response.status_code == 200:
+                extracted_text = response.json()["choices"][0]["message"]["content"]
+                
+                # Очищаем результат от лишних фраз
+                extracted_text = re.sub(r'^Вот извлеченный текст статьи.*?:', '', extracted_text, flags=re.IGNORECASE)
+                extracted_text = re.sub(r'^Текст статьи.*?:', '', extracted_text, flags=re.IGNORECASE)
+                extracted_text = re.sub(r'^Извлеченный текст.*?:', '', extracted_text, flags=re.IGNORECASE)
+                extracted_text = extracted_text.strip()
+                
+                # Загружаем изображения
+                images = []
+                async with httpx.AsyncClient(timeout=30.0) as img_client:
+                    for img_url in image_urls[:5]:  # Максимум 5 изображений
+                        try:
+                            img_response = await img_client.get(img_url, headers={
+                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                            })
+                            if img_response.status_code == 200:
+                                # Проверяем, что это изображение
+                                content_type = img_response.headers.get('content-type', '')
+                                if 'image' in content_type:
+                                    images.append(img_response.content)
+                        except Exception as e:
+                            logger.error(f"Error downloading image {img_url}: {e}")
+                
+                return {
+                    "text": extracted_text,
+                    "images": images,
+                    "title": page_title,
+                    "url": url
+                }
+            else:
+                return {
+                    "text": f"❌ Ошибка API: {response.status_code}",
+                    "images": [],
+                    "title": page_title,
+                    "url": url
+                }
+                
+    except Exception as e:
+        logger.error(f"Error extracting article: {e}")
+        return {
+            "text": f"❌ Ошибка при извлечении статьи: {str(e)}",
+            "images": [],
+            "title": "",
+            "url": url
+        }
 
 
 # =========================
@@ -3291,6 +3444,385 @@ def on_action(call):
 
 
 # =========================
+# Обработчик ссылок на статьи
+# =========================
+@bot.message_handler(func=lambda message: re.search(r'https?://[^\s]+', message.text) and not re.search(r't\.me/', message.text))
+def handle_article_link(message):
+    uid = message.from_user.id
+    text = message.text.strip()
+    
+    # Извлекаем URL из текста
+    url_match = re.search(r'https?://[^\s]+', text)
+    if not url_match:
+        bot.reply_to(message, "❌ Не найдена ссылка в сообщении")
+        return
+    
+    url = url_match.group(1)
+    
+    # Проверяем, не является ли ссылка ссылкой на Telegram
+    if 't.me' in url:
+        return
+    
+    # Отправляем сообщение о начале обработки
+    processing_msg = bot.reply_to(message, "🔍 Извлекаю содержимое статьи через ИИ...\n\n⏳ Это может занять до 30-60 секунд...")
+    
+    # Запускаем асинхронную обработку
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        # Извлекаем контент
+        result = loop.run_until_complete(extract_article_content(url))
+        
+        if not result["text"]:
+            bot.edit_message_text(
+                "❌ Не удалось извлечь текст статьи. Попробуйте другую ссылку или отправьте текст вручную.",
+                message.chat.id,
+                processing_msg.message_id
+            )
+            return
+        
+        # Удаляем сообщение о обработке
+        bot.delete_message(message.chat.id, processing_msg.message_id)
+        
+        # Сохраняем в состояние пользователя
+        st = user_state.get(uid) or {}
+        st["extracted_text"] = result["text"]
+        st["extracted_title"] = result["title"]
+        st["extracted_images"] = result["images"]
+        st["extracted_url"] = result["url"]
+        st["step"] = "waiting_extracted_article"
+        user_state[uid] = st
+        
+        # Отправляем результат
+        try:
+            # Отправляем заголовок
+            title_msg = f"📰 <b>{html.escape(result['title'])}</b>\n\n🔗 {url}"
+            bot.send_message(message.chat.id, title_msg, parse_mode="HTML")
+            
+            # Отправляем текст статьи
+            if len(result["text"]) > 4000:
+                # Разбиваем текст на части
+                parts = [result["text"][i:i+4000] for i in range(0, len(result["text"]), 4000)]
+                for i, part in enumerate(parts):
+                    if i == 0:
+                        bot.send_message(message.chat.id, f"📝 <b>Текст статьи (часть 1/{len(parts)}):</b>\n\n{part}", parse_mode="HTML")
+                    else:
+                        bot.send_message(message.chat.id, f"📝 <b>Текст статьи (часть {i+1}/{len(parts)}):</b>\n\n{part}", parse_mode="HTML")
+            else:
+                bot.send_message(message.chat.id, f"📝 <b>Текст статьи:</b>\n\n{result['text']}", parse_mode="HTML")
+            
+            # Отправляем изображения
+            if result["images"]:
+                media_group = []
+                for i, img_bytes in enumerate(result["images"][:5]):
+                    try:
+                        if i == 0:
+                            media_group.append(InputMediaPhoto(
+                                BytesIO(img_bytes),
+                                caption=f"📸 <b>Изображения из статьи ({len(result['images'])} шт.)</b>"
+                            ))
+                        else:
+                            media_group.append(InputMediaPhoto(BytesIO(img_bytes)))
+                    except Exception as e:
+                        logger.error(f"Error sending image: {e}")
+                
+                if media_group:
+                    try:
+                        bot.send_media_group(message.chat.id, media_group)
+                    except Exception as e:
+                        logger.error(f"Error sending media group: {e}")
+                        # Если не получилось отправить группой, отправляем по одному
+                        for media in media_group:
+                            try:
+                                bot.send_photo(message.chat.id, media.media)
+                            except:
+                                pass
+            
+            # Отправляем кнопки для действий
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
+                InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="article:ai"),
+                InlineKeyboardButton("📱 Пост для ТГ (500 симв.)", callback_data="article:tg"),
+                InlineKeyboardButton("📱 Пост для Тредс (400 симв.)", callback_data="article:threads"),
+                InlineKeyboardButton("💧 Водяной знак", callback_data="article:watermark")
+            )
+            kb.add(InlineKeyboardButton("📢 Опубликовать в канале", callback_data="article:publish"))
+            
+            bot.send_message(
+                message.chat.id,
+                "🎯 <b>Что сделать с этой статьей?</b>",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            
+        except Exception as e:
+            logger.error(f"Error sending article content: {e}")
+            bot.send_message(
+                message.chat.id,
+                f"⚠️ Часть контента не отобразилась, но текст сохранен.\n\n{result['text'][:1000]}...",
+                parse_mode="HTML"
+            )
+            
+            # Все равно показываем кнопки
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
+                InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="article:ai")
+            )
+            bot.send_message(
+                message.chat.id,
+                "🎯 <b>Что сделать с этой статьей?</b>",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            
+    except Exception as e:
+        logger.error(f"Error processing article: {e}")
+        bot.edit_message_text(
+            f"❌ Ошибка при обработке статьи: {str(e)}",
+            message.chat.id,
+            processing_msg.message_id
+        )
+    finally:
+        loop.close()
+
+
+# =========================
+# Обработчики для кнопок article
+# =========================
+@bot.callback_query_handler(func=lambda c: c.data.startswith("article:"))
+def on_article_action(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
+    
+    if action == "design":
+        if st.get("extracted_images"):
+            st["photo_bytes"] = st["extracted_images"][0]
+            st["saved_photo_bytes"] = st["extracted_images"][0]
+            logger.info(f"Saved first image from article for user {uid}")
+        
+        st["original_text"] = st.get("extracted_text", "")
+        st["original_text_for_ai"] = st.get("extracted_text", "")
+        title, body = split_title_and_body(st["extracted_text"])
+        st["title"] = title
+        st["body_raw"] = body
+        st["step"] = "waiting_template"
+        user_state[uid] = st
+        
+        bot.answer_callback_query(c.id, "📝 Выбери шаблон для оформления")
+        send_message_with_retry(
+            c.message.chat.id,
+            "📝 Выбери шаблон оформления. Текст и фото из статьи будут использованы автоматически! 🎉",
+            reply_markup=template_kb()
+        )
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+    
+    elif action == "ai":
+        if not st.get("extracted_text"):
+            bot.answer_callback_query(c.id, "❌ Нет текста для обработки")
+            return
+        
+        bot.answer_callback_query(c.id, "🤖 Обрабатываю текст через ИИ...")
+        
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Обрабатываю текст в DeepSeek AI... (до 30 секунд)")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("extracted_text", "")
+            result = loop.run_until_complete(process_text_with_deepseek(original_text))
+            
+            st["ai_processed_text"] = result
+            st["original_text"] = result
+            
+            title, body, formatted_text = format_ai_response(result)
+            st["title"] = title
+            st["body_raw"] = body
+            
+            st["step"] = "waiting_after_ai"
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"✍️ <b>Обработанный текст:</b>\n\n{formatted_text}",
+                parse_mode="HTML",
+                reply_markup=after_ai_kb()
+            )
+            
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            
+        except Exception as e:
+            logger.error(f"AI processing error: {e}")
+            bot.edit_message_text(f"❌ Ошибка при обработке ИИ: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
+    
+    elif action == "tg":
+        if not st.get("extracted_text"):
+            bot.answer_callback_query(c.id, "❌ Нет текста для обработки")
+            return
+        
+        bot.answer_callback_query(c.id, "📱 Сокращаю текст для Telegram...")
+        
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Сокращаю текст до 500 символов...")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("extracted_text", "")
+            result = loop.run_until_complete(process_text_with_deepseek_tg(original_text))
+            
+            st["tg_post_text"] = result
+            st["post_type"] = "tg"
+            st["step"] = "waiting_post_action"
+            
+            if st.get("extracted_images"):
+                st["photo_bytes"] = st["extracted_images"][0]
+                st["saved_photo_bytes"] = st["extracted_images"][0]
+                logger.info(f"Saved image for TG post from article")
+            
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            media_info = ""
+            if st.get("extracted_images"):
+                media_info = f"\n📸 <b>Медиа:</b> {len(st['extracted_images'])} фото сохранено"
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("tg")
+            )
+            
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            
+        except Exception as e:
+            logger.error(f"TG post error: {e}")
+            bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
+    
+    elif action == "threads":
+        if not st.get("extracted_text"):
+            bot.answer_callback_query(c.id, "❌ Нет текста для обработки")
+            return
+        
+        bot.answer_callback_query(c.id, "📱 Сокращаю текст для Тредс...")
+        
+        processing_msg = bot.send_message(c.message.chat.id, "⏳ Сокращаю текст до 400 символов...")
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            original_text = st.get("extracted_text", "")
+            result = loop.run_until_complete(process_text_with_deepseek_threads(original_text))
+            
+            st["threads_post_text"] = result
+            st["post_type"] = "threads"
+            st["step"] = "waiting_post_action"
+            
+            if st.get("extracted_images"):
+                st["photo_bytes"] = st["extracted_images"][0]
+                st["saved_photo_bytes"] = st["extracted_images"][0]
+                logger.info(f"Saved image for Threads post from article")
+            
+            user_state[uid] = st
+            
+            bot.delete_message(c.message.chat.id, processing_msg.message_id)
+            
+            media_info = ""
+            if st.get("extracted_images"):
+                media_info = f"\n📸 <b>Медиа:</b> {len(st['extracted_images'])} фото сохранено"
+            
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}{media_info}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("threads")
+            )
+            
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            
+        except Exception as e:
+            logger.error(f"Threads post error: {e}")
+            bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
+        finally:
+            loop.close()
+    
+    elif action == "watermark":
+        if st.get("extracted_images"):
+            st["photo_bytes"] = st["extracted_images"][0]
+            st["saved_photo_bytes"] = st["extracted_images"][0]
+            st["step"] = "waiting_watermark_type"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, "💧 Выбери тип водяного знака")
+            send_message_with_retry(
+                c.message.chat.id,
+                "💧 <b>Выбери тип водяного знака:</b>\n\n📸 Фото из статьи будет использовано автоматически!",
+                parse_mode="HTML",
+                reply_markup=watermark_type_kb()
+            )
+        else:
+            bot.answer_callback_query(c.id, "❌ В статье нет фото")
+            send_message_with_retry(
+                c.message.chat.id,
+                "❌ В статье не найдено фото для водяного знака.",
+                reply_markup=main_menu_kb()
+            )
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+    
+    elif action == "publish":
+        if not CHANNEL_MN and not CHANNEL_CHP and not CHANNEL_AFISHA and not CHANNEL_TEST:
+            bot.answer_callback_query(c.id, "❌ Каналы не настроены")
+            send_message_with_retry(
+                c.message.chat.id,
+                "❌ Ни один канал для публикации не настроен.",
+                reply_markup=main_menu_kb()
+            )
+            return
+        
+        bot.answer_callback_query(c.id, "📢 Выбери канал для публикации")
+        
+        # Сохраняем текст в состояние для публикации
+        st["original_text"] = st.get("extracted_text", "")
+        st["title"], st["body_raw"] = split_title_and_body(st["original_text"])
+        user_state[uid] = st
+        
+        send_message_with_retry(
+            c.message.chat.id,
+            "📢 <b>Выбери канал для публикации текста:</b>",
+            parse_mode="HTML",
+            reply_markup=channel_selection_kb()
+        )
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+
+
+# =========================
 # Обработчик пересылаемых сообщений (репостов)
 # =========================
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
@@ -4008,6 +4540,7 @@ def cmd_start(message):
         f"• 🤖 Текст в ИИ - отправь текст, ИИ сократит его до 650 символов\n"
         f"• 📱 Пост для ТГ - сократит текст до 500 символов с автоматическим эмодзи\n"
         f"• 📱 Пост для Тредс - сократит текст до 400 символов с автоматическим эмодзи\n"
+        f"• 📰 Извлечение статьи - отправь ссылку, бот извлечет текст и фото\n"
         f"• 💰 Цены и условия размещения\n"
         f"• 📎 Репосты из каналов - отправь ссылку на пост или перешли его\n"
         f"• 🎬 Поддержка видео - бот сохраняет видео и публикует его с текстом\n"
@@ -4021,6 +4554,10 @@ def cmd_start(message):
         f"5️⃣ При оформлении напиши «+» чтобы использовать заголовок из текста\n"
         f"6️⃣ После обработки ИИ можно оформить пост, опубликовать текст в канал или переделать\n"
         f"7️⃣ После создания превью нажми «Опубликовать в канале» и выбери нужный канал\n\n"
+        f"<b>📌 Как извлечь статью:</b>\n"
+        f"1️⃣ Отправь ссылку на любую статью в интернете\n"
+        f"2️⃣ Бот через ИИ извлечет чистый текст и все фото\n"
+        f"3️⃣ Дальше можно оформить пост, сократить для соцсетей или опубликовать\n\n"
         f"Выбери действие 👇",
         parse_mode="HTML",
         reply_markup=main_menu_kb()
