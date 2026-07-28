@@ -1554,17 +1554,12 @@ def apply_watermark_mn(photo_bytes: bytes) -> BytesIO:
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
         
-        # Получаем размеры изображения
         img_width, img_height = img.size
         
-        # Создаём слой для водяного знака
         watermark = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(watermark)
         
-        # Рассчитываем размер шрифта в зависимости от размера изображения
-        # Базовый размер - 10% от ширины
         font_size = int(img_width * 0.10)
-        # Ограничиваем размер
         font_size = max(30, min(120, font_size))
         
         try:
@@ -1574,12 +1569,10 @@ def apply_watermark_mn(photo_bytes: bytes) -> BytesIO:
         
         watermark_text = "MINSK NEWS"
         
-        # Получаем размеры текста
         bbox = draw.textbbox((0, 0), watermark_text, font=font)
         text_width_val = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
         
-        # Проверяем, не выходит ли текст за границы
         max_attempts = 10
         attempt = 0
         while text_width_val > img_width * 0.9 and attempt < max_attempts:
@@ -1595,14 +1588,11 @@ def apply_watermark_mn(photo_bytes: bytes) -> BytesIO:
             text_height = bbox[3] - bbox[1]
             attempt += 1
         
-        # Вычисляем позицию по центру
         x = (img_width - text_width_val) // 2
         y = (img_height - text_height) // 2
         
-        # Наносим водяной знак с прозрачностью 25%
         draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 64))
         
-        # Объединяем изображение с водяным знаком
         result = Image.alpha_composite(img, watermark)
         result = result.convert("RGB")
         
@@ -1620,14 +1610,11 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
         
-        # Получаем размеры изображения
         img_width, img_height = img.size
         
-        # Создаём слой для водяного знака
         watermark = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(watermark)
         
-        # Рассчитываем размер шрифта
         font_size = int(img_width * 0.10)
         font_size = max(30, min(120, font_size))
         
@@ -1638,12 +1625,10 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
         
         watermark_text = "ЧП Минск"
         
-        # Получаем размеры текста
         bbox = draw.textbbox((0, 0), watermark_text, font=font)
         text_width_val = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
         
-        # Проверяем, не выходит ли текст за границы
         max_attempts = 10
         attempt = 0
         while text_width_val > img_width * 0.9 and attempt < max_attempts:
@@ -1659,14 +1644,11 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
             text_height = bbox[3] - bbox[1]
             attempt += 1
         
-        # Вычисляем позицию по центру
         x = (img_width - text_width_val) // 2
         y = (img_height - text_height) // 2
         
-        # Наносим водяной знак с прозрачностью 25%
         draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 64))
         
-        # Объединяем изображение с водяным знаком
         result = Image.alpha_composite(img, watermark)
         result = result.convert("RGB")
         
@@ -1678,6 +1660,41 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
     except Exception as e:
         logger.error(f"Error applying CHP watermark: {e}")
         raise
+
+
+# =========================
+# Определение тематики для эмодзи
+# =========================
+def detect_topic_emoji(text: str) -> str:
+    """Определяет эмодзи по тематике текста"""
+    text_lower = text.lower()
+    
+    topics = {
+        "🚨": ["дтп", "авар", "пожар", "взрыв", "происшеств", "чп", "полици", "милици", "скорая", "мчс", "катастроф"],
+        "✈️": ["белавиа", "рейс", "аэропорт", "самолет", "полет", "авиа", "борт"],
+        "🚇": ["метро", "станци", "маршрут", "автобус", "троллейбус", "трамвай", "транспорт", "общественный"],
+        "💳": ["банк", "технобанк", "карта", "налог", "выплат", "деньги", "финанс", "кредит", "валюта"],
+        "🏷️": ["скидк", "распрод", "акци", "дешев", "бесплат", "цена", "стоимость", "рубль"],
+        "🎫": ["концерт", "афиша", "выставк", "фестиваль", "мероприят", "кино", "театр"],
+        "🌦️": ["погод", "шторм", "ветер", "снег", "дожд", "гроз", "температур", "мороз", "жара"],
+        "🏥": ["больниц", "врач", "здоров", "вакцин", "лекарств", "медицин", "здравоохран"],
+        "📱": ["смартфон", "айфон", "телефон", "гаджет", "технологи"],
+        "🚀": ["космос", "спутник", "наук", "исследован", "открыт"],
+        "🎓": ["образован", "школ", "университет", "студент", "учител", "экзамен"],
+        "⚽": ["футбол", "спорт", "хоккей", "чемпионат", "матч", "команд"],
+        "🎮": ["игр", "кибер", "компьютер", "консоль"],
+        "🍔": ["еда", "ресторан", "кафе", "блюд", "кулинар", "продукт"],
+        "🏠": ["строительств", "ремонт", "квартир", "жкх", "коммунал", "дом"],
+        "🌿": ["эколог", "природ", "зелен", "парк", "дерев"],
+        "💼": ["бизнес", "компани", "предприят", "рынок", "торговл", "экономик"],
+    }
+    
+    for emoji, keywords in topics.items():
+        for keyword in keywords:
+            if keyword in text_lower:
+                return emoji
+    
+    return "📰"
 
 
 # =========================
@@ -1972,7 +1989,9 @@ async def process_text_with_deepseek_tg(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
-    prompt = """Ты редактор новостного канала в Telegram. Сократи новость до 500 символов. Сохрани главные факты, сделай интересный заголовок. Используй эмодзи для разделения блоков. Не используй символы # и **. Расставь абзацы.
+    prompt = """Ты редактор новостного канала в Telegram. Сократи новость до 500 символов. Сохрани главные факты, сделай интересный заголовок. Не используй символы # и **. Расставь абзацы.
+
+Важно: НЕ добавляй эмодзи в текст! Эмодзи будет добавлен автоматически.
 
 Вот текст:"""
     
@@ -1984,7 +2003,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                 json={
                     "model": "deepseek-chat", 
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного канала. Отвечай только готовым текстом для Telegram, без пояснений. Не используй символы # и **."}, 
+                        {"role": "system", "content": "Ты редактор новостного канала. Отвечай только готовым текстом для Telegram, без пояснений. Не используй символы # и **. НЕ добавляй эмодзи в текст."}, 
                         {"role": "user", "content": f"{prompt}\n\n{text}"}
                     ], 
                     "temperature": 0.7, 
@@ -1995,10 +2014,21 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                 result = response.json()["choices"][0]["message"]["content"]
                 result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
-                # Ограничиваем до 500 символов
+                result = result.strip()
+                
                 if len(result) > 500:
-                    result = result[:497] + "..."
-                return result.strip()
+                    cut_point = 500
+                    while cut_point > 0 and result[cut_point] not in [' ', '.', ',', '!', '?', '\n']:
+                        cut_point -= 1
+                    if cut_point > 0:
+                        result = result[:cut_point] + "..."
+                    else:
+                        result = result[:497] + "..."
+                
+                emoji = detect_topic_emoji(result)
+                result = f"{emoji} {result}"
+                
+                return result
             return f"❌ Ошибка API: {response.status_code}"
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
@@ -2007,7 +2037,9 @@ async def process_text_with_deepseek_threads(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
-    prompt = """Ты редактор для соцсети Тредс (Threads). Сократи новость до 400 символов. Сделай текст живым, с интригующим заголовком. Используй эмодзи. Не используй символы # и **. Расставь абзацы.
+    prompt = """Ты редактор для соцсети Тредс (Threads). Сократи новость до 400 символов. Сделай текст живым, с интригующим заголовком. Не используй символы # и **. Расставь абзацы.
+
+Важно: НЕ добавляй эмодзи в текст! Эмодзи будет добавлен автоматически.
 
 Вот текст:"""
     
@@ -2019,7 +2051,7 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                 json={
                     "model": "deepseek-chat", 
                     "messages": [
-                        {"role": "system", "content": "Ты редактор для Тредс. Отвечай только готовым текстом, без пояснений. Не используй символы # и **."}, 
+                        {"role": "system", "content": "Ты редактор для Тредс. Отвечай только готовым текстом, без пояснений. Не используй символы # и **. НЕ добавляй эмодзи в текст."}, 
                         {"role": "user", "content": f"{prompt}\n\n{text}"}
                     ], 
                     "temperature": 0.8, 
@@ -2030,9 +2062,21 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                 result = response.json()["choices"][0]["message"]["content"]
                 result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                result = result.strip()
+                
                 if len(result) > 400:
-                    result = result[:397] + "..."
-                return result.strip()
+                    cut_point = 400
+                    while cut_point > 0 and result[cut_point] not in [' ', '.', ',', '!', '?', '\n']:
+                        cut_point -= 1
+                    if cut_point > 0:
+                        result = result[:cut_point] + "..."
+                    else:
+                        result = result[:397] + "..."
+                
+                emoji = detect_topic_emoji(result)
+                result = f"{emoji} {result}"
+                
+                return result
             return f"❌ Ошибка API: {response.status_code}"
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
@@ -2091,11 +2135,9 @@ def on_watermark_type(c):
         return
     
     if wm_type == "back":
-        # Возврат к предыдущему состоянию
         st.pop("step", None)
         user_state[uid] = st
         
-        # Если был превью - возвращаемся к нему
         if st.get("card_bytes"):
             caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
             send_photo_with_retry(
@@ -2106,7 +2148,6 @@ def on_watermark_type(c):
                 reply_markup=preview_kb()
             )
             bot.delete_message(c.message.chat.id, c.message.message_id)
-        # Если был текст после ИИ
         elif st.get("original_text"):
             title, body, formatted_text = format_ai_response(st.get("original_text", ""))
             bot.send_message(c.message.chat.id, formatted_text, parse_mode="HTML", reply_markup=after_ai_kb())
@@ -2117,7 +2158,6 @@ def on_watermark_type(c):
         bot.answer_callback_query(c.id, "◀️ Возврат")
         return
     
-    # Проверяем, есть ли фото
     if not st.get("photo_bytes") and not st.get("saved_photo_bytes"):
         st["watermark_type"] = wm_type
         st["step"] = "waiting_watermark_photo"
@@ -2126,14 +2166,12 @@ def on_watermark_type(c):
         bot.answer_callback_query(c.id)
         return
     
-    # Восстанавливаем фото из saved_photo_bytes если нужно
     if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
         st["photo_bytes"] = st["saved_photo_bytes"]
     
     bot.answer_callback_query(c.id, f"✅ Наношу водяной знак {wm_type.upper()}...")
     
     try:
-        # Наносим водяной знак на ИСХОДНОЕ фото
         if wm_type == "mn":
             result = apply_watermark_mn(st["photo_bytes"])
             watermark_name = "MINSK NEWS"
@@ -2143,13 +2181,11 @@ def on_watermark_type(c):
         
         watermarked_photo = result.getvalue()
         
-        # === СОХРАНЯЕМ ФОТО С ВОДЯНЫМ ЗНАКОМ ВО ВСЕХ МЕСТАХ ===
         st["photo_bytes"] = watermarked_photo
         st["saved_photo_bytes"] = watermarked_photo
         st["watermarked_photo"] = watermarked_photo
         st["watermark_applied"] = True
         
-        # Если есть оформленный пост - пересоздаём карточку С ВОДЯНЫМ ЗНАКОМ
         if st.get("card_bytes") and st.get("template") and st.get("title"):
             card = make_card(
                 st["photo_bytes"],
@@ -2180,7 +2216,6 @@ def on_watermark_type(c):
             )
             return
         
-        # Если есть текст после ИИ, но ещё нет оформленного поста
         elif st.get("original_text"):
             st["step"] = "waiting_after_ai"
             user_state[uid] = st
@@ -2195,7 +2230,6 @@ def on_watermark_type(c):
             )
             return
         
-        # Если есть только фото (без текста и без шаблона)
         else:
             st["photo_bytes"] = watermarked_photo
             st["saved_photo_bytes"] = watermarked_photo
@@ -2216,7 +2250,6 @@ def on_watermark_type(c):
         logger.error(f"Error applying watermark: {e}")
         send_message_with_retry(c.message.chat.id, f"❌ Ошибка при нанесении водяного знака: {e}")
     
-    # Если нет фото - просим отправить
     st["watermark_type"] = wm_type
     st["step"] = "waiting_watermark_photo"
     user_state[uid] = st
@@ -2574,22 +2607,18 @@ def on_repost_action(c):
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
             
-            # Редактируем исходное сообщение или отправляем новое
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("tg")
+            )
+            
             try:
-                bot.edit_message_text(
-                    f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}",
-                    c.message.chat.id,
-                    c.message.message_id,
-                    parse_mode="HTML",
-                    reply_markup=post_action_kb("tg")
-                )
+                bot.delete_message(c.message.chat.id, c.message.message_id)
             except:
-                send_message_with_retry(
-                    c.message.chat.id,
-                    f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}",
-                    parse_mode="HTML",
-                    reply_markup=post_action_kb("tg")
-                )
+                pass
+            
         except Exception as e:
             logger.error(f"TG post error: {e}")
             bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
@@ -2618,21 +2647,18 @@ def on_repost_action(c):
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
             
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}",
+                parse_mode="HTML",
+                reply_markup=post_action_kb("threads")
+            )
+            
             try:
-                bot.edit_message_text(
-                    f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}",
-                    c.message.chat.id,
-                    c.message.message_id,
-                    parse_mode="HTML",
-                    reply_markup=post_action_kb("threads")
-                )
+                bot.delete_message(c.message.chat.id, c.message.message_id)
             except:
-                send_message_with_retry(
-                    c.message.chat.id,
-                    f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}",
-                    parse_mode="HTML",
-                    reply_markup=post_action_kb("threads")
-                )
+                pass
+            
         except Exception as e:
             logger.error(f"Threads post error: {e}")
             bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
@@ -2766,13 +2792,19 @@ def on_tg_action(c):
             user_state[uid] = st
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
-            bot.edit_message_text(
-                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}",
+            
+            send_message_with_retry(
                 c.message.chat.id,
-                c.message.message_id,
+                f"📱 <b>Пост для Telegram (500 символов)</b>\n\n{result}",
                 parse_mode="HTML",
                 reply_markup=post_action_kb("tg")
             )
+            
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+                
         except Exception as e:
             bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
         finally:
@@ -2812,13 +2844,19 @@ def on_threads_action(c):
             user_state[uid] = st
             
             bot.delete_message(c.message.chat.id, processing_msg.message_id)
-            bot.edit_message_text(
-                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}",
+            
+            send_message_with_retry(
                 c.message.chat.id,
-                c.message.message_id,
+                f"📱 <b>Пост для Тредс (400 символов)</b>\n\n{result}",
                 parse_mode="HTML",
                 reply_markup=post_action_kb("threads")
             )
+            
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+                
         except Exception as e:
             bot.edit_message_text(f"❌ Ошибка: {e}", c.message.chat.id, processing_msg.message_id)
         finally:
@@ -2850,7 +2888,6 @@ def on_post_channel_select(c):
             bot.delete_message(c.message.chat.id, c.message.message_id)
         except:
             pass
-        # Возвращаемся к предыдущему сообщению
         if post_type == "tg" and st.get("tg_post_text"):
             send_message_with_retry(
                 c.message.chat.id,
@@ -2867,7 +2904,6 @@ def on_post_channel_select(c):
             )
         return
     
-    # Определяем канал
     if channel_type == "mn":
         target_channel = CHANNEL_MN
         channel_name = "MINSK NEWS"
@@ -2889,7 +2925,6 @@ def on_post_channel_select(c):
         return
     
     try:
-        # Получаем текст поста
         if post_type == "tg":
             post_text = st.get("tg_post_text", "")
         else:
@@ -2899,7 +2934,6 @@ def on_post_channel_select(c):
             bot.answer_callback_query(c.id, "❌ Нет текста для публикации")
             return
         
-        # Публикуем в канал
         bot.send_message(target_channel, post_text, parse_mode="HTML")
         
         bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name}")
@@ -2999,7 +3033,6 @@ def on_select_channel(c):
         caption_text = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
         media_group = st.get("media_group", {"photos": [], "videos": []})
         
-        # ИСПРАВЛЕНИЕ: используем photo_bytes (уже с водяным знаком)
         if st.get("photo_bytes"):
             send_photo_with_retry(
                 target_channel, 
@@ -3087,7 +3120,6 @@ def on_action(call):
         try:
             caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
             
-            # ИСПРАВЛЕНИЕ: используем photo_bytes (с водяным знаком)
             photo_to_send = st.get("photo_bytes")
             if photo_to_send is None:
                 photo_to_send = st.get("card_bytes")
@@ -3837,8 +3869,8 @@ def cmd_start(message):
         f"• ✨ Улучшение качества фото (+20% резкость, +15% насыщенность)\n"
         f"• 💧 Водяные знаки - нанеси \"MINSK NEWS\" или \"ЧП Минск\" на фото\n"
         f"• 🤖 Текст в ИИ - отправь текст, ИИ сократит его до 650 символов\n"
-        f"• 📱 Пост для ТГ - сократит текст до 500 символов\n"
-        f"• 📱 Пост для Тредс - сократит текст до 400 символов\n"
+        f"• 📱 Пост для ТГ - сократит текст до 500 символов с автоматическим эмодзи\n"
+        f"• 📱 Пост для Тредс - сократит текст до 400 символов с автоматическим эмодзи\n"
         f"• 💰 Цены и условия размещения\n"
         f"• 📎 Репосты из каналов - отправь ссылку на пост или перешли его\n"
         f"• 🎬 Поддержка видео - бот сохраняет видео и публикует его с текстом\n"
