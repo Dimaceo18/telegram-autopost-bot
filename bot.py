@@ -2242,90 +2242,50 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 
 
 # =========================
-# Функция для извлечения контента из статей через ИИ (ИСПРАВЛЕННАЯ)
+# Функция для извлечения контента из статей через ИИ (РАБОЧАЯ ВЕРСИЯ)
 # =========================
 async def extract_article_content(url: str) -> Dict[str, any]:
+    """
+    Извлекает содержимое статьи по ссылке через ИИ (DeepSeek)
+    DeepSeek сам читает страницу и возвращает текст
+    """
     if not DEEPSEEK_API_KEY:
         return {
-            "text": "❌ API ключ DeepSeek не настроен.",
+            "text": "❌ API ключ DeepSeek не настроен. Добавьте DEEPSEEK_API_KEY в переменные окружения.",
             "images": [],
             "title": "",
             "url": url
         }
     
     try:
-        # Сначала загружаем HTML страницы
-        logger.info(f"Loading article from URL: {url}")
-        
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            })
-            html_content = response.text
-            logger.info(f"Loaded {len(html_content)} bytes of HTML")
-        
-        # Извлекаем заголовок страницы
-        title_match = re.search(r'<title>(.*?)</title>', html_content, re.IGNORECASE)
-        page_title = title_match.group(1).strip() if title_match else "Статья"
-        
-        # Очищаем HTML от скриптов и стилей для уменьшения объема
-        clean_html = re.sub(r'<script.*?>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
-        clean_html = re.sub(r'<style.*?>.*?</style>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-        clean_html = re.sub(r'<nav.*?>.*?</nav>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-        clean_html = re.sub(r'<header.*?>.*?</header>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-        clean_html = re.sub(r'<footer.*?>.*?</footer>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-        
-        # Извлекаем все изображения из HTML
-        image_urls = []
-        img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>', html_content, re.IGNORECASE)
-        
-        for img_url in img_matches:
-            if img_url.startswith('http'):
-                image_urls.append(img_url)
-            elif img_url.startswith('/'):
-                parsed = urlparse(url)
-                base_url = f"{parsed.scheme}://{parsed.netloc}"
-                image_urls.append(base_url + img_url)
-            elif img_url.startswith('data:image'):
-                continue
-            else:
-                image_urls.append(urljoin(url, img_url))
-        
-        # Удаляем дубликаты и ограничиваем количество
-        image_urls = list(dict.fromkeys(image_urls))[:10]
-        logger.info(f"Found {len(image_urls)} images in article")
-        
-        # Отправляем HTML в DeepSeek для извлечения текста
-        prompt = f"""Ты помощник по извлечению контента. Извлеки основной текст статьи из HTML кода.
+        # Отправляем запрос в DeepSeek с просьбой прочитать страницу
+        prompt = f"""Прочитай статью по ссылке ниже и извлеки из неё текст.
+
+URL статьи: {url}
 
 Правила:
-1. Извлеки ТОЛЬКО основной текст статьи
-2. Убери всю рекламу, баннеры, меню, навигацию
-3. Убери подписи к фото, авторские права
-4. Убери комментарии и блоки "похожие статьи"
-5. Сохрани структуру абзацев (расставь переносы строк между абзацами)
-6. НЕ ИЗМЕНЯЙ ТЕКСТ - верни его точно таким же, как на сайте
-7. НЕ сокращай, НЕ переписывай, НЕ редактируй текст
-8. Если в тексте УЖЕ есть день недели - оставь его. НЕ добавляй день недели, если его нет
-9. Если место УЖЕ указано - оставь его. НЕ придумывай место, если его нет
-10. Верни полный текст статьи без изменений
+1. Прочитай страницу по ссылке
+2. Извлеки ТОЛЬКО текст статьи
+3. Убери всю рекламу, баннеры, меню, навигацию
+4. Убери подписи к фото, авторские права
+5. Убери комментарии и блоки "похожие статьи"
+6. Сохрани структуру абзацев (расставь переносы строк между абзацами)
+7. НЕ ИЗМЕНЯЙ ТЕКСТ - верни его точно таким же, как на сайте
+8. НЕ сокращай, НЕ переписывай, НЕ редактируй текст
+9. Верни полный текст статьи без изменений
+10. Если на странице есть заголовок статьи - включи его в начало текста
 
-Заголовок страницы: {page_title}
-URL: {url}
+Верни только текст статьи, без пояснений.
+"""
 
-HTML код страницы (сокращенный):
-{clean_html[:20000]}
-
-Верни ТОЛЬКО текст статьи, без пояснений."""
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:
             response = await client.post(
                 DEEPSEEK_API_URL,
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты помощник по извлечению контента. Извлекай ТОЧНЫЙ текст без изменений. Если день недели есть - оставляй. Если места нет - не придумывай. Работай ТОЛЬКО с тем, что есть на странице."},
+                        {"role": "system", "content": "Ты помощник по извлечению контента. Ты умеешь читать веб-страницы по ссылкам и извлекать из них чистый текст. Отвечай только извлеченным текстом статьи, без пояснений. НЕ переписывай текст, только извлекай."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.1,
@@ -2334,46 +2294,34 @@ HTML код страницы (сокращенный):
             )
             
             if response.status_code == 200:
-                extracted_text = response.json()["choices"][0]["message"]["content"]
+                result = response.json()["choices"][0]["message"]["content"]
                 
                 # Очищаем результат от лишних фраз
-                extracted_text = re.sub(r'^Вот извлеченный текст статьи.*?:', '', extracted_text, flags=re.IGNORECASE)
-                extracted_text = re.sub(r'^Текст статьи.*?:', '', extracted_text, flags=re.IGNORECASE)
-                extracted_text = re.sub(r'^Извлеченный текст.*?:', '', extracted_text, flags=re.IGNORECASE)
-                extracted_text = re.sub(r'^Вот текст статьи.*?:', '', extracted_text, flags=re.IGNORECASE)
-                extracted_text = re.sub(r'^Ссылка.*?:', '', extracted_text, flags=re.IGNORECASE)
-                extracted_text = extracted_text.strip()
+                result = re.sub(r'^Вот извлеченный текст статьи.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Текст статьи.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Извлеченный текст.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Вот текст статьи.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Ссылка.*?:', '', result, flags=re.IGNORECASE)
+                result = result.strip()
                 
-                logger.info(f"Extracted {len(extracted_text)} characters of text")
+                # Извлекаем заголовок (первая строка)
+                lines = result.split('\n')
+                page_title = lines[0].strip() if lines else ""
                 
-                # Загружаем изображения
-                downloaded_images = []
-                async with httpx.AsyncClient(timeout=30.0) as img_client:
-                    for img_url in image_urls[:5]:
-                        try:
-                            if img_url.startswith('//'):
-                                img_url = 'https:' + img_url
-                            elif img_url.startswith('/'):
-                                parsed = urlparse(url)
-                                base_url = f"{parsed.scheme}://{parsed.netloc}"
-                                img_url = base_url + img_url
-                            
-                            img_response = await img_client.get(img_url, headers={
-                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                            }, timeout=15.0)
-                            
-                            if img_response.status_code == 200:
-                                content_type = img_response.headers.get('content-type', '')
-                                if 'image' in content_type:
-                                    downloaded_images.append(img_response.content)
-                                    logger.info(f"Downloaded image from article")
-                        except Exception as e:
-                            logger.error(f"Error downloading image: {e}")
+                # Остальной текст (без заголовка)
+                body_text = '\n'.join(lines[1:]).strip() if len(lines) > 1 else ""
+                
+                # Если заголовок слишком короткий или похож на ссылку
+                if len(page_title) < 10 or 'http' in page_title:
+                    title_match = re.search(r'^(.{10,200}?)(?:\n|$)', result)
+                    if title_match:
+                        page_title = title_match.group(1).strip()
+                        body_text = result[len(page_title):].strip()
                 
                 return {
-                    "text": extracted_text,
+                    "text": body_text,
                     "title": page_title,
-                    "images": downloaded_images,
+                    "images": [],  # Изображения не ищем, только текст
                     "url": url
                 }
             else:
@@ -2387,14 +2335,14 @@ HTML код страницы (сокращенный):
                 return {
                     "text": error_text,
                     "images": [],
-                    "title": page_title,
+                    "title": "",
                     "url": url
                 }
                 
     except httpx.TimeoutException:
         logger.error(f"Timeout extracting article: {url}")
         return {
-            "text": "❌ Превышено время ожидания при загрузке статьи. Попробуйте позже.",
+            "text": "❌ Превышено время ожидания при извлечении статьи. Попробуйте позже или отправьте текст вручную.",
             "images": [],
             "title": "",
             "url": url
@@ -2407,7 +2355,6 @@ HTML код страницы (сокращенный):
             "title": "",
             "url": url
         }
-
 # =========================
 # Caption formatting (сокращенно)
 # =========================
