@@ -2242,12 +2242,12 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 
 
 # =========================
-# Функция для извлечения контента из статей через ИИ (РАБОЧАЯ ВЕРСИЯ)
+# Функция для извлечения контента из статей через ИИ (100% точное копирование)
 # =========================
 async def extract_article_content(url: str) -> Dict[str, any]:
     """
     Извлекает содержимое статьи по ссылке через ИИ (DeepSeek)
-    DeepSeek сам читает страницу и возвращает текст
+    DeepSeek сам читает страницу и возвращает ТОЧНЫЙ текст
     """
     if not DEEPSEEK_API_KEY:
         return {
@@ -2259,21 +2259,24 @@ async def extract_article_content(url: str) -> Dict[str, any]:
     
     try:
         # Отправляем запрос в DeepSeek с просьбой прочитать страницу
-        prompt = f"""Прочитай статью по ссылке ниже и извлеки из неё текст.
+        prompt = f"""Прочитай статью по ссылке ниже и скопируй из неё текст ТОЧНО как на сайте.
 
 URL статьи: {url}
 
-Правила:
-1. Прочитай страницу по ссылке
-2. Извлеки ТОЛЬКО текст статьи
-3. Убери всю рекламу, баннеры, меню, навигацию
-4. Убери подписи к фото, авторские права
-5. Убери комментарии и блоки "похожие статьи"
-6. Сохрани структуру абзацев (расставь переносы строк между абзацами)
-7. НЕ ИЗМЕНЯЙ ТЕКСТ - верни его точно таким же, как на сайте
-8. НЕ сокращай, НЕ переписывай, НЕ редактируй текст
-9. Верни полный текст статьи без изменений
-10. Если на странице есть заголовок статьи - включи его в начало текста
+КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА:
+1. Скопируй ТОЧНО такой же текст, как на сайте - слово в слово
+2. НЕ МЕНЯЙ слова, НЕ ПЕРЕФРАЗИРУЙ, НЕ РЕДАКТИРУЙ
+3. НЕ добавляй свои слова, НЕ убирай слова
+4. НЕ меняй имена, названия, цифры, даты
+5. НЕ додумывай информацию, которой нет в тексте
+6. НЕ изменяй суть текста
+7. Сохрани все абзацы и структуру
+8. Убери только рекламу, баннеры, меню, навигацию
+9. НЕ добавляй дни недели - оставляй только то, что есть в тексте
+10. НЕ придумывай места - только то, что указано в тексте
+11. Верни ПОЛНЫЙ текст статьи без изменений
+
+ВАЖНО: Ты должен быть КОПИРОВАЛЬЩИКОМ, а не редактором. Скопируй текст ТОЧНО как на сайте.
 
 Верни только текст статьи, без пояснений.
 """
@@ -2285,10 +2288,10 @@ URL статьи: {url}
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты помощник по извлечению контента. Ты умеешь читать веб-страницы по ссылкам и извлекать из них чистый текст. Отвечай только извлеченным текстом статьи, без пояснений. НЕ переписывай текст, только извлекай."},
+                        {"role": "system", "content": "Ты КОПИРОВАЛЬЩИК текста. Твоя задача - скопировать текст ТОЧНО как на сайте, без изменений, без перефразирования, без редактирования. Ты НЕ редактор, ты КОПИРОВАЛЬЩИК. Скопируй текст слово в слово."},
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": 0.1,
+                    "temperature": 0.0,  # Минимальная температура для точного копирования
                     "max_tokens": 8000
                 }
             )
@@ -2296,12 +2299,13 @@ URL статьи: {url}
             if response.status_code == 200:
                 result = response.json()["choices"][0]["message"]["content"]
                 
-                # Очищаем результат от лишних фраз
+                # Очищаем результат от лишних фраз, но НЕ меняем текст
                 result = re.sub(r'^Вот извлеченный текст статьи.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Текст статьи.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Извлеченный текст.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Вот текст статьи.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Ссылка.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
                 result = result.strip()
                 
                 # Извлекаем заголовок (первая строка)
@@ -2321,7 +2325,7 @@ URL статьи: {url}
                 return {
                     "text": body_text,
                     "title": page_title,
-                    "images": [],  # Изображения не ищем, только текст
+                    "images": [],
                     "url": url
                 }
             else:
@@ -2355,6 +2359,159 @@ URL статьи: {url}
             "title": "",
             "url": url
         }
+
+
+# =========================
+# Обработчик ссылок на статьи (ОБНОВЛЕННЫЙ)
+# =========================
+@bot.message_handler(func=lambda message: re.search(r'https?://[^\s]+', message.text) and not re.search(r't\.me/', message.text))
+def handle_article_link(message):
+    uid = message.from_user.id
+    text = message.text.strip()
+    
+    url_match = re.search(r'(https?://[^\s]+)', text)
+    if not url_match:
+        bot.reply_to(message, "❌ Не найдена ссылка в сообщении")
+        return
+    
+    url = url_match.group(1)
+    
+    if 't.me' in url:
+        return
+    
+    processing_msg = bot.reply_to(message, "🔍 Извлекаю содержимое статьи через ИИ...\n\n⏳ Это может занять до 30-60 секунд...")
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        result = loop.run_until_complete(extract_article_content(url))
+        
+        if not result or not result.get("text"):
+            bot.edit_message_text(
+                "❌ Не удалось извлечь текст статьи. Попробуйте другую ссылку или отправьте текст вручную.",
+                message.chat.id,
+                processing_msg.message_id
+            )
+            return
+        
+        try:
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+        except:
+            pass
+        
+        st = user_state.get(uid) or {}
+        st["extracted_text"] = result.get("text", "")
+        st["extracted_title"] = result.get("title", "")
+        st["extracted_images"] = result.get("images", [])
+        st["extracted_url"] = result.get("url", url)
+        st["step"] = "waiting_extracted_article"
+        user_state[uid] = st
+        
+        try:
+            # ФОРМИРУЕМ ОДНО СООБЩЕНИЕ: ЗАГОЛОВОК + ТЕКСТ
+            title_text = result.get("title", "")
+            article_text = result.get("text", "")
+            
+            # Собираем полный текст для отправки
+            full_message = ""
+            if title_text:
+                full_message = f"<b>{html.escape(title_text)}</b>\n\n"
+            if article_text:
+                full_message += article_text
+            
+            # Проверяем длину сообщения (Telegram лимит - 4096 символов)
+            if len(full_message) > 4000:
+                # Разбиваем на части
+                parts = []
+                current_part = ""
+                
+                # Если есть заголовок, добавляем его в первую часть
+                if title_text:
+                    current_part = f"<b>{html.escape(title_text)}</b>\n\n"
+                
+                # Разбиваем текст по абзацам
+                paragraphs = article_text.split('\n\n')
+                for p in paragraphs:
+                    if len(current_part) + len(p) + 2 < 4000:
+                        current_part += p + '\n\n'
+                    else:
+                        if current_part:
+                            parts.append(current_part.strip())
+                        current_part = p + '\n\n'
+                
+                if current_part:
+                    parts.append(current_part.strip())
+                
+                # Отправляем части
+                for i, part in enumerate(parts):
+                    if i == 0:
+                        bot.send_message(message.chat.id, part, parse_mode="HTML")
+                    else:
+                        bot.send_message(
+                            message.chat.id, 
+                            f"📝 <b>Продолжение ({i+1}/{len(parts)}):</b>\n\n{part}", 
+                            parse_mode="HTML"
+                        )
+            else:
+                # Отправляем одним сообщением
+                bot.send_message(message.chat.id, full_message, parse_mode="HTML")
+            
+            # КНОПКИ ДЛЯ ДЕЙСТВИЙ
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
+                InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="article:ai"),
+                InlineKeyboardButton("📱 Пост для ТГ (500 симв.)", callback_data="article:tg"),
+                InlineKeyboardButton("📱 Пост для Тредс (400 симв.)", callback_data="article:threads"),
+                InlineKeyboardButton("💧 Водяной знак", callback_data="article:watermark")
+            )
+            kb.add(InlineKeyboardButton("📢 Опубликовать в канале", callback_data="article:publish"))
+            
+            bot.send_message(
+                message.chat.id,
+                "🎯 <b>Что сделать с этой статьей?</b>",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            
+        except Exception as e:
+            logger.error(f"Error sending article content: {e}")
+            if result.get("text"):
+                bot.send_message(
+                    message.chat.id,
+                    f"⚠️ Часть контента не отобразилась, но текст сохранен.\n\n{result['text'][:1000]}...",
+                    parse_mode="HTML"
+                )
+            
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
+                InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="article:ai")
+            )
+            bot.send_message(
+                message.chat.id,
+                "🎯 <b>Что сделать с этой статьей?</b>",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            
+    except Exception as e:
+        logger.error(f"Error processing article: {e}")
+        try:
+            bot.edit_message_text(
+                f"❌ Ошибка при обработке статьи: {str(e)}",
+                message.chat.id,
+                processing_msg.message_id
+            )
+        except:
+            bot.send_message(
+                message.chat.id,
+                f"❌ Ошибка при обработке статьи: {str(e)}",
+                parse_mode="HTML"
+            )
+    finally:
+        loop.close()
 # =========================
 # Caption formatting (сокращенно)
 # =========================
