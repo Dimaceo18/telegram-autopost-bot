@@ -1505,10 +1505,79 @@ async def process_text_with_deepseek(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка при обращении к API: {str(e)}"
 
+# =========================
+# Функция для создания поста в Telegram (с поддержкой коротких текстов)
+# =========================
 async def process_text_with_deepseek_tg(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
+    # Проверяем длину текста
+    text_length = len(text)
+    
+    if text_length <= 200:
+        # Для коротких текстов - перефразировать, сохраняя длину
+        prompt = f"""Ты редактор новостного канала. Перефразируй этот короткий текст, сохранив его смысл и длину (не более {text_length + 20} символов).
+
+Правила:
+1. Сохрани ВСЮ ключевую информацию
+2. НЕ изменяй суть текста
+3. Сделай текст более живым и читаемым
+4. Заголовок сделай жирным с помощью <b> и отдельной строкой
+5. НЕ используй эмодзи в тексте (эмодзи добавится автоматически)
+6. НЕ используй многоточие
+7. Сохрани примерно ту же длину текста
+
+Формат:
+<b>Заголовок</b>
+
+Текст новости...
+
+Исходный текст:
+{text}
+
+Верни ТОЛЬКО готовый пост, без пояснений."""
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.post(
+                    DEEPSEEK_API_URL,
+                    headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "model": "deepseek-chat",
+                        "messages": [
+                            {"role": "system", "content": "Ты редактор новостного канала. Перефразируй короткий текст, сохраняя смысл и длину. Отвечай только готовым постом. Используй <b> для заголовка."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "temperature": 0.4,
+                        "max_tokens": 800
+                    }
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()["choices"][0]["message"]["content"]
+                    result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                    result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                    result = result.strip()
+                    result = remove_emojis(result)
+                    
+                    if not re.search(r'<b>.*?</b>', result):
+                        lines = result.split('\n')
+                        if lines:
+                            first_line = lines[0].strip()
+                            if first_line and len(first_line) < 100:
+                                result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                    
+                    # Добавляем эмодзи
+                    emoji = detect_topic_emoji(result)
+                    result = f"{emoji} {result}"
+                    
+                    return result
+                    
+            except Exception as e:
+                logger.error(f"Error processing short text: {e}")
+    
+    # Для длинных текстов - стандартное сокращение до 500 символов
     prompt = f"""Ты редактор новостного канала. Сократи текст новости до 500 символов.
 
 Правила:
@@ -1537,7 +1606,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного канала. Отвечай только готовым постом. Используй <b> для заголовка."},
+                        {"role": "system", "content": "Ты редактор новостного канала. Сокращай новости до 500 символов. Отвечай только готовым постом. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.2,
@@ -1584,10 +1653,79 @@ async def process_text_with_deepseek_tg(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
 
+
+# =========================
+# Функция для создания поста в Тредс (с поддержкой коротких текстов)
+# =========================
 async def process_text_with_deepseek_threads(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
+    # Проверяем длину текста
+    text_length = len(text)
+    
+    if text_length <= 200:
+        # Для коротких текстов - перефразировать, сохраняя длину
+        prompt = f"""Ты редактор для Threads. Перефразируй этот короткий текст, сохранив его смысл и длину (не более {text_length + 20} символов).
+
+Правила:
+1. Сохрани ВСЮ ключевую информацию
+2. НЕ изменяй суть текста
+3. Сделай текст более живым и вовлекающим для Threads
+4. Заголовок сделай жирным с помощью <b> и отдельной строкой
+5. НЕ используй эмодзи в тексте (эмодзи добавится автоматически)
+6. НЕ используй многоточие
+7. Сохрани примерно ту же длину текста
+
+Формат:
+<b>Заголовок</b>
+
+Текст новости...
+
+Исходный текст:
+{text}
+
+Верни ТОЛЬКО готовый пост, без пояснений."""
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.post(
+                    DEEPSEEK_API_URL,
+                    headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "model": "deepseek-chat",
+                        "messages": [
+                            {"role": "system", "content": "Ты редактор для Threads. Перефразируй короткий текст, сохраняя смысл и длину. Отвечай только готовым постом. Используй <b> для заголовка."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "temperature": 0.5,
+                        "max_tokens": 600
+                    }
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()["choices"][0]["message"]["content"]
+                    result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                    result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                    result = result.strip()
+                    result = remove_emojis(result)
+                    
+                    if not re.search(r'<b>.*?</b>', result):
+                        lines = result.split('\n')
+                        if lines:
+                            first_line = lines[0].strip()
+                            if first_line and len(first_line) < 80:
+                                result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                    
+                    emoji = detect_topic_emoji(result)
+                    result = f"{emoji} {result}"
+                    
+                    return result
+                    
+            except Exception as e:
+                logger.error(f"Error processing short text for Threads: {e}")
+    
+    # Для длинных текстов - стандартное сокращение до 400 символов
     prompt = f"""Ты редактор для Threads. Сократи текст новости до 400 символов.
 
 Правила:
@@ -1616,7 +1754,7 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор для Threads. Отвечай только готовым постом. Используй <b> для заголовка."},
+                        {"role": "system", "content": "Ты редактор для Threads. Сокращай новости до 400 символов. Отвечай только готовым постом. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.2,
@@ -1663,10 +1801,75 @@ async def process_text_with_deepseek_threads(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
 
+
+# =========================
+# Функция для ПЕРЕДЕЛКИ поста в Telegram (с поддержкой коротких текстов)
+# =========================
 async def process_text_with_deepseek_tg_redo(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
+    text_length = len(text)
+    
+    if text_length <= 200:
+        prompt = f"""Ты редактор новостного канала. Переделай этот короткий текст в НОВЫЙ пост, сохранив смысл и длину (не более {text_length + 20} символов).
+
+Правила:
+1. Сохрани ВСЮ ключевую информацию
+2. НЕ изменяй суть текста
+3. Заголовок: новый, сделай жирным с помощью <b>
+4. НЕ используй эмодзи в тексте
+5. НЕ используй многоточие
+
+Формат:
+<b>Новый заголовок</b>
+
+Текст новости...
+
+Исходный текст:
+{text}
+
+Верни ТОЛЬКО готовый пост, без пояснений."""
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.post(
+                    DEEPSEEK_API_URL,
+                    headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "model": "deepseek-chat",
+                        "messages": [
+                            {"role": "system", "content": "Ты редактор новостного канала. Переделывай короткие тексты в новые посты, сохраняя смысл и длину. Используй <b> для заголовка."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "temperature": 0.4,
+                        "max_tokens": 800
+                    }
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()["choices"][0]["message"]["content"]
+                    result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                    result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                    result = result.strip()
+                    result = remove_emojis(result)
+                    
+                    if not re.search(r'<b>.*?</b>', result):
+                        lines = result.split('\n')
+                        if lines:
+                            first_line = lines[0].strip()
+                            if first_line and len(first_line) < 100:
+                                result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                    
+                    emoji = detect_topic_emoji(result)
+                    result = f"{emoji} {result}"
+                    
+                    return result
+                    
+            except Exception as e:
+                logger.error(f"Error redoing short text: {e}")
+    
+    # Стандартная переделка для длинных текстов
     prompt = f"""Ты редактор новостного канала. Переделай эту новость в НОВЫЙ пост для Telegram.
 
 Правила:
@@ -1694,7 +1897,7 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного канала. Переделывай новости в новые посты. Используй <b> для заголовка."},
+                        {"role": "system", "content": "Ты редактор новостного канала. Переделывай новости в новые посты до 500 символов. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.3,
@@ -1741,16 +1944,81 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
 
+
+# =========================
+# Функция для ПЕРЕДЕЛКИ поста в Тредс (с поддержкой коротких текстов)
+# =========================
 async def process_text_with_deepseek_threads_redo(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
+    text_length = len(text)
+    
+    if text_length <= 200:
+        prompt = f"""Ты редактор для Threads. Переделай этот короткий текст в НОВЫЙ пост, сохранив смысл и длину (не более {text_length + 20} символов).
+
+Правила:
+1. Сохрани ВСЮ ключевую информацию
+2. НЕ изменяй суть текста
+3. Заголовок: новый, интригующий, сделай жирным с помощью <b>
+4. НЕ используй эмодзи в тексте
+5. НЕ используй многоточие
+
+Формат:
+<b>Новый заголовок</b>
+
+Текст новости...
+
+Исходный текст:
+{text}
+
+Верни ТОЛЬКО готовый пост, без пояснений."""
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.post(
+                    DEEPSEEK_API_URL,
+                    headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "model": "deepseek-chat",
+                        "messages": [
+                            {"role": "system", "content": "Ты редактор для Threads. Переделывай короткие тексты в новые посты, сохраняя смысл и длину. Используй <b> для заголовка."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "temperature": 0.5,
+                        "max_tokens": 600
+                    }
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()["choices"][0]["message"]["content"]
+                    result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                    result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
+                    result = result.strip()
+                    result = remove_emojis(result)
+                    
+                    if not re.search(r'<b>.*?</b>', result):
+                        lines = result.split('\n')
+                        if lines:
+                            first_line = lines[0].strip()
+                            if first_line and len(first_line) < 80:
+                                result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                    
+                    emoji = detect_topic_emoji(result)
+                    result = f"{emoji} {result}"
+                    
+                    return result
+                    
+            except Exception as e:
+                logger.error(f"Error redoing short text for Threads: {e}")
+    
+    # Стандартная переделка для длинных текстов
     prompt = f"""Ты редактор для Threads. Переделай эту новость в НОВЫЙ пост для Threads.
 
 Правила:
 1. Текст не более 400 символов
 2. Сохрани ВСЮ ключевую информацию
-3. Заголовок: новый, сделай жирным с помощью <b>
+3. Заголовок: новый, интригующий, сделай жирным с помощью <b>
 4. НЕ используй эмодзи в тексте
 5. НЕ используй многоточие
 
@@ -1772,7 +2040,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор для Threads. Переделывай новости в новые посты. Используй <b> для заголовка."},
+                        {"role": "system", "content": "Ты редактор для Threads. Переделывай новости в новые посты до 400 символов. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.3,
@@ -1818,8 +2086,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
             return f"❌ Ошибка API: {response.status_code}"
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
-
-
+            
 # =========================
 # Функция для извлечения контента из статей через ИИ (РАБОЧАЯ ВЕРСИЯ)
 # =========================
