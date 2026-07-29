@@ -1821,78 +1821,53 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 
 
 # =========================
-# Функция для извлечения контента из статей через ИИ (РАБОЧАЯ)
+# Функция для извлечения контента из статей через ИИ (РАБОЧАЯ ВЕРСИЯ)
 # =========================
 async def extract_article_content(url: str) -> Dict[str, any]:
     """
     Извлекает содержимое статьи по ссылке через ИИ (DeepSeek)
-    1. Сначала загружает HTML страницы
-    2. Отправляет HTML в DeepSeek для извлечения текста
+    DeepSeek сам читает страницу и возвращает текст
     """
     if not DEEPSEEK_API_KEY:
         return {
-            "text": "❌ API ключ DeepSeek не настроен.",
+            "text": "❌ API ключ DeepSeek не настроен. Добавьте DEEPSEEK_API_KEY в переменные окружения.",
             "images": [],
             "title": "",
             "url": url
         }
     
     try:
-        # ШАГ 1: Загружаем HTML страницы
-        logger.info(f"Loading article from URL: {url}")
-        
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            })
-            html_content = response.text
-            logger.info(f"Loaded {len(html_content)} bytes of HTML")
-        
-        # Извлекаем заголовок страницы
-        title_match = re.search(r'<title>(.*?)</title>', html_content, re.IGNORECASE)
-        page_title = title_match.group(1).strip() if title_match else "Статья"
-        
-        # Очищаем HTML от скриптов и стилей
-        clean_html = re.sub(r'<script.*?>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
-        clean_html = re.sub(r'<style.*?>.*?</style>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-        clean_html = re.sub(r'<nav.*?>.*?</nav>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-        clean_html = re.sub(r'<header.*?>.*?</header>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-        clean_html = re.sub(r'<footer.*?>.*?</footer>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-        
-        # ШАГ 2: Отправляем HTML в DeepSeek для извлечения текста
-        prompt = f"""Ты КОПИРОВАЛЬЩИК текста. Извлеки основной текст статьи из HTML кода.
+        # Отправляем запрос в DeepSeek с просьбой прочитать страницу
+        prompt = f"""Прочитай статью по ссылке ниже и извлеки из неё текст.
 
 URL статьи: {url}
-Заголовок страницы: {page_title}
 
-КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА:
-1. Ты НЕ редактор, ты КОПИРОВАЛЬЩИК
-2. Скопируй ТОЧНО такой же текст, как на сайте - слово в слово
-3. НЕ МЕНЯЙ слова, НЕ ПЕРЕФРАЗИРУЙ, НЕ РЕДАКТИРУЙ
-4. НЕ добавляй свои слова, НЕ убирай слова
-5. НЕ меняй имена, названия, цифры, даты
-6. НЕ додумывай информацию, которой нет в тексте
-7. Сохрани все абзацы и структуру
-8. Убери только рекламу, баннеры, меню, навигацию
-9. Верни ПОЛНЫЙ текст статьи без изменений
+Правила:
+1. Прочитай страницу по ссылке
+2. Извлеки ТОЛЬКО текст статьи
+3. Убери всю рекламу, баннеры, меню, навигацию
+4. Убери подписи к фото, авторские права
+5. Убери комментарии и блоки "похожие статьи"
+6. Сохрани структуру абзацев (расставь переносы строк между абзацами)
+7. НЕ ИЗМЕНЯЙ ТЕКСТ - верни его точно таким же, как на сайте
+8. НЕ сокращай, НЕ переписывай, НЕ редактируй текст
+9. Верни полный текст статьи без изменений
+10. Если на странице есть заголовок статьи - включи его в начало текста
 
-HTML код страницы:
-{clean_html[:20000]}
-
-Верни только точную копию текста статьи, без пояснений.
+Верни только текст статьи, без пояснений.
 """
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:
             response = await client.post(
                 DEEPSEEK_API_URL,
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты КОПИРОВАЛЬЩИК текста. Твоя задача - скопировать текст ТОЧНО как на сайте, без изменений, без перефразирования, без редактирования. Ты НЕ редактор, ты КОПИРОВАЛЬЩИК. Скопируй текст слово в слово."},
+                        {"role": "system", "content": "Ты помощник по извлечению контента. Ты умеешь читать веб-страницы по ссылкам и извлекать из них чистый текст. Отвечай только извлеченным текстом статьи, без пояснений. НЕ переписывай текст, только извлекай."},
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": 0.0,
+                    "temperature": 0.1,
                     "max_tokens": 8000
                 }
             )
@@ -1900,26 +1875,27 @@ HTML код страницы:
             if response.status_code == 200:
                 result = response.json()["choices"][0]["message"]["content"]
                 
-                # Очищаем только лишние фразы
+                # Очищаем результат от лишних фраз
                 result = re.sub(r'^Вот извлеченный текст статьи.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Текст статьи.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Извлеченный текст.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Вот текст статьи.*?:', '', result, flags=re.IGNORECASE)
-                result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
+                result = re.sub(r'^Ссылка.*?:', '', result, flags=re.IGNORECASE)
                 result = result.strip()
                 
-                # Извлекаем заголовок
+                # Извлекаем заголовок (первая строка)
                 lines = result.split('\n')
                 page_title = lines[0].strip() if lines else ""
+                
+                # Остальной текст (без заголовка)
                 body_text = '\n'.join(lines[1:]).strip() if len(lines) > 1 else ""
                 
+                # Если заголовок слишком короткий или похож на ссылку
                 if len(page_title) < 10 or 'http' in page_title:
                     title_match = re.search(r'^(.{10,200}?)(?:\n|$)', result)
                     if title_match:
                         page_title = title_match.group(1).strip()
                         body_text = result[len(page_title):].strip()
-                
-                logger.info(f"Extracted {len(body_text)} characters of text")
                 
                 return {
                     "text": body_text,
@@ -1938,14 +1914,14 @@ HTML код страницы:
                 return {
                     "text": error_text,
                     "images": [],
-                    "title": page_title,
+                    "title": "",
                     "url": url
                 }
                 
     except httpx.TimeoutException:
         logger.error(f"Timeout extracting article: {url}")
         return {
-            "text": "❌ Превышено время ожидания при загрузке статьи. Попробуйте позже.",
+            "text": "❌ Превышено время ожидания при извлечении статьи. Попробуйте позже или отправьте текст вручную.",
             "images": [],
             "title": "",
             "url": url
