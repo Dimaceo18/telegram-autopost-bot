@@ -1937,148 +1937,6 @@ URL статьи: {url}
 
 
 # =========================
-# Обработчик ссылок на статьи
-# =========================
-@bot.message_handler(func=lambda message: re.search(r'https?://[^\s]+', message.text) and not re.search(r't\.me/', message.text))
-def handle_article_link(message):
-    uid = message.from_user.id
-    text = message.text.strip()
-    
-    url_match = re.search(r'(https?://[^\s]+)', text)
-    if not url_match:
-        bot.reply_to(message, "❌ Не найдена ссылка в сообщении")
-        return
-    
-    url = url_match.group(1)
-    
-    if 't.me' in url:
-        return
-    
-    processing_msg = bot.reply_to(message, "🔍 Извлекаю содержимое статьи через ИИ...\n\n⏳ Это может занять до 30-60 секунд...")
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    try:
-        result = loop.run_until_complete(extract_article_content(url))
-        
-        if not result or not result.get("text"):
-            bot.edit_message_text(
-                "❌ Не удалось извлечь текст статьи. Попробуйте другую ссылку или отправьте текст вручную.",
-                message.chat.id,
-                processing_msg.message_id
-            )
-            return
-        
-        try:
-            bot.delete_message(message.chat.id, processing_msg.message_id)
-        except:
-            pass
-        
-        st = user_state.get(uid) or {}
-        st["extracted_text"] = result.get("text", "")
-        st["extracted_title"] = result.get("title", "")
-        st["extracted_url"] = result.get("url", url)
-        st["step"] = "waiting_extracted_article"
-        user_state[uid] = st
-        
-        try:
-            title_text = result.get("title", "")
-            article_text = result.get("text", "")
-            
-            full_message = ""
-            if title_text:
-                full_message = f"<b>{html.escape(title_text)}</b>\n\n"
-            if article_text:
-                full_message += article_text
-            
-            if len(full_message) > 4000:
-                parts = []
-                current_part = ""
-                
-                if title_text:
-                    current_part = f"<b>{html.escape(title_text)}</b>\n\n"
-                
-                paragraphs = article_text.split('\n\n')
-                for p in paragraphs:
-                    if len(current_part) + len(p) + 2 < 4000:
-                        current_part += p + '\n\n'
-                    else:
-                        if current_part:
-                            parts.append(current_part.strip())
-                        current_part = p + '\n\n'
-                
-                if current_part:
-                    parts.append(current_part.strip())
-                
-                for i, part in enumerate(parts):
-                    if i == 0:
-                        bot.send_message(message.chat.id, part, parse_mode="HTML")
-                    else:
-                        bot.send_message(
-                            message.chat.id, 
-                            f"📝 <b>Продолжение ({i+1}/{len(parts)}):</b>\n\n{part}", 
-                            parse_mode="HTML"
-                        )
-            else:
-                bot.send_message(message.chat.id, full_message, parse_mode="HTML")
-            
-            kb = InlineKeyboardMarkup(row_width=2)
-            kb.add(
-                InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
-                InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="article:ai"),
-                InlineKeyboardButton("📱 Пост для ТГ (500 симв.)", callback_data="article:tg"),
-                InlineKeyboardButton("📱 Пост для Тредс (400 симв.)", callback_data="article:threads"),
-                InlineKeyboardButton("💧 Водяной знак", callback_data="article:watermark")
-            )
-            kb.add(InlineKeyboardButton("📢 Опубликовать в канале", callback_data="article:publish"))
-            
-            bot.send_message(
-                message.chat.id,
-                "🎯 <b>Что сделать с этой статьей?</b>",
-                parse_mode="HTML",
-                reply_markup=kb
-            )
-            
-        except Exception as e:
-            logger.error(f"Error sending article content: {e}")
-            if result.get("text"):
-                bot.send_message(
-                    message.chat.id,
-                    f"⚠️ Часть контента не отобразилась, но текст сохранен.\n\n{result['text'][:1000]}...",
-                    parse_mode="HTML"
-                )
-            
-            kb = InlineKeyboardMarkup(row_width=2)
-            kb.add(
-                InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
-                InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="article:ai")
-            )
-            bot.send_message(
-                message.chat.id,
-                "🎯 <b>Что сделать с этой статьей?</b>",
-                parse_mode="HTML",
-                reply_markup=kb
-            )
-            
-    except Exception as e:
-        logger.error(f"Error processing article: {e}")
-        try:
-            bot.edit_message_text(
-                f"❌ Ошибка при обработке статьи: {str(e)}",
-                message.chat.id,
-                processing_msg.message_id
-            )
-        except:
-            bot.send_message(
-                message.chat.id,
-                f"❌ Ошибка при обработке статьи: {str(e)}",
-                parse_mode="HTML"
-            )
-    finally:
-        loop.close()
-        
-# =========================
 # PRICES
 # =========================
 def get_prices_text() -> str:
@@ -2134,7 +1992,7 @@ def run_http_server():
 
 
 # =========================
-# CALLBACK HANDLERS (ОСНОВНЫЕ)
+# CALLBACK HANDLERS
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("prices:"))
 def on_prices_callback(c):
@@ -3447,7 +3305,7 @@ def handle_forwarded_message(message):
 
 
 # =========================
-# HANDLE ARTICLE LINK
+# HANDLE ARTICLE LINK (ТОЛЬКО ОДИН)
 # =========================
 @bot.message_handler(func=lambda message: re.search(r'https?://[^\s]+', message.text) and not re.search(r't\.me/', message.text))
 def handle_article_link(message):
@@ -3473,7 +3331,11 @@ def handle_article_link(message):
         result = loop.run_until_complete(extract_article_content(url))
         
         if not result or not result.get("text"):
-            bot.edit_message_text("❌ Не удалось извлечь текст статьи.", message.chat.id, processing_msg.message_id)
+            bot.edit_message_text(
+                "❌ Не удалось извлечь текст статьи. Попробуйте другую ссылку или отправьте текст вручную.",
+                message.chat.id,
+                processing_msg.message_id
+            )
             return
         
         try:
@@ -3485,7 +3347,6 @@ def handle_article_link(message):
         st["extracted_text"] = result.get("text", "")
         st["extracted_title"] = result.get("title", "")
         st["extracted_url"] = result.get("url", url)
-        st["extracted_images"] = []
         st["step"] = "waiting_extracted_article"
         user_state[uid] = st
         
@@ -3502,8 +3363,10 @@ def handle_article_link(message):
             if len(full_message) > 4000:
                 parts = []
                 current_part = ""
+                
                 if title_text:
                     current_part = f"<b>{html.escape(title_text)}</b>\n\n"
+                
                 paragraphs = article_text.split('\n\n')
                 for p in paragraphs:
                     if len(current_part) + len(p) + 2 < 4000:
@@ -3512,13 +3375,19 @@ def handle_article_link(message):
                         if current_part:
                             parts.append(current_part.strip())
                         current_part = p + '\n\n'
+                
                 if current_part:
                     parts.append(current_part.strip())
+                
                 for i, part in enumerate(parts):
                     if i == 0:
                         bot.send_message(message.chat.id, part, parse_mode="HTML")
                     else:
-                        bot.send_message(message.chat.id, f"📝 <b>Продолжение ({i+1}/{len(parts)}):</b>\n\n{part}", parse_mode="HTML")
+                        bot.send_message(
+                            message.chat.id, 
+                            f"📝 <b>Продолжение ({i+1}/{len(parts)}):</b>\n\n{part}", 
+                            parse_mode="HTML"
+                        )
             else:
                 bot.send_message(message.chat.id, full_message, parse_mode="HTML")
             
@@ -3531,25 +3400,49 @@ def handle_article_link(message):
                 InlineKeyboardButton("💧 Водяной знак", callback_data="article:watermark")
             )
             kb.add(InlineKeyboardButton("📢 Опубликовать в канале", callback_data="article:publish"))
-            bot.send_message(message.chat.id, "🎯 <b>Что сделать с этой статьей?</b>", parse_mode="HTML", reply_markup=kb)
+            
+            bot.send_message(
+                message.chat.id,
+                "🎯 <b>Что сделать с этой статьей?</b>",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
             
         except Exception as e:
             logger.error(f"Error sending article content: {e}")
             if result.get("text"):
-                bot.send_message(message.chat.id, f"⚠️ Текст сохранен.\n\n{result['text'][:1000]}...", parse_mode="HTML")
+                bot.send_message(
+                    message.chat.id,
+                    f"⚠️ Часть контента не отобразилась, но текст сохранен.\n\n{result['text'][:1000]}...",
+                    parse_mode="HTML"
+                )
+            
             kb = InlineKeyboardMarkup(row_width=2)
             kb.add(
                 InlineKeyboardButton("📝 Оформить пост", callback_data="article:design"),
                 InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="article:ai")
             )
-            bot.send_message(message.chat.id, "🎯 <b>Что сделать с этой статьей?</b>", parse_mode="HTML", reply_markup=kb)
+            bot.send_message(
+                message.chat.id,
+                "🎯 <b>Что сделать с этой статьей?</b>",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
             
     except Exception as e:
         logger.error(f"Error processing article: {e}")
         try:
-            bot.edit_message_text(f"❌ Ошибка: {str(e)}", message.chat.id, processing_msg.message_id)
+            bot.edit_message_text(
+                f"❌ Ошибка при обработке статьи: {str(e)}",
+                message.chat.id,
+                processing_msg.message_id
+            )
         except:
-            bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}", parse_mode="HTML")
+            bot.send_message(
+                message.chat.id,
+                f"❌ Ошибка при обработке статьи: {str(e)}",
+                parse_mode="HTML"
+            )
     finally:
         loop.close()
 
