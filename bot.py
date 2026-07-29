@@ -3605,12 +3605,10 @@ def on_text(message):
         user_state[uid] = st
         send_message_with_retry(message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
 
+
 # =========================
 # HANDLE PHOTO
 # =========================
-def check_file_size(file_bytes: bytes) -> bool:
-    return len(file_bytes) <= 50 * 1024 * 1024
-
 @bot.message_handler(content_types=["photo", "document"])
 def on_photo_or_document(message):
     uid = message.from_user.id
@@ -3734,6 +3732,18 @@ def on_photo_or_document(message):
 @bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
     clear_state(message.from_user.id)
+    
+    channels_list = []
+    if CHANNEL_MN:
+        channels_list.append("📰 MINSK NEWS")
+    if CHANNEL_CHP:
+        channels_list.append("🚨 МИНСК ЧП")
+    if CHANNEL_AFISHA:
+        channels_list.append("🎫 Афиша Минска")
+    if CHANNEL_TEST:
+        channels_list.append("🧪 ТЕСТОВЫЙ")
+    channels_text = ", ".join(channels_list) if channels_list else "не настроены"
+    
     send_message_with_retry(message.chat.id,
         f"👋 <b>Привет! Я бот для оформления постов</b>\n\n"
         f"<b>📝 Основные функции:</b>\n"
@@ -3743,8 +3753,9 @@ def cmd_start(message):
         f"• 🤖 Текст в ИИ (сокращение до 650 символов)\n"
         f"• 📱 Пост для ТГ (500 символов)\n"
         f"• 📱 Пост для Тредс (400 символов)\n"
-        f"• 📰 Извлечение статьи по ссылке\n"
+        f"• 📰 Извлечение статьи по ссылке (точное копирование)\n"
         f"• 📎 Репосты из каналов\n\n"
+        f"<b>📌 Доступные каналы:</b> {channels_text}\n\n"
         f"Выбери действие 👇",
         parse_mode="HTML", reply_markup=main_menu_kb())
 
@@ -3857,6 +3868,10 @@ if __name__ == "__main__":
                 logger.error(f"Polling error: {e}")
                 if "409" in str(e):
                     logger.error("Conflict detected! Waiting 30 seconds...")
+                    try:
+                        bot.remove_webhook()
+                    except:
+                        pass
                     time.sleep(30)
                 else:
                     time.sleep(10)
