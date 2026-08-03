@@ -1514,18 +1514,13 @@ async def process_text_with_deepseek(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка при обращении к API: {str(e)}"
 
-# =========================
-# ОБНОВЛЕННАЯ ФУНКЦИЯ ДЛЯ TELEGRAM (с поддержкой коротких текстов и лимитом заголовка)
-# =========================
 async def process_text_with_deepseek_tg(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
-    # Проверяем длину текста
     text_length = len(text)
     
     if text_length <= 200:
-        # Для коротких текстов - перефразировать, сохраняя длину
         prompt = f"""Ты редактор новостного канала. Перефразируй этот короткий текст, сохранив его смысл и длину (не более {text_length + 20} символов).
 
 Правила:
@@ -1577,11 +1572,9 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                             if first_line and len(first_line) < 150:
                                 result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
                             else:
-                                # Если первая строка длиннее 150 символов, обрезаем
                                 first_line = first_line[:147] + "..."
                                 result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
                     
-                    # Проверяем длину заголовка
                     title_match = re.search(r'<b>(.*?)</b>', result)
                     if title_match:
                         title = title_match.group(1)
@@ -1589,7 +1582,6 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                             new_title = title[:147] + "..."
                             result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                     
-                    # Добавляем эмодзи
                     emoji = detect_topic_emoji(result)
                     result = f"{emoji} {result}"
                     
@@ -1598,7 +1590,6 @@ async def process_text_with_deepseek_tg(text: str) -> str:
             except Exception as e:
                 logger.error(f"Error processing short text: {e}")
     
-    # Для длинных текстов - стандартное сокращение до 500 символов
     prompt = f"""Ты редактор новостного канала. Сократи текст новости до 500 символов.
 
 Правила:
@@ -1652,7 +1643,6 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                             first_line = first_line[:147] + "..."
                             result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
                 
-                # Проверяем длину заголовка
                 title_match = re.search(r'<b>(.*?)</b>', result)
                 if title_match:
                     title = title_match.group(1)
@@ -1685,19 +1675,13 @@ async def process_text_with_deepseek_tg(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
 
-
-# =========================
-# ОБНОВЛЕННАЯ ФУНКЦИЯ ДЛЯ THREADS (с поддержкой коротких текстов и лимитом заголовка)
-# =========================
 async def process_text_with_deepseek_threads(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
-    # Проверяем длину текста
     text_length = len(text)
     
     if text_length <= 200:
-        # Для коротких текстов - перефразировать, сохраняя длину
         prompt = f"""Ты редактор для Threads. Перефразируй этот короткий текст, сохранив его смысл и длину (не более {text_length + 20} символов).
 
 Правила:
@@ -1752,7 +1736,6 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                                 first_line = first_line[:147] + "..."
                                 result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
                     
-                    # Проверяем длину заголовка
                     title_match = re.search(r'<b>(.*?)</b>', result)
                     if title_match:
                         title = title_match.group(1)
@@ -1768,7 +1751,6 @@ async def process_text_with_deepseek_threads(text: str) -> str:
             except Exception as e:
                 logger.error(f"Error processing short text for Threads: {e}")
     
-    # Для длинных текстов - стандартное сокращение до 400 символов
     prompt = f"""Ты редактор для Threads. Сократи текст новости до 400 символов.
 
 Правила:
@@ -1822,7 +1804,6 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                             first_line = first_line[:147] + "..."
                             result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
                 
-                # Проверяем длину заголовка
                 title_match = re.search(r'<b>(.*?)</b>', result)
                 if title_match:
                     title = title_match.group(1)
@@ -1914,7 +1895,6 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                                 first_line = first_line[:147] + "..."
                                 result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
                     
-                    # Проверяем длину заголовка
                     title_match = re.search(r'<b>(.*?)</b>', result)
                     if title_match:
                         title = title_match.group(1)
@@ -1982,7 +1962,6 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                             first_line = first_line[:147] + "..."
                             result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
                 
-                # Проверяем длину заголовка
                 title_match = re.search(r'<b>(.*?)</b>', result)
                 if title_match:
                     title = title_match.group(1)
@@ -2074,7 +2053,6 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                                 first_line = first_line[:147] + "..."
                                 result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
                     
-                    # Проверяем длину заголовка
                     title_match = re.search(r'<b>(.*?)</b>', result)
                     if title_match:
                         title = title_match.group(1)
@@ -2142,7 +2120,6 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                             first_line = first_line[:147] + "..."
                             result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
                 
-                # Проверяем длину заголовка
                 title_match = re.search(r'<b>(.*?)</b>', result)
                 if title_match:
                     title = title_match.group(1)
@@ -2443,9 +2420,6 @@ def build_caption_html(title: str, body: str, max_length: int = 950) -> str:
     
     return caption
 
-# =========================
-# PROCESS ALBUM WITH MEDIA
-# =========================
 def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
     time.sleep(2)
     if media_group_id not in user_album_cache:
@@ -2465,17 +2439,20 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
         st["original_text"] = caption
         st["original_text_for_ai"] = caption
     
-    # Сохраняем все медиафайлы
     st["media_group"] = {"photos": photos, "videos": videos}
     
-    # Сохраняем первое фото как основное для совместимости
     if photos:
         st["photo_bytes"] = photos[0]
         st["saved_photo_bytes"] = photos[0]
+        logger.info(f"Saved {len(photos)} photos for user {uid}")
     
-    # Сохраняем первое видео как основное для совместимости
     if videos:
         st["video_info"] = videos[0]
+        st["video_file_id"] = videos[0].get('file_id')
+        logger.info(f"Saved {len(videos)} videos for user {uid}")
+    
+    if videos and not photos:
+        st["video_file_id"] = videos[0].get('file_id')
     
     st["step"] = "waiting_repost_action"
     user_state[uid] = st
@@ -2497,9 +2474,6 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
         parse_mode="HTML", reply_markup=repost_action_kb())
 
 
-# =========================
-# REPOST CALLBACK HANDLER
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("repost:"))
 def on_repost_action(c):
     uid = c.from_user.id
@@ -2559,12 +2533,10 @@ def on_repost_action(c):
             st["post_type"] = "tg"
             st["step"] = "waiting_post_action"
             
-            # Сохраняем медиафайлы, если они есть
             if st.get("photo_bytes"):
                 st["saved_photo_bytes"] = st["photo_bytes"]
                 logger.info(f"Saved photo for TG post for user {uid}")
             
-            # Если есть альбом, сохраняем его целиком
             if st.get("media_group"):
                 st["saved_media_group"] = st["media_group"].copy()
                 logger.info(f"Saved media group for TG post for user {uid}")
@@ -2674,9 +2646,6 @@ def on_repost_action(c):
             send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>", parse_mode="HTML", reply_markup=watermark_type_kb())
 
 
-# =========================
-# AI CALLBACK HANDLER
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("ai:"))
 def on_ai_action(c):
     uid = c.from_user.id
@@ -2754,9 +2723,6 @@ def on_ai_action(c):
         send_message_with_retry(c.message.chat.id, "❌ Отменено", reply_markup=main_menu_kb())
 
 
-# =========================
-# TG CALLBACK HANDLER
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tg:"))
 def on_tg_action(c):
     uid = c.from_user.id
@@ -2833,9 +2799,6 @@ def on_tg_action(c):
         send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
 
 
-# =========================
-# THREADS CALLBACK HANDLER
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("threads:"))
 def on_threads_action(c):
     uid = c.from_user.id
@@ -2912,9 +2875,6 @@ def on_threads_action(c):
         send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
 
 
-# =========================
-# POST CHANNEL SELECT CALLBACK
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("post_channel:"))
 def on_post_channel_select(c):
     uid = c.from_user.id
@@ -2991,14 +2951,12 @@ def on_post_channel_select(c):
             bot.answer_callback_query(c.id, "❌ Нет текста для публикации")
             return
         
-        # Проверяем все возможные источники медиа
         media_group = st.get("media_group", {"photos": [], "videos": []})
         photo_bytes = st.get("photo_bytes") or st.get("saved_photo_bytes")
         video_info = st.get("video_info")
         
         has_media = False
         
-        # 1. Сначала проверяем альбом (несколько фото/видео)
         if media_group.get("photos") or media_group.get("videos"):
             media_list = []
             first = True
@@ -3020,17 +2978,29 @@ def on_post_channel_select(c):
                         media_list.append(InputMediaVideo(file_id))
             
             if len(media_list) > 1:
-                send_media_group_with_retry(target_channel, media_list)
-                has_media = True
-                logger.info(f"Published {len(media_list)} media items to {channel_name}")
+                try:
+                    send_media_group_with_retry(target_channel, media_list)
+                    has_media = True
+                    logger.info(f"Published album with {len(media_list)} media items to {channel_name}")
+                except Exception as e:
+                    logger.error(f"Error sending media group: {e}")
+                    for media in media_list:
+                        try:
+                            if isinstance(media, InputMediaPhoto):
+                                send_photo_with_retry(target_channel, media.media, caption=media.caption if media == media_list[0] else None, parse_mode="HTML")
+                            elif isinstance(media, InputMediaVideo):
+                                bot.send_video(target_channel, media.media, caption=media.caption if media == media_list[0] else None, parse_mode="HTML")
+                        except Exception as e2:
+                            logger.error(f"Error sending individual media: {e2}")
+                    has_media = True
             elif len(media_list) == 1:
-                if isinstance(media_list[0], InputMediaPhoto):
-                    send_photo_with_retry(target_channel, media_list[0].media, caption=media_list[0].caption, parse_mode="HTML")
-                elif isinstance(media_list[0], InputMediaVideo):
-                    bot.send_video(target_channel, media_list[0].media, caption=media_list[0].caption, parse_mode="HTML")
+                media = media_list[0]
+                if isinstance(media, InputMediaPhoto):
+                    send_photo_with_retry(target_channel, media.media, caption=media.caption, parse_mode="HTML")
+                elif isinstance(media, InputMediaVideo):
+                    bot.send_video(target_channel, media.media, caption=media.caption, parse_mode="HTML")
                 has_media = True
         
-        # 2. Если нет альбома, проверяем отдельное фото
         elif photo_bytes:
             send_photo_with_retry(
                 target_channel,
@@ -3041,7 +3011,6 @@ def on_post_channel_select(c):
             has_media = True
             logger.info(f"Published photo to {channel_name} with post text")
         
-        # 3. Если нет фото, проверяем видео
         elif video_info:
             try:
                 file_id = video_info.get('file_id')
@@ -3059,7 +3028,6 @@ def on_post_channel_select(c):
                 bot.send_message(target_channel, post_text, parse_mode="HTML")
                 has_media = True
         
-        # 4. Если ничего нет, отправляем только текст
         if not has_media:
             bot.send_message(target_channel, post_text, parse_mode="HTML")
             logger.info(f"Published text only to {channel_name}")
@@ -3101,9 +3069,7 @@ def on_post_channel_select(c):
                 reply_markup=main_menu_kb()
             )
 
-# =========================
-# SELECT CHANNEL CALLBACK (исправленный - отправляет полный текст)
-# =========================
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("select_channel:"))
 def on_select_channel(c):
     uid = c.from_user.id
@@ -3120,9 +3086,7 @@ def on_select_channel(c):
             caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
             send_photo_with_retry(c.message.chat.id, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb())
         elif st.get("original_text"):
-            # Отправляем весь текст, а не только заголовок
             full_text = st.get("original_text", "")
-            # Разбиваем на заголовок и тело
             title, body = split_title_and_body(full_text)
             formatted_text = f"<b>{html.escape(title)}</b>\n\n{html.escape(body)}" if title and body else html.escape(full_text)
             bot.send_message(c.message.chat.id, formatted_text, parse_mode="HTML", reply_markup=after_ai_kb())
@@ -3151,12 +3115,10 @@ def on_select_channel(c):
         return
     
     try:
-        # Формируем полный текст для публикации
         full_text = st.get("original_text", "")
         title = st.get("title", "")
         body = st.get("body_raw", "")
         
-        # Если есть и заголовок, и тело - отправляем вместе
         if title and body:
             caption_text = f"<b>{html.escape(title)}</b>\n\n{html.escape(body)}"
         elif title:
@@ -3166,7 +3128,6 @@ def on_select_channel(c):
         else:
             caption_text = html.escape(full_text)
         
-        # Отправляем в канал
         if st.get("photo_bytes"):
             send_photo_with_retry(
                 target_channel,
@@ -3186,7 +3147,6 @@ def on_select_channel(c):
             bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с фото")
         
         else:
-            # Только текст
             bot.send_message(target_channel, caption_text, parse_mode="HTML")
             bot.answer_callback_query(c.id, f"✅ Текст опубликован в {channel_name}")
         
@@ -3212,9 +3172,6 @@ def on_select_channel(c):
         )
 
 
-# =========================
-# PREVIEW ACTIONS (исправленный - отправляет полный текст)
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data in ["publish", "edit_text", "cancel"])
 def on_action(call):
     uid = call.from_user.id
@@ -3227,7 +3184,6 @@ def on_action(call):
             title = st.get("title", "")
             body = st.get("body_raw", "")
             
-            # Формируем полный текст
             if title and body:
                 caption = f"<b>{html.escape(title)}</b>\n\n{html.escape(body)}"
             elif title:
@@ -3240,7 +3196,6 @@ def on_action(call):
                 photo_to_send = st.get("card_bytes")
             
             if photo_to_send:
-                # Используем CHANNEL из ENV
                 channel = os.getenv("CHANNEL_USERNAME", "").strip()
                 if channel and not channel.startswith("@"):
                     channel = "@" + channel
@@ -3267,9 +3222,6 @@ def on_action(call):
         send_message_with_retry(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
 
 
-# =========================
-# PUBLISH TO CHANNEL (исправленный - отправляет полный текст)
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data == "publish_to_channel")
 def on_publish_to_channel(c):
     uid = c.from_user.id
@@ -3284,7 +3236,6 @@ def on_publish_to_channel(c):
         send_message_with_retry(c.message.chat.id, "❌ Ни один канал для публикации не настроен.", reply_markup=main_menu_kb())
         return
     
-    # Сохраняем полный текст, а не только заголовок
     if st.get("title") or st.get("body_raw"):
         full_text = ""
         if st.get("title"):
@@ -3309,9 +3260,6 @@ def on_publish_to_channel(c):
     )
 
 
-# =========================
-# TEMPLATE SELECTION
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tpl:"))
 def on_tpl(c):
     uid = c.from_user.id
@@ -3395,9 +3343,6 @@ def on_tpl(c):
         pass
 
 
-# =========================
-# TEXT POSITION
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("text_pos:"))
 def on_text_position(c):
     uid = c.from_user.id
@@ -3425,9 +3370,6 @@ def on_text_position(c):
         pass
 
 
-# =========================
-# AM2 TEXT POSITION
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("am2_pos:"))
 def on_am2_text_position(c):
     uid = c.from_user.id
@@ -3445,9 +3387,6 @@ def on_am2_text_position(c):
         pass
 
 
-# =========================
-# AM2 DATE PLACE
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("am2_date_place:"))
 def on_am2_date_place_choice(c):
     uid = c.from_user.id
@@ -3478,9 +3417,6 @@ def on_am2_date_place_choice(c):
         pass
 
 
-# =========================
-# AM2 COLOR
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("am2_color:"))
 def on_am2_color_select(c):
     uid = c.from_user.id
@@ -3506,9 +3442,6 @@ def on_am2_color_select(c):
         pass
 
 
-# =========================
-# ADD WATERMARK
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data == "add_watermark")
 def on_add_watermark(c):
     uid = c.from_user.id
@@ -3528,9 +3461,6 @@ def on_add_watermark(c):
     send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>", parse_mode="HTML", reply_markup=watermark_type_kb())
 
 
-# =========================
-# ARTICLE ACTION
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("article:"))
 def on_article_action(c):
     uid = c.from_user.id
@@ -3715,9 +3645,6 @@ def on_article_action(c):
             pass
 
 
-# =========================
-# HANDLE FORWARDED MESSAGES
-# =========================
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
                      func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
 def handle_forwarded_message(message):
@@ -3778,6 +3705,7 @@ def handle_forwarded_message(message):
     st["step"] = "waiting_repost_action"
     st["photo_bytes"] = None
     st["video_info"] = None
+    st["video_file_id"] = None
     st["media_group"] = {"photos": [], "videos": []}
     
     if message.photo:
@@ -3795,7 +3723,9 @@ def handle_forwarded_message(message):
         try:
             video_info = get_video_info(message.video.file_id, message.video)
             st["video_info"] = video_info
+            st["video_file_id"] = message.video.file_id
             st["media_group"]["videos"].append(video_info)
+            logger.info(f"Saved video for user {uid}")
         except Exception as e:
             logger.error(f"Error extracting video from forward: {e}")
     
@@ -3827,9 +3757,6 @@ def handle_forwarded_message(message):
         parse_mode="HTML", reply_markup=repost_action_kb())
 
 
-# =========================
-# HANDLE ARTICLE LINK
-# =========================
 @bot.message_handler(func=lambda message: re.search(r'https?://[^\s]+', message.text) and not re.search(r't\.me/', message.text))
 def handle_article_link(message):
     uid = message.from_user.id
@@ -3970,9 +3897,6 @@ def handle_article_link(message):
         loop.close()
 
 
-# =========================
-# HANDLE TEXT
-# =========================
 @bot.message_handler(content_types=["text"])
 def on_text(message):
     uid = message.from_user.id
@@ -4173,9 +4097,6 @@ def on_text(message):
         send_message_with_retry(message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
 
 
-# =========================
-# HANDLE PHOTO
-# =========================
 @bot.message_handler(content_types=["photo", "document"])
 def on_photo_or_document(message):
     uid = message.from_user.id
@@ -4272,7 +4193,6 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
             return
     
-    # Если просто отправили фото
     try:
         file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
         photo_bytes = tg_file_bytes(file_id)
@@ -4293,9 +4213,6 @@ def on_photo_or_document(message):
         return
 
 
-# =========================
-# COMMANDS
-# =========================
 @bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
     clear_state(message.from_user.id)
@@ -4388,9 +4305,6 @@ def handle_ai_text_button(message):
     cmd_ai_text(message)
 
 
-# =========================
-# GRACEFUL SHUTDOWN
-# =========================
 def signal_handler(sig, frame):
     logger.info("Shutting down gracefully...")
     try:
@@ -4403,9 +4317,6 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
-# =========================
-# MAIN
-# =========================
 if __name__ == "__main__":
     logger.info("Starting bot...")
     try:
