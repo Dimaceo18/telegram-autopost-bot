@@ -2917,7 +2917,8 @@ def on_threads_action(c):
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("post_channel:"))
 def on_post_channel_select(c):
-    uid = c.from_user.id    _, post_type, channel_type = c.data.split(":", 2)
+    uid = c.from_user.id
+    _, post_type, channel_type = c.data.split(":", 2)
     st = user_state.get(uid) or {}
     
     if channel_type == "cancel":
@@ -3099,7 +3100,6 @@ def on_post_channel_select(c):
                 f"❌ Не удалось опубликовать: {e}",
                 reply_markup=main_menu_kb()
             )
-
 
 # =========================
 # SELECT CHANNEL CALLBACK (исправленный - отправляет полный текст)
