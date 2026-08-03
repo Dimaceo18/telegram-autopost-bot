@@ -1514,26 +1514,31 @@ async def process_text_with_deepseek(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка при обращении к API: {str(e)}"
 
+# =========================
+# ОБНОВЛЕННАЯ ФУНКЦИЯ ДЛЯ TELEGRAM (с поддержкой коротких текстов и лимитом заголовка)
+# =========================
 async def process_text_with_deepseek_tg(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
+    # Проверяем длину текста
     text_length = len(text)
     
     if text_length <= 200:
+        # Для коротких текстов - перефразировать, сохраняя длину
         prompt = f"""Ты редактор новостного канала. Перефразируй этот короткий текст, сохранив его смысл и длину (не более {text_length + 20} символов).
 
 Правила:
 1. Сохрани ВСЮ ключевую информацию
 2. НЕ изменяй суть текста
 3. Сделай текст более живым и читаемым
-4. Заголовок сделай жирным с помощью <b> и отдельной строкой
+4. Заголовок сделай жирным с помощью <b> и отдельной строкой. Заголовок НЕ БОЛЕЕ 150 СИМВОЛОВ!
 5. НЕ используй эмодзи в тексте (эмодзи добавится автоматически)
 6. НЕ используй многоточие
 7. Сохрани примерно ту же длину текста
 
 Формат:
-<b>Заголовок</b>
+<b>Заголовок (не более 150 символов)</b>
 
 Текст новости...
 
@@ -1550,7 +1555,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                     json={
                         "model": "deepseek-chat",
                         "messages": [
-                            {"role": "system", "content": "Ты редактор новостного канала. Перефразируй короткий текст, сохраняя смысл и длину. Отвечай только готовым постом. Используй <b> для заголовка."},
+                            {"role": "system", "content": "Ты редактор новостного канала. Перефразируй короткий текст, сохраняя смысл и длину. Заголовок не более 150 символов. Отвечай только готовым постом. Используй <b> для заголовка."},
                             {"role": "user", "content": prompt}
                         ],
                         "temperature": 0.4,
@@ -1569,9 +1574,22 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                         lines = result.split('\n')
                         if lines:
                             first_line = lines[0].strip()
-                            if first_line and len(first_line) < 100:
+                            if first_line and len(first_line) < 150:
+                                result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                            else:
+                                # Если первая строка длиннее 150 символов, обрезаем
+                                first_line = first_line[:147] + "..."
                                 result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
                     
+                    # Проверяем длину заголовка
+                    title_match = re.search(r'<b>(.*?)</b>', result)
+                    if title_match:
+                        title = title_match.group(1)
+                        if len(title) > 150:
+                            new_title = title[:147] + "..."
+                            result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
+                    
+                    # Добавляем эмодзи
                     emoji = detect_topic_emoji(result)
                     result = f"{emoji} {result}"
                     
@@ -1580,18 +1598,19 @@ async def process_text_with_deepseek_tg(text: str) -> str:
             except Exception as e:
                 logger.error(f"Error processing short text: {e}")
     
+    # Для длинных текстов - стандартное сокращение до 500 символов
     prompt = f"""Ты редактор новостного канала. Сократи текст новости до 500 символов.
 
 Правила:
 1. Текст не более 500 символов
 2. Сохрани ВСЮ ключевую информацию
-3. Заголовок сделай жирным с помощью <b> и отдельной строкой
+3. Заголовок сделай жирным с помощью <b> и отдельной строкой. Заголовок НЕ БОЛЕЕ 150 СИМВОЛОВ!
 4. Разбей текст на абзацы
 5. НЕ используй эмодзи в тексте
 6. НЕ используй многоточие
 
 Формат:
-<b>Заголовок</b>
+<b>Заголовок (не более 150 символов)</b>
 
 Текст новости...
 
@@ -1608,7 +1627,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного канала. Сокращай новости до 500 символов. Отвечай только готовым постом. Используй <b> для заголовка."},
+                        {"role": "system", "content": "Ты редактор новостного канала. Сокращай новости до 500 символов. Заголовок не более 150 символов. Отвечай только готовым постом. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.2,
@@ -1627,8 +1646,19 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                     lines = result.split('\n')
                     if lines:
                         first_line = lines[0].strip()
-                        if first_line and len(first_line) < 100:
+                        if first_line and len(first_line) < 150:
                             result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                        else:
+                            first_line = first_line[:147] + "..."
+                            result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                
+                # Проверяем длину заголовка
+                title_match = re.search(r'<b>(.*?)</b>', result)
+                if title_match:
+                    title = title_match.group(1)
+                    if len(title) > 150:
+                        new_title = title[:147] + "..."
+                        result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                 
                 if len(result) > 500:
                     cut_point = 500
@@ -1655,26 +1685,32 @@ async def process_text_with_deepseek_tg(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
 
+
+# =========================
+# ОБНОВЛЕННАЯ ФУНКЦИЯ ДЛЯ THREADS (с поддержкой коротких текстов и лимитом заголовка)
+# =========================
 async def process_text_with_deepseek_threads(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
+    # Проверяем длину текста
     text_length = len(text)
     
     if text_length <= 200:
+        # Для коротких текстов - перефразировать, сохраняя длину
         prompt = f"""Ты редактор для Threads. Перефразируй этот короткий текст, сохранив его смысл и длину (не более {text_length + 20} символов).
 
 Правила:
 1. Сохрани ВСЮ ключевую информацию
 2. НЕ изменяй суть текста
 3. Сделай текст более живым и вовлекающим для Threads
-4. Заголовок сделай жирным с помощью <b> и отдельной строкой
+4. Заголовок сделай жирным с помощью <b> и отдельной строкой. Заголовок НЕ БОЛЕЕ 150 СИМВОЛОВ!
 5. НЕ используй эмодзи в тексте (эмодзи добавится автоматически)
 6. НЕ используй многоточие
 7. Сохрани примерно ту же длину текста
 
 Формат:
-<b>Заголовок</b>
+<b>Заголовок (не более 150 символов)</b>
 
 Текст новости...
 
@@ -1691,7 +1727,7 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                     json={
                         "model": "deepseek-chat",
                         "messages": [
-                            {"role": "system", "content": "Ты редактор для Threads. Перефразируй короткий текст, сохраняя смысл и длину. Отвечай только готовым постом. Используй <b> для заголовка."},
+                            {"role": "system", "content": "Ты редактор для Threads. Перефразируй короткий текст, сохраняя смысл и длину. Заголовок не более 150 символов. Отвечай только готовым постом. Используй <b> для заголовка."},
                             {"role": "user", "content": prompt}
                         ],
                         "temperature": 0.5,
@@ -1710,8 +1746,19 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                         lines = result.split('\n')
                         if lines:
                             first_line = lines[0].strip()
-                            if first_line and len(first_line) < 80:
+                            if first_line and len(first_line) < 150:
                                 result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                            else:
+                                first_line = first_line[:147] + "..."
+                                result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                    
+                    # Проверяем длину заголовка
+                    title_match = re.search(r'<b>(.*?)</b>', result)
+                    if title_match:
+                        title = title_match.group(1)
+                        if len(title) > 150:
+                            new_title = title[:147] + "..."
+                            result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                     
                     emoji = detect_topic_emoji(result)
                     result = f"{emoji} {result}"
@@ -1721,18 +1768,19 @@ async def process_text_with_deepseek_threads(text: str) -> str:
             except Exception as e:
                 logger.error(f"Error processing short text for Threads: {e}")
     
+    # Для длинных текстов - стандартное сокращение до 400 символов
     prompt = f"""Ты редактор для Threads. Сократи текст новости до 400 символов.
 
 Правила:
 1. Текст не более 400 символов
 2. Сохрани ВСЮ ключевую информацию
-3. Заголовок сделай жирным с помощью <b> и отдельной строкой
+3. Заголовок сделай жирным с помощью <b> и отдельной строкой. Заголовок НЕ БОЛЕЕ 150 СИМВОЛОВ!
 4. Разбей текст на абзацы
 5. НЕ используй эмодзи в тексте
 6. НЕ используй многоточие
 
 Формат:
-<b>Заголовок</b>
+<b>Заголовок (не более 150 символов)</b>
 
 Текст новости...
 
@@ -1749,7 +1797,7 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор для Threads. Сокращай новости до 400 символов. Отвечай только готовым постом. Используй <b> для заголовка."},
+                        {"role": "system", "content": "Ты редактор для Threads. Сокращай новости до 400 символов. Заголовок не более 150 символов. Отвечай только готовым постом. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.2,
@@ -1768,8 +1816,19 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                     lines = result.split('\n')
                     if lines:
                         first_line = lines[0].strip()
-                        if first_line and len(first_line) < 80:
+                        if first_line and len(first_line) < 150:
                             result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                        else:
+                            first_line = first_line[:147] + "..."
+                            result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                
+                # Проверяем длину заголовка
+                title_match = re.search(r'<b>(.*?)</b>', result)
+                if title_match:
+                    title = title_match.group(1)
+                    if len(title) > 150:
+                        new_title = title[:147] + "..."
+                        result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                 
                 if len(result) > 400:
                     cut_point = 400
@@ -1808,12 +1867,12 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
 Правила:
 1. Сохрани ВСЮ ключевую информацию
 2. НЕ изменяй суть текста
-3. Заголовок: новый, сделай жирным с помощью <b>
+3. Заголовок: новый, сделай жирным с помощью <b> и отдельной строкой. Заголовок НЕ БОЛЕЕ 150 СИМВОЛОВ!
 4. НЕ используй эмодзи в тексте
 5. НЕ используй многоточие
 
 Формат:
-<b>Новый заголовок</b>
+<b>Новый заголовок (не более 150 символов)</b>
 
 Текст новости...
 
@@ -1830,7 +1889,7 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                     json={
                         "model": "deepseek-chat",
                         "messages": [
-                            {"role": "system", "content": "Ты редактор новостного канала. Переделывай короткие тексты в новые посты, сохраняя смысл и длину. Используй <b> для заголовка."},
+                            {"role": "system", "content": "Ты редактор новостного канала. Переделывай короткие тексты в новые посты, сохраняя смысл и длину. Заголовок не более 150 символов. Используй <b> для заголовка."},
                             {"role": "user", "content": prompt}
                         ],
                         "temperature": 0.4,
@@ -1849,8 +1908,19 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                         lines = result.split('\n')
                         if lines:
                             first_line = lines[0].strip()
-                            if first_line and len(first_line) < 100:
+                            if first_line and len(first_line) < 150:
                                 result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                            else:
+                                first_line = first_line[:147] + "..."
+                                result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                    
+                    # Проверяем длину заголовка
+                    title_match = re.search(r'<b>(.*?)</b>', result)
+                    if title_match:
+                        title = title_match.group(1)
+                        if len(title) > 150:
+                            new_title = title[:147] + "..."
+                            result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                     
                     emoji = detect_topic_emoji(result)
                     result = f"{emoji} {result}"
@@ -1865,12 +1935,12 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
 Правила:
 1. Текст не более 500 символов
 2. Сохрани ВСЮ ключевую информацию
-3. Заголовок: новый, сделай жирным с помощью <b>
+3. Заголовок: новый, сделай жирным с помощью <b> и отдельной строкой. Заголовок НЕ БОЛЕЕ 150 СИМВОЛОВ!
 4. НЕ используй эмодзи в тексте
 5. НЕ используй многоточие
 
 Формат:
-<b>Новый заголовок</b>
+<b>Новый заголовок (не более 150 символов)</b>
 
 Текст новости...
 
@@ -1887,7 +1957,7 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор новостного канала. Переделывай новости в новые посты до 500 символов. Используй <b> для заголовка."},
+                        {"role": "system", "content": "Ты редактор новостного канала. Переделывай новости в новые посты до 500 символов. Заголовок не более 150 символов. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.3,
@@ -1906,8 +1976,19 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                     lines = result.split('\n')
                     if lines:
                         first_line = lines[0].strip()
-                        if first_line and len(first_line) < 100:
+                        if first_line and len(first_line) < 150:
                             result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                        else:
+                            first_line = first_line[:147] + "..."
+                            result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                
+                # Проверяем длину заголовка
+                title_match = re.search(r'<b>(.*?)</b>', result)
+                if title_match:
+                    title = title_match.group(1)
+                    if len(title) > 150:
+                        new_title = title[:147] + "..."
+                        result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                 
                 if len(result) > 500:
                     cut_point = 500
@@ -1946,12 +2027,12 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 Правила:
 1. Сохрани ВСЮ ключевую информацию
 2. НЕ изменяй суть текста
-3. Заголовок: новый, интригующий, сделай жирным с помощью <b>
+3. Заголовок: новый, интригующий, сделай жирным с помощью <b> и отдельной строкой. Заголовок НЕ БОЛЕЕ 150 СИМВОЛОВ!
 4. НЕ используй эмодзи в тексте
 5. НЕ используй многоточие
 
 Формат:
-<b>Новый заголовок</b>
+<b>Новый заголовок (не более 150 символов)</b>
 
 Текст новости...
 
@@ -1968,7 +2049,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                     json={
                         "model": "deepseek-chat",
                         "messages": [
-                            {"role": "system", "content": "Ты редактор для Threads. Переделывай короткие тексты в новые посты, сохраняя смысл и длину. Используй <b> для заголовка."},
+                            {"role": "system", "content": "Ты редактор для Threads. Переделывай короткие тексты в новые посты, сохраняя смысл и длину. Заголовок не более 150 символов. Используй <b> для заголовка."},
                             {"role": "user", "content": prompt}
                         ],
                         "temperature": 0.5,
@@ -1987,8 +2068,19 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                         lines = result.split('\n')
                         if lines:
                             first_line = lines[0].strip()
-                            if first_line and len(first_line) < 80:
+                            if first_line and len(first_line) < 150:
                                 result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                            else:
+                                first_line = first_line[:147] + "..."
+                                result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                    
+                    # Проверяем длину заголовка
+                    title_match = re.search(r'<b>(.*?)</b>', result)
+                    if title_match:
+                        title = title_match.group(1)
+                        if len(title) > 150:
+                            new_title = title[:147] + "..."
+                            result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                     
                     emoji = detect_topic_emoji(result)
                     result = f"{emoji} {result}"
@@ -2003,12 +2095,12 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 Правила:
 1. Текст не более 400 символов
 2. Сохрани ВСЮ ключевую информацию
-3. Заголовок: новый, интригующий, сделай жирным с помощью <b>
+3. Заголовок: новый, интригующий, сделай жирным с помощью <b> и отдельной строкой. Заголовок НЕ БОЛЕЕ 150 СИМВОЛОВ!
 4. НЕ используй эмодзи в тексте
 5. НЕ используй многоточие
 
 Формат:
-<b>Новый заголовок</b>
+<b>Новый заголовок (не более 150 символов)</b>
 
 Текст новости...
 
@@ -2025,7 +2117,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": [
-                        {"role": "system", "content": "Ты редактор для Threads. Переделывай новости в новые посты до 400 символов. Используй <b> для заголовка."},
+                        {"role": "system", "content": "Ты редактор для Threads. Переделывай новости в новые посты до 400 символов. Заголовок не более 150 символов. Используй <b> для заголовка."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.3,
@@ -2044,8 +2136,19 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                     lines = result.split('\n')
                     if lines:
                         first_line = lines[0].strip()
-                        if first_line and len(first_line) < 80:
+                        if first_line and len(first_line) < 150:
                             result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                        else:
+                            first_line = first_line[:147] + "..."
+                            result = f"<b>{first_line}</b>\n\n" + '\n'.join(lines[1:]).strip()
+                
+                # Проверяем длину заголовка
+                title_match = re.search(r'<b>(.*?)</b>', result)
+                if title_match:
+                    title = title_match.group(1)
+                    if len(title) > 150:
+                        new_title = title[:147] + "..."
+                        result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                 
                 if len(result) > 400:
                     cut_point = 400
@@ -2814,8 +2917,7 @@ def on_threads_action(c):
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("post_channel:"))
 def on_post_channel_select(c):
-    uid = c.from_user.id
-    _, post_type, channel_type = c.data.split(":", 2)
+    uid = c.from_user.id    _, post_type, channel_type = c.data.split(":", 2)
     st = user_state.get(uid) or {}
     
     if channel_type == "cancel":
@@ -3000,7 +3102,7 @@ def on_post_channel_select(c):
 
 
 # =========================
-# SELECT CHANNEL CALLBACK
+# SELECT CHANNEL CALLBACK (исправленный - отправляет полный текст)
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("select_channel:"))
 def on_select_channel(c):
@@ -3018,7 +3120,11 @@ def on_select_channel(c):
             caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
             send_photo_with_retry(c.message.chat.id, BytesIO(st["card_bytes"]), caption=caption, parse_mode="HTML", reply_markup=preview_kb())
         elif st.get("original_text"):
-            title, body, formatted_text = format_ai_response(st.get("original_text", ""))
+            # Отправляем весь текст, а не только заголовок
+            full_text = st.get("original_text", "")
+            # Разбиваем на заголовок и тело
+            title, body = split_title_and_body(full_text)
+            formatted_text = f"<b>{html.escape(title)}</b>\n\n{html.escape(body)}" if title and body else html.escape(full_text)
             bot.send_message(c.message.chat.id, formatted_text, parse_mode="HTML", reply_markup=after_ai_kb())
         else:
             send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
@@ -3045,32 +3151,69 @@ def on_select_channel(c):
         return
     
     try:
-        if st.get("photo_bytes"):
-            send_photo_with_retry(target_channel, BytesIO(st["photo_bytes"]), caption=st.get("title", ""), parse_mode="HTML")
-        elif st.get("card_bytes"):
-            send_photo_with_retry(target_channel, BytesIO(st["card_bytes"]), caption=st.get("title", ""), parse_mode="HTML")
-        elif st.get("original_text"):
-            bot.send_message(target_channel, st.get("original_text", ""), parse_mode="HTML")
-        else:
-            bot.answer_callback_query(c.id, "❌ Нет контента для публикации")
-            return
+        # Формируем полный текст для публикации
+        full_text = st.get("original_text", "")
+        title = st.get("title", "")
+        body = st.get("body_raw", "")
         
-        bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name}")
+        # Если есть и заголовок, и тело - отправляем вместе
+        if title and body:
+            caption_text = f"<b>{html.escape(title)}</b>\n\n{html.escape(body)}"
+        elif title:
+            caption_text = f"<b>{html.escape(title)}</b>"
+        elif body:
+            caption_text = html.escape(body)
+        else:
+            caption_text = html.escape(full_text)
+        
+        # Отправляем в канал
+        if st.get("photo_bytes"):
+            send_photo_with_retry(
+                target_channel,
+                BytesIO(st["photo_bytes"]),
+                caption=caption_text,
+                parse_mode="HTML"
+            )
+            bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с фото")
+        
+        elif st.get("card_bytes"):
+            send_photo_with_retry(
+                target_channel,
+                BytesIO(st["card_bytes"]),
+                caption=caption_text,
+                parse_mode="HTML"
+            )
+            bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с фото")
+        
+        else:
+            # Только текст
+            bot.send_message(target_channel, caption_text, parse_mode="HTML")
+            bot.answer_callback_query(c.id, f"✅ Текст опубликован в {channel_name}")
+        
         try:
             bot.delete_message(c.message.chat.id, c.message.message_id)
         except:
             pass
+        
         clear_state(uid)
-        send_message_with_retry(c.message.chat.id, f"✅ Пост опубликован в канале {channel_name}!", reply_markup=main_menu_kb())
+        send_message_with_retry(
+            c.message.chat.id,
+            f"✅ Пост опубликован в канале {channel_name}!",
+            reply_markup=main_menu_kb()
+        )
         
     except Exception as e:
         logger.error(f"Error publishing to channel: {e}")
         bot.answer_callback_query(c.id, "❌ Ошибка публикации")
-        send_message_with_retry(c.message.chat.id, f"❌ Не удалось опубликовать: {e}", reply_markup=main_menu_kb())
+        send_message_with_retry(
+            c.message.chat.id,
+            f"❌ Не удалось опубликовать: {e}",
+            reply_markup=main_menu_kb()
+        )
 
 
 # =========================
-# PREVIEW ACTIONS
+# PREVIEW ACTIONS (исправленный - отправляет полный текст)
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data in ["publish", "edit_text", "cancel"])
 def on_action(call):
@@ -3081,11 +3224,23 @@ def on_action(call):
         return
     if call.data == "publish":
         try:
-            caption = build_caption_html(st.get("title", ""), st.get("body_raw", ""))
+            title = st.get("title", "")
+            body = st.get("body_raw", "")
+            
+            # Формируем полный текст
+            if title and body:
+                caption = f"<b>{html.escape(title)}</b>\n\n{html.escape(body)}"
+            elif title:
+                caption = f"<b>{html.escape(title)}</b>"
+            else:
+                caption = html.escape(body)
+            
             photo_to_send = st.get("photo_bytes")
             if photo_to_send is None:
                 photo_to_send = st.get("card_bytes")
+            
             if photo_to_send:
+                # Используем CHANNEL из ENV
                 channel = os.getenv("CHANNEL_USERNAME", "").strip()
                 if channel and not channel.startswith("@"):
                     channel = "@" + channel
@@ -3110,6 +3265,48 @@ def on_action(call):
         bot.answer_callback_query(call.id, "Отменено")
         clear_state(uid)
         send_message_with_retry(call.message.chat.id, "Отменил ❌", reply_markup=main_menu_kb())
+
+
+# =========================
+# PUBLISH TO CHANNEL (исправленный - отправляет полный текст)
+# =========================
+@bot.callback_query_handler(func=lambda c: c.data == "publish_to_channel")
+def on_publish_to_channel(c):
+    uid = c.from_user.id
+    st = user_state.get(uid) or {}
+    
+    if not st or st.get("step") not in ["waiting_action", "waiting_after_ai"]:
+        bot.answer_callback_query(c.id, "Нет активного поста. Начни с «Оформить пост» или обработай текст через ИИ.")
+        return
+    
+    if not CHANNEL_MN and not CHANNEL_CHP and not CHANNEL_AFISHA and not CHANNEL_TEST:
+        bot.answer_callback_query(c.id, "❌ Каналы не настроены")
+        send_message_with_retry(c.message.chat.id, "❌ Ни один канал для публикации не настроен.", reply_markup=main_menu_kb())
+        return
+    
+    # Сохраняем полный текст, а не только заголовок
+    if st.get("title") or st.get("body_raw"):
+        full_text = ""
+        if st.get("title"):
+            full_text += st.get("title", "")
+        if st.get("body_raw"):
+            if full_text:
+                full_text += "\n\n"
+            full_text += st.get("body_raw", "")
+        st["original_text"] = full_text
+    
+    try:
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+    except:
+        pass
+    
+    bot.answer_callback_query(c.id, "📢 Выбери канал для публикации")
+    send_message_with_retry(
+        c.message.chat.id,
+        "📢 <b>Выбери канал для публикации:</b>",
+        parse_mode="HTML",
+        reply_markup=channel_selection_kb()
+    )
 
 
 # =========================
@@ -4121,8 +4318,8 @@ def cmd_start(message):
         f"• ✨ Улучшение качества фото\n"
         f"• 💧 Водяные знаки\n"
         f"• 🤖 Текст в ИИ (сокращение до 650 символов)\n"
-        f"• 📱 Пост для ТГ (500 символов)\n"
-        f"• 📱 Пост для Тредс (400 символов)\n"
+        f"• 📱 Пост для ТГ (500 символов, заголовок до 150 символов)\n"
+        f"• 📱 Пост для Тредс (400 символов, заголовок до 150 символов)\n"
         f"• 📰 Извлечение статьи по ссылке (точное копирование)\n"
         f"• 📎 Репосты из каналов\n\n"
         f"<b>📌 Доступные каналы:</b> {channels_text}\n\n"
