@@ -3015,6 +3015,8 @@ def on_post_channel_select(c):
     elif channel_type == "probnym":
         target_channel = CHANNEL_PROBNY_MN
         channel_name = "Пробный МН"
+        # Ссылка для подписки
+        subscribe_link = "\n\n<a href='https://t.me/+eI2GN7rcsZliZGYy'>✅ Подписаться на канал</a>"
     elif channel_type == "test":
         target_channel = CHANNEL_TEST
         channel_name = "ТЕСТОВЫЙ КАНАЛ"
@@ -3031,6 +3033,10 @@ def on_post_channel_select(c):
             post_text = st.get("tg_post_text", "")
         else:
             post_text = st.get("threads_post_text", "")
+        
+        # Добавляем ссылку только для канала "Пробный МН"
+        if channel_type == "probnym" and post_text:
+            post_text = post_text + subscribe_link
         
         if not post_text:
             bot.answer_callback_query(c.id, "❌ Нет текста для публикации")
@@ -3145,9 +3151,6 @@ def on_post_channel_select(c):
             f"❌ Не удалось опубликовать: {e}",
             reply_markup=main_menu_kb()
         )
-
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("select_channel:"))
 def on_select_channel(c):
     uid = c.from_user.id
     channel_type = c.data.split(":")[1]
