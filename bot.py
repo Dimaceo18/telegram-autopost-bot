@@ -114,32 +114,15 @@ HIGHLIGHT_COLORS = {
 
 
 # =========================
-# BOT - с увеличенными таймаутами и обработкой ошибок
+# BOT
 # =========================
-# Создаем сессию с увеличенными таймаутами
-session = requests.Session()
-session.timeout = 60
-
-# Настраиваем повторные попытки
-retry_strategy = Retry(
-    total=5,
-    backoff_factor=2,
-    status_forcelist=[408, 429, 500, 502, 503, 504],
-    allowed_methods=["HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS", "TRACE"]
-)
-adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
-session.mount("http://", adapter)
-session.mount("https://", adapter)
-
-# Создаем бота с кастомной сессией
 bot = telebot.TeleBot(TOKEN)
-bot.session = session
 
 try:
     bot.remove_webhook()
     logger.info("Webhook removed")
-except Exception as e:
-    logger.warning(f"Failed to remove webhook: {e}")
+except:
+    pass
 
 user_state: Dict[int, Dict] = {}
 user_album_cache: Dict[str, Dict] = {}
@@ -300,9 +283,9 @@ def prices_menu_kb():
 
 
 # =========================
-# HELPER FUNCTIONS (с увеличенными таймаутами)
+# HELPER FUNCTIONS
 # =========================
-def send_message_with_retry(chat_id, text, parse_mode=None, reply_markup=None, max_retries=5):
+def send_message_with_retry(chat_id, text, parse_mode=None, reply_markup=None, max_retries=3):
     for attempt in range(max_retries):
         try:
             return bot.send_message(
@@ -312,9 +295,9 @@ def send_message_with_retry(chat_id, text, parse_mode=None, reply_markup=None, m
                 reply_markup=reply_markup
             )
         except Exception as e:
-            logger.error(f"Send message attempt {attempt + 1} failed: {e}")
+            logger.error(f"Attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
-                time.sleep(2 + attempt * 2)
+                time.sleep(1 + attempt)
             else:
                 try:
                     clean_text = re.sub(r'<[^>]+>', '', text)
@@ -327,19 +310,9 @@ def send_message_with_retry(chat_id, text, parse_mode=None, reply_markup=None, m
                     raise
     return None
 
-def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_markup=None, max_retries=5):
+def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_markup=None, max_retries=3):
     if caption and len(caption) > 950:
         caption = caption[:947] + "..."
-    
-    # Проверяем, что photo - это BytesIO или bytes с данными
-    if isinstance(photo, BytesIO):
-        if photo.getbuffer().nbytes == 0:
-            logger.error("Photo is empty")
-            return None
-        photo.seek(0)
-    elif isinstance(photo, bytes) and len(photo) == 0:
-        logger.error("Photo bytes are empty")
-        return None
     
     for attempt in range(max_retries):
         try:
@@ -353,7 +326,7 @@ def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_m
         except Exception as e:
             logger.error(f"Send photo attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
-                time.sleep(3 + attempt * 3)
+                time.sleep(2 + attempt * 2)
             else:
                 try:
                     return bot.send_photo(
@@ -365,14 +338,14 @@ def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_m
                     return None
     return None
 
-def send_media_group_with_retry(chat_id, media_list, max_retries=5):
+def send_media_group_with_retry(chat_id, media_list, max_retries=3):
     for attempt in range(max_retries):
         try:
             return bot.send_media_group(chat_id, media_list)
         except Exception as e:
             logger.error(f"Media group attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
-                time.sleep(3 + attempt * 3)
+                time.sleep(2 + attempt * 2)
             else:
                 for media in media_list:
                     try:
@@ -389,19 +362,15 @@ def check_file_size(file_bytes: bytes) -> bool:
     return len(file_bytes) <= MAX_FILE_SIZE
 
 def tg_file_bytes(file_id: str) -> bytes:
-    for attempt in range(3):
-        try:
-            file_info = bot.get_file(file_id)
-            file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-            r = requests.get(file_url, timeout=60)
-            r.raise_for_status()
-            return r.content
-        except Exception as e:
-            logger.error(f"Failed to download file (attempt {attempt + 1}): {e}")
-            if attempt < 2:
-                time.sleep(3)
-            else:
-                raise
+    try:
+        file_info = bot.get_file(file_id)
+        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+        r = requests.get(file_url, timeout=30)
+        r.raise_for_status()
+        return r.content
+    except Exception as e:
+        logger.error(f"Failed to download file: {e}")
+        raise
 
 def get_video_info(file_id: str, video_obj) -> Dict:
     return {
@@ -436,7 +405,7 @@ def download_fonts():
         if not os.path.exists(font_name):
             try:
                 logger.info(f"Downloading {font_name}...")
-                response = requests.get(url, timeout=60)
+                response = requests.get(url, timeout=30)
                 with open(font_name, "wb") as f:
                     f.write(response.content)
                 logger.info(f"Downloaded {font_name}")
@@ -1445,63 +1414,11 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
 
 
 # =========================
-# DETECT TOPIC EMOJI
+# ФУНКЦИИ DEEPSEEK
 # =========================
-def detect_topic_emoji(text: str) -> str:
-    text_lower = text.lower()
-    topics = {
-        "🚨": ["дтп", "авар", "пожар", "взрыв", "происшеств", "чп", "полици", "милици", "скорая", "мчс", "катастроф"],
-        "✈️": ["белавиа", "рейс", "аэропорт", "самолет", "полет", "авиа", "борт"],
-        "🚇": ["метро", "станци", "маршрут", "автобус", "троллейбус", "трамвай", "транспорт"],
-        "💳": ["банк", "технобанк", "карта", "налог", "выплат", "деньги", "финанс", "кредит"],
-        "🏷️": ["скидк", "распрод", "акци", "дешев", "бесплат", "цена", "стоимость"],
-        "🎫": ["концерт", "афиша", "выставк", "фестиваль", "мероприят", "кино", "театр"],
-        "🌦️": ["погод", "шторм", "ветер", "снег", "дожд", "гроз", "температур", "мороз", "жара"],
-        "🏥": ["больниц", "врач", "здоров", "вакцин", "лекарств", "медицин"],
-        "📱": ["смартфон", "айфон", "телефон", "гаджет", "технологи"],
-        "🚀": ["космос", "спутник", "наук", "исследован", "открыт"],
-        "🎓": ["образован", "школ", "университет", "студент", "учител", "экзамен"],
-        "⚽": ["футбол", "спорт", "хоккей", "чемпионат", "матч"],
-        "🍔": ["еда", "ресторан", "кафе", "блюд", "кулинар", "продукт"],
-        "🏠": ["строительств", "ремонт", "квартир", "жкх", "коммунал", "дом"],
-        "🌿": ["эколог", "природ", "зелен", "парк", "дерев"],
-        "💼": ["бизнес", "компани", "предприят", "рынок", "торговл", "экономик"],
-    }
-    for emoji, keywords in topics.items():
-        for keyword in keywords:
-            if keyword in text_lower:
-                return emoji
-    return "📰"
 
-
-# =========================
-# REMOVE EMOJIS
-# =========================
-def remove_emojis(text: str) -> str:
-    emoji_pattern = re.compile(
-        "["
-        "\U0001F600-\U0001F64F"
-        "\U0001F300-\U0001F5FF"
-        "\U0001F680-\U0001F6FF"
-        "\U0001F700-\U0001F77F"
-        "\U0001F780-\U0001F7FF"
-        "\U0001F800-\U0001F8FF"
-        "\U0001F900-\U0001F9FF"
-        "\U0001FA00-\U0001FA6F"
-        "\U0001FA70-\U0001FAFF"
-        "\U00002702-\U000027B0"
-        "\U000024C2-\U0001F251"
-        "\u2600-\u27BF"
-        "]+",
-        flags=re.UNICODE
-    )
-    return emoji_pattern.sub('', text)
-
-
-# =========================
-# DEEPSEEK FUNCTIONS
-# =========================
 async def process_text_with_deepseek(text: str) -> str:
+    """Обработка текста через DeepSeek AI (сокращение до ~650 символов)"""
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
@@ -1516,9 +1433,9 @@ async def process_text_with_deepseek(text: str) -> str:
 
 📌 Исходный текст:
 
-Вот текст:"""
+{text}"""
     
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.post(
                 DEEPSEEK_API_URL,
@@ -1527,7 +1444,7 @@ async def process_text_with_deepseek(text: str) -> str:
                     "model": "deepseek-chat",
                     "messages": [
                         {"role": "system", "content": "Ты редактор новостного сайта. Отвечай только готовым новостным текстом, без пояснений."},
-                        {"role": "user", "content": f"{prompt}\n\n{text}"}
+                        {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.7,
                     "max_tokens": 1000
@@ -1535,8 +1452,6 @@ async def process_text_with_deepseek(text: str) -> str:
             )
             if response.status_code == 200:
                 result = response.json()["choices"][0]["message"]["content"]
-                result = re.sub(r'^Вот обработанный новостной текст.*?:', '', result, flags=re.IGNORECASE)
-                result = re.sub(r'^Вот.*?текст.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^Вот.*?:', '', result, flags=re.IGNORECASE)
                 result = re.sub(r'^#+\s+', '', result, flags=re.MULTILINE)
                 result = result.strip()
@@ -1545,7 +1460,99 @@ async def process_text_with_deepseek(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка при обращении к API: {str(e)}"
 
+
+async def detect_emoji_with_ai(text: str) -> str:
+    """Определяет подходящий эмодзи для текста через ИИ"""
+    if not DEEPSEEK_API_KEY:
+        return detect_topic_emoji_local(text)
+    
+    prompt = f"""Определи категорию новости и выбери один подходящий эмодзи.
+
+Категории новостей:
+- ДТП, аварии, происшествия → 🚨
+- Авиация, Белавиа, рейсы → ✈️
+- Транспорт, метро, автобусы → 🚇
+- Банки, финансы, кредиты, деньги → 💳
+- Скидки, распродажи, акции → 🏷️
+- Концерты, афиша, выставки → 🎫
+- Погода, шторм, снег, дождь → 🌦️
+- Медицина, больницы, здоровье → 🏥
+- Технологии, смартфоны, гаджеты → 📱
+- Космос, наука, открытия → 🚀
+- Образование, школы, университеты → 🎓
+- Спорт, футбол, хоккей → ⚽
+- Еда, рестораны, кулинария → 🍔
+- Строительство, ремонт, ЖКХ → 🏠
+- Экология, природа, парки → 🌿
+- Бизнес, экономика, рынок → 💼
+
+Текст новости:
+{text}
+
+Верни ТОЛЬКО один эмодзи, без пояснений."""
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.post(
+                DEEPSEEK_API_URL,
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "Ты классификатор новостей. Отвечай только одним эмодзи."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 10
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()["choices"][0]["message"]["content"].strip()
+                emoji_pattern = re.compile(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F700-\U0001F77F\U0001F780-\U0001F7FF\U0001F800-\U0001F8FF\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002702-\U000027B0\U000024C2-\U0001F251\u2600-\u27BF]+')
+                if emoji_pattern.match(result):
+                    return result
+                found = emoji_pattern.search(result)
+                if found:
+                    return found.group()
+                return detect_topic_emoji_local(text)
+            else:
+                return detect_topic_emoji_local(text)
+        except Exception as e:
+            logger.error(f"Error detecting emoji with AI: {e}")
+            return detect_topic_emoji_local(text)
+
+
+def detect_topic_emoji_local(text: str) -> str:
+    """Локальное определение эмодзи (резерв)"""
+    text_lower = text.lower()
+    topics = {
+        "🚨": ["дтп", "авар", "пожар", "взрыв", "происшеств", "чп", "полици", "милици", "скорая", "мчс", "катастроф", "пострада"],
+        "✈️": ["белавиа", "рейс", "аэропорт", "самолет", "полет", "авиа", "борт"],
+        "🚇": ["метро", "станци", "маршрут", "автобус", "троллейбус", "трамвай", "транспорт", "перекрыт", "дорог"],
+        "💳": ["банк", "технобанк", "карта", "налог", "выплат", "деньги", "финанс", "кредит", "валюта", "рубль"],
+        "🏷️": ["скидк", "распрод", "акци", "дешев", "бесплат", "цена", "стоимость", "продаж"],
+        "🎫": ["концерт", "афиша", "выставк", "фестиваль", "мероприят", "кино", "театр", "билет", "аншлаг"],
+        "🌦️": ["погод", "шторм", "ветер", "снег", "дожд", "гроз", "температур", "мороз", "жара", "тепло", "холод"],
+        "🏥": ["больниц", "врач", "здоров", "вакцин", "лекарств", "медицин", "пациент", "операц"],
+        "📱": ["смартфон", "айфон", "телефон", "гаджет", "технологи", "приложен"],
+        "🚀": ["космос", "спутник", "наук", "исследован", "открыт", "изобрет"],
+        "🎓": ["образован", "школ", "университет", "студент", "учител", "экзамен", "урок", "знан"],
+        "⚽": ["футбол", "спорт", "хоккей", "чемпионат", "матч", "команд", "побед"],
+        "🍔": ["еда", "ресторан", "кафе", "блюд", "кулинар", "продукт", "вкусн"],
+        "🏠": ["строительств", "ремонт", "квартир", "жкх", "коммунал", "дом", "общежи"],
+        "🌿": ["эколог", "природ", "зелен", "парк", "дерев", "цвет"],
+        "💼": ["бизнес", "компани", "предприят", "рынок", "торговл", "экономик", "долг", "сделк"],
+    }
+    for emoji, keywords in topics.items():
+        for keyword in keywords:
+            if keyword in text_lower:
+                return emoji
+    return "📰"
+
+
 async def process_text_with_deepseek_tg(text: str) -> str:
+    """Создание поста для Telegram (до 500 символов)"""
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
@@ -1573,7 +1580,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
         
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             try:
                 response = await client.post(
                     DEEPSEEK_API_URL,
@@ -1613,7 +1620,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                             new_title = title[:147] + "..."
                             result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                     
-                    emoji = detect_topic_emoji(result)
+                    emoji = await detect_emoji_with_ai(result)
                     result = f"{emoji} {result}"
                     
                     return result
@@ -1641,7 +1648,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.post(
                 DEEPSEEK_API_URL,
@@ -1694,7 +1701,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
                         if cut_point > 10:
                             result = result[:cut_point]
                 
-                emoji = detect_topic_emoji(result)
+                emoji = await detect_emoji_with_ai(result)
                 result = f"{emoji} {result}"
                 
                 if len(result) > 500:
@@ -1706,7 +1713,9 @@ async def process_text_with_deepseek_tg(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
 
+
 async def process_text_with_deepseek_threads(text: str) -> str:
+    """Создание поста для Threads (до 400 символов)"""
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
@@ -1734,7 +1743,7 @@ async def process_text_with_deepseek_threads(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
         
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             try:
                 response = await client.post(
                     DEEPSEEK_API_URL,
@@ -1774,7 +1783,7 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                             new_title = title[:147] + "..."
                             result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                     
-                    emoji = detect_topic_emoji(result)
+                    emoji = await detect_emoji_with_ai(result)
                     result = f"{emoji} {result}"
                     
                     return result
@@ -1802,7 +1811,7 @@ async def process_text_with_deepseek_threads(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.post(
                 DEEPSEEK_API_URL,
@@ -1855,7 +1864,7 @@ async def process_text_with_deepseek_threads(text: str) -> str:
                         if cut_point > 10:
                             result = result[:cut_point]
                 
-                emoji = detect_topic_emoji(result)
+                emoji = await detect_emoji_with_ai(result)
                 result = f"{emoji} {result}"
                 
                 if len(result) > 400:
@@ -1867,7 +1876,9 @@ async def process_text_with_deepseek_threads(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
 
+
 async def process_text_with_deepseek_tg_redo(text: str) -> str:
+    """Переделка поста для Telegram"""
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
@@ -1893,7 +1904,7 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
         
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             try:
                 response = await client.post(
                     DEEPSEEK_API_URL,
@@ -1933,7 +1944,7 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                             new_title = title[:147] + "..."
                             result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                     
-                    emoji = detect_topic_emoji(result)
+                    emoji = await detect_emoji_with_ai(result)
                     result = f"{emoji} {result}"
                     
                     return result
@@ -1960,7 +1971,7 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.post(
                 DEEPSEEK_API_URL,
@@ -2013,7 +2024,7 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
                         if cut_point > 10:
                             result = result[:cut_point]
                 
-                emoji = detect_topic_emoji(result)
+                emoji = await detect_emoji_with_ai(result)
                 result = f"{emoji} {result}"
                 
                 if len(result) > 500:
@@ -2025,7 +2036,9 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
 
+
 async def process_text_with_deepseek_threads_redo(text: str) -> str:
+    """Переделка поста для Threads"""
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
@@ -2051,7 +2064,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
         
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             try:
                 response = await client.post(
                     DEEPSEEK_API_URL,
@@ -2091,7 +2104,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                             new_title = title[:147] + "..."
                             result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                     
-                    emoji = detect_topic_emoji(result)
+                    emoji = await detect_emoji_with_ai(result)
                     result = f"{emoji} {result}"
                     
                     return result
@@ -2118,7 +2131,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.post(
                 DEEPSEEK_API_URL,
@@ -2171,7 +2184,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                         if cut_point > 10:
                             result = result[:cut_point]
                 
-                emoji = detect_topic_emoji(result)
+                emoji = await detect_emoji_with_ai(result)
                 result = f"{emoji} {result}"
                 
                 if len(result) > 400:
@@ -2183,7 +2196,31 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
 
+
+def remove_emojis(text: str) -> str:
+    """Удаляет эмодзи из текста"""
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F700-\U0001F77F"
+        "\U0001F780-\U0001F7FF"
+        "\U0001F800-\U0001F8FF"
+        "\U0001F900-\U0001F9FF"
+        "\U0001FA00-\U0001FA6F"
+        "\U0001FA70-\U0001FAFF"
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "\u2600-\u27BF"
+        "]+",
+        flags=re.UNICODE
+    )
+    return emoji_pattern.sub('', text)
+
+
 async def extract_article_content(url: str) -> Dict[str, any]:
+    """Извлечение текста статьи по ссылке"""
     if not DEEPSEEK_API_KEY:
         return {
             "text": "❌ API ключ DeepSeek не настроен. Добавьте DEEPSEEK_API_KEY в переменные окружения.",
@@ -2212,7 +2249,7 @@ URL статьи: {url}
 Верни только текст статьи, без пояснений.
 """
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 DEEPSEEK_API_URL,
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
@@ -2451,6 +2488,10 @@ def build_caption_html(title: str, body: str, max_length: int = 950) -> str:
     
     return caption
 
+
+# =========================
+# ОБРАБОТКА АЛЬБОМОВ
+# =========================
 def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
     time.sleep(2)
     if media_group_id not in user_album_cache:
@@ -2470,6 +2511,7 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
         st["original_text"] = caption
         st["original_text_for_ai"] = caption
     
+    # СОХРАНЯЕМ ВСЕ МЕДИАФАЙЛЫ
     st["media_group"] = {"photos": photos, "videos": videos}
     
     if photos:
@@ -3676,17 +3718,27 @@ def on_article_action(c):
             pass
 
 
+# =========================
+# ОБРАБОТЧИК ПЕРЕСЛАННЫХ СООБЩЕНИЙ
+# =========================
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
                      func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
 def handle_forwarded_message(message):
     uid = message.from_user.id
+    
+    # Получаем текст из caption или text
+    original_text = ""
+    if message.caption:
+        original_text = message.caption
+    elif message.text:
+        original_text = message.text
     
     if hasattr(message, 'media_group_id') and message.media_group_id:
         media_group_id = message.media_group_id
         
         if media_group_id not in user_album_cache:
             user_album_cache[media_group_id] = {
-                "photos": [], "videos": [], "caption": "",
+                "photos": [], "videos": [], "caption": original_text,
                 "start_time": time.time(), "message_id": message.message_id, "chat_id": message.chat.id
             }
         
@@ -3706,17 +3758,8 @@ def handle_forwarded_message(message):
             except Exception as e:
                 logger.error(f"Error extracting video from album: {e}")
         
-        if message.caption:
-            user_album_cache[media_group_id]["caption"] = message.caption
-        
         threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, True), daemon=True).start()
         return
-    
-    original_text = ""
-    if message.text:
-        original_text = message.text
-    elif message.caption:
-        original_text = message.caption
     
     source_info = ""
     source_url = ""
@@ -3788,6 +3831,9 @@ def handle_forwarded_message(message):
         parse_mode="HTML", reply_markup=repost_action_kb())
 
 
+# =========================
+# ОБРАБОТЧИК ССЫЛОК НА СТАТЬИ
+# =========================
 @bot.message_handler(func=lambda message: re.search(r'https?://[^\s]+', message.text) and not re.search(r't\.me/', message.text))
 def handle_article_link(message):
     uid = message.from_user.id
@@ -3928,6 +3974,9 @@ def handle_article_link(message):
         loop.close()
 
 
+# =========================
+# ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ
+# =========================
 @bot.message_handler(content_types=["text"])
 def on_text(message):
     uid = message.from_user.id
@@ -4128,7 +4177,10 @@ def on_text(message):
         send_message_with_retry(message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
 
 
-@bot.message_handler(content_types=["photo", "document"])
+# =========================
+# ОБРАБОТЧИК ФОТО/ВИДЕО
+# =========================
+@bot.message_handler(content_types=["photo", "video", "document"])
 def on_photo_or_document(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
@@ -4137,7 +4189,7 @@ def on_photo_or_document(message):
         media_group_id = message.media_group_id
         if media_group_id not in user_album_cache:
             user_album_cache[media_group_id] = {
-                "photos": [], "videos": [], "caption": "",
+                "photos": [], "videos": [], "caption": message.caption or "",
                 "start_time": time.time(), "message_id": message.message_id, "chat_id": message.chat.id
             }
         if message.photo:
@@ -4148,7 +4200,13 @@ def on_photo_or_document(message):
                     user_album_cache[media_group_id]["photos"].append(photo_bytes)
             except Exception as e:
                 logger.error(f"Error extracting photo from album: {e}")
-        if message.caption:
+        if message.video:
+            try:
+                video_info = get_video_info(message.video.file_id, message.video)
+                user_album_cache[media_group_id]["videos"].append(video_info)
+            except Exception as e:
+                logger.error(f"Error extracting video from album: {e}")
+        if message.caption and not user_album_cache[media_group_id]["caption"]:
             user_album_cache[media_group_id]["caption"] = message.caption
         threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, False), daemon=True).start()
         return
@@ -4195,55 +4253,53 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
             return
     
-    if st.get("step") in ["waiting_photo_am2", "waiting_photo_fdr_post", "waiting_photo_fdr_story", "waiting_photo"]:
-        try:
-            file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
+    # Сохраняем фото/видео для оформления
+    try:
+        if message.photo:
+            file_id = message.photo[-1].file_id
             photo_bytes = tg_file_bytes(file_id)
             if not check_file_size(photo_bytes):
                 bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
                 return
             st["photo_bytes"] = photo_bytes
             st["saved_photo_bytes"] = photo_bytes
-            
-            if st.get("step") == "waiting_photo_am2":
-                st["step"] = "waiting_text_position_am2"
-                bot.reply_to(message, "📸 Фото сохранено!\n\n📐 <b>Выбери расположение текста:</b>", parse_mode="HTML", reply_markup=text_position_kb_am2())
-            elif st.get("step") == "waiting_photo_fdr_post":
-                st["step"] = "waiting_title_fdr_post"
-                bot.reply_to(message, f"📸 Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b>:", parse_mode="HTML")
-            elif st.get("step") == "waiting_photo_fdr_story":
-                st["step"] = "waiting_title_fdr"
-                bot.reply_to(message, f"📸 Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b> для сторис:", parse_mode="HTML")
-            else:
-                st["step"] = "waiting_title"
-                bot.reply_to(message, f"📸 Фото сохранено!\n\nТеперь отправь <b>ЗАГОЛОВОК</b>:", parse_mode="HTML")
-            user_state[uid] = st
-            return
-        except Exception as e:
-            logger.error(f"Error processing photo: {e}")
-            bot.reply_to(message, f"❌ Ошибка: {e}")
-            return
-    
-    try:
-        file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
-        photo_bytes = tg_file_bytes(file_id)
-        if not check_file_size(photo_bytes):
-            bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
-            return
+            st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
+            st["media_group"]["photos"].append(photo_bytes)
+            if message.caption:
+                st["original_text"] = message.caption
+                st["original_text_for_ai"] = message.caption
+                title, body = split_title_and_body(message.caption)
+                st["title"] = title
+                st["body_raw"] = body
         
-        st["photo_bytes"] = photo_bytes
-        st["saved_photo_bytes"] = photo_bytes
+        if message.video:
+            video_info = get_video_info(message.video.file_id, message.video)
+            st["video_info"] = video_info
+            st["video_file_id"] = message.video.file_id
+            st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
+            st["media_group"]["videos"].append(video_info)
+            if message.caption:
+                st["original_text"] = message.caption
+                st["original_text_for_ai"] = message.caption
+                title, body = split_title_and_body(message.caption)
+                st["title"] = title
+                st["body_raw"] = body
+            logger.info(f"Saved video for user {uid}")
+        
         st["step"] = "waiting_template"
         user_state[uid] = st
         
-        bot.reply_to(message, "📸 Фото сохранено!\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
+        bot.reply_to(message, "📸 Медиа сохранено!\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
         return
     except Exception as e:
-        logger.error(f"Error processing photo: {e}")
+        logger.error(f"Error processing media: {e}")
         bot.reply_to(message, f"❌ Ошибка: {e}")
         return
 
 
+# =========================
+# КОМАНДЫ
+# =========================
 @bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
     clear_state(message.from_user.id)
@@ -4336,6 +4392,9 @@ def handle_ai_text_button(message):
     cmd_ai_text(message)
 
 
+# =========================
+# GRACEFUL SHUTDOWN
+# =========================
 def signal_handler(sig, frame):
     logger.info("Shutting down gracefully...")
     try:
@@ -4348,6 +4407,9 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
+# =========================
+# MAIN
+# =========================
 if __name__ == "__main__":
     logger.info("Starting bot...")
     try:
@@ -4358,12 +4420,12 @@ if __name__ == "__main__":
         for attempt in range(3):
             try:
                 bot.remove_webhook()
-                time.sleep(2)
+                time.sleep(1)
                 logger.info(f"Webhook removed (attempt {attempt + 1})")
                 break
             except Exception as e:
                 logger.warning(f"Failed to remove webhook (attempt {attempt + 1}): {e}")
-                time.sleep(3)
+                time.sleep(2)
         
         http_thread = threading.Thread(target=run_http_server, daemon=True)
         http_thread.start()
