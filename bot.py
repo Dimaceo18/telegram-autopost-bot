@@ -3303,14 +3303,14 @@ def on_publish_to_channel(c):
     uid = c.from_user.id
     st = user_state.get(uid) or {}
     
-    if not st or st.get("step") not in ["waiting_action", "waiting_after_ai"]:
+       if not st or st.get("step") not in ["waiting_action", "waiting_after_ai"]:
         bot.answer_callback_query(c.id, "Нет активного поста. Начни с «Оформить пост» или обработай текст через ИИ.")
         return
     
     if not CHANNEL_MN and not CHANNEL_CHP and not CHANNEL_AFISHA and not CHANNEL_PROBNY_MN and not CHANNEL_TEST:
-    bot.answer_callback_query(c.id, "❌ Каналы не настроены")  <- здесь 4 пробела (или 8, в зависимости от уровня)
-    send_message_with_retry(c.message.chat.id, "❌ Ни один канал для публикации не настроен.", reply_markup=main_menu_kb())
-    return
+        bot.answer_callback_query(c.id, "❌ Каналы не настроены")
+        send_message_with_retry(c.message.chat.id, "❌ Ни один канал для публикации не настроен.", reply_markup=main_menu_kb())
+        return
     
     if st.get("title") or st.get("body_raw"):
         full_text = ""
