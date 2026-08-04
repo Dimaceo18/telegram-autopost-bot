@@ -2138,8 +2138,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
                         result = result.replace(f"<b>{title}</b>", f"<b>{new_title}</b>")
                 
                 if len(result) > 400:
-                    cut_point = 400                    
-                    while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
+                    cut_point = 400                    while cut_point > 0 and result[cut_point] not in ['.', '!', '?', '\n']:
                         cut_point -= 1
                     if cut_point > 10:
                         result = result[:cut_point + 1]
