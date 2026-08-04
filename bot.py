@@ -238,7 +238,7 @@ def preview_kb():
     )
     return kb
 
-ddef channel_selection_kb():
+def channel_selection_kb():
     kb = InlineKeyboardMarkup(row_width=1)
     if CHANNEL_MN:
         kb.add(InlineKeyboardButton("📰 MINSK NEWS", callback_data="select_channel:mn"))
