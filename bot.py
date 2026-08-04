@@ -432,20 +432,61 @@ def clean_markdown(text: str) -> str:
     return text.strip()
 
 def split_title_and_body(text: str) -> Tuple[str, str]:
+    """Разделяет текст на заголовок и тело."""
     if not text:
         return "", ""
     text = text.strip()
+    
+    # Если есть перенос строки - первая строка заголовок
     if '\n' in text:
         lines = text.split('\n')
         title = lines[0].strip()
         body = '\n'.join(lines[1:]).strip()
         return title, body
+    
+    # Если текст длинный и есть точка с пробелом - разделяем по первому предложению
     if len(text) > 100 and '. ' in text:
         parts = text.split('. ', 1)
         title = (parts[0] + '.').strip()
         body = parts[1].strip() if len(parts) > 1 else ""
         return title, body
+    
+    # Иначе весь текст как заголовок
     return text, ""
+
+def extract_title_from_text(text: str) -> str:
+    """Извлекает заголовок из текста, удаляя эмодзи и лишние символы."""
+    if not text:
+        return ""
+    
+    # Удаляем эмодзи
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F700-\U0001F77F"
+        "\U0001F780-\U0001F7FF"
+        "\U0001F800-\U0001F8FF"
+        "\U0001F900-\U0001F9FF"
+        "\U0001FA00-\U0001FA6F"
+        "\U0001FA70-\U0001FAFF"
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "\u2600-\u27BF"
+        "]+",
+        flags=re.UNICODE
+    )
+    clean_text = emoji_pattern.sub('', text).strip()
+    
+    # Разделяем на заголовок и тело
+    title, body = split_title_and_body(clean_text)
+    
+    # Если заголовок слишком длинный - обрезаем
+    if len(title) > 150:
+        title = title[:147] + "..."
+    
+    return title
 
 def format_ai_response(text: str) -> Tuple[str, str, str]:
     text = re.sub(r'^#+\s*', '', text)
@@ -2600,10 +2641,22 @@ def on_repost_action(c):
     st = user_state.get(uid) or {}
     
     if action == "design":
-        st["step"] = "waiting_template"
-        user_state[uid] = st
-        bot.answer_callback_query(c.id, "Выбери шаблон для оформления поста ✅")
-        send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления", reply_markup=template_kb())
+        # Проверяем, есть ли уже заголовок
+        if st.get("title"):
+            # Заголовок уже есть - сразу переходим к выбору шаблона
+            st["step"] = "waiting_template"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, f"📝 Использую заголовок: {st['title'][:50]}...")
+            send_message_with_retry(c.message.chat.id, 
+                f"📝 <b>Заголовок уже сохранён:</b>\n«{st['title']}»\n\nВыбери шаблон оформления:",
+                parse_mode="HTML", 
+                reply_markup=template_kb())
+        else:
+            # Заголовка нет - просим ввести
+            st["step"] = "waiting_title"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, "✏️ Введите заголовок")
+            send_message_with_retry(c.message.chat.id, "✏️ Отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
     
     elif action == "ai":
         bot.answer_callback_query(c.id, "🤖 Обрабатываю текст через ИИ...")
@@ -2772,12 +2825,26 @@ def on_ai_action(c):
     st = user_state.get(uid) or {}
     
     if action == "design":
-        if st.get("saved_photo_bytes"):
-            st["photo_bytes"] = st["saved_photo_bytes"]
-        st["step"] = "waiting_template"
-        user_state[uid] = st
-        bot.answer_callback_query(c.id, "Выбери шаблон для оформления ✅")
-        send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления", reply_markup=template_kb())
+        # Проверяем, есть ли уже заголовок
+        if st.get("title"):
+            # Заголовок уже есть - сразу переходим к выбору шаблона
+            if st.get("saved_photo_bytes"):
+                st["photo_bytes"] = st["saved_photo_bytes"]
+            st["step"] = "waiting_template"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, f"📝 Использую заголовок: {st['title'][:50]}...")
+            send_message_with_retry(c.message.chat.id, 
+                f"📝 <b>Заголовок уже сохранён:</b>\n«{st['title']}»\n\nВыбери шаблон оформления:",
+                parse_mode="HTML", 
+                reply_markup=template_kb())
+        else:
+            # Заголовка нет - просим ввести
+            if st.get("saved_photo_bytes"):
+                st["photo_bytes"] = st["saved_photo_bytes"]
+            st["step"] = "waiting_title"
+            user_state[uid] = st
+            bot.answer_callback_query(c.id, "✏️ Введите заголовок")
+            send_message_with_retry(c.message.chat.id, "✏️ Отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
     
     elif action == "watermark":
         if st.get("photo_bytes") or st.get("saved_photo_bytes"):
@@ -3426,12 +3493,34 @@ def on_tpl(c):
     
     if tpl in ["MN", "CHP", "AM", "MN_TG", "MN2"]:
         if has_photo:
-            st["step"] = "waiting_text_position"
-            user_state[uid] = st
-            template_names = {"MN": "МН", "AM": "АМ", "MN_TG": "МН ТГ", "CHP": "ЧП ВМ", "MN2": "МН 2"}
-            template_name = template_names.get(tpl, tpl)
-            bot.answer_callback_query(c.id, f"Шаблон {template_name} выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"📰 Выбран шаблон <b>{template_name}</b>\n\n📸 Фото уже есть!\n\nГде разместить текст?", parse_mode="HTML", reply_markup=text_position_kb())
+            # Проверяем, есть ли уже заголовок
+            if st.get("title"):
+                # Заголовок уже есть - сразу создаем карточку
+                try:
+                    card = make_card(st["photo_bytes"], st["title"], tpl, 
+                                    text_position=st.get("text_position", TEXT_POSITION_TOP),
+                                    bold_phrase=st.get("bold_phrase", ""))
+                    st["card_bytes"] = card.getvalue()
+                    st["step"] = "waiting_action"
+                    user_state[uid] = st
+                    caption = build_caption_html(st["title"], st["body_raw"])
+                    bot.delete_message(c.message.chat.id, c.message.message_id)
+                    send_photo_with_retry(c.message.chat.id, BytesIO(st["card_bytes"]), 
+                                        caption=caption, parse_mode="HTML", reply_markup=preview_kb())
+                    template_names = {"MN": "МН", "AM": "АМ", "MN_TG": "МН ТГ", "CHP": "ЧП ВМ", "MN2": "МН 2"}
+                    template_name = template_names.get(tpl, tpl)
+                    bot.answer_callback_query(c.id, f"Шаблон {template_name} выбран ✅")
+                except Exception as e:
+                    logger.error(f"Error creating card: {e}")
+                    bot.answer_callback_query(c.id, f"❌ Ошибка: {e}")
+            else:
+                # Заголовка нет - запрашиваем позицию текста
+                st["step"] = "waiting_text_position"
+                user_state[uid] = st
+                template_names = {"MN": "МН", "AM": "АМ", "MN_TG": "МН ТГ", "CHP": "ЧП ВМ", "MN2": "МН 2"}
+                template_name = template_names.get(tpl, tpl)
+                bot.answer_callback_query(c.id, f"Шаблон {template_name} выбран ✅")
+                send_message_with_retry(c.message.chat.id, f"📰 Выбран шаблон <b>{template_name}</b>\n\n📸 Фото уже есть!\n\nГде разместить текст?", parse_mode="HTML", reply_markup=text_position_kb())
         else:
             st["step"] = "waiting_photo"
             user_state[uid] = st
@@ -3442,10 +3531,18 @@ def on_tpl(c):
     
     elif tpl == "AM2":
         if has_photo:
-            st["step"] = "waiting_text_position_am2"
-            user_state[uid] = st
-            bot.answer_callback_query(c.id, "Шаблон АМ 2 выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"🎨 Выбран шаблон <b>АМ 2</b>\n\n📐 <b>Выбери расположение текста:</b>", parse_mode="HTML", reply_markup=text_position_kb_am2())
+            # Проверяем, есть ли уже заголовок
+            if st.get("title"):
+                # Заголовок уже есть - сразу переходим к выбору расположения
+                st["step"] = "waiting_text_position_am2"
+                user_state[uid] = st
+                bot.answer_callback_query(c.id, "Шаблон АМ 2 выбран ✅")
+                send_message_with_retry(c.message.chat.id, f"🎨 Выбран шаблон <b>АМ 2</b>\n\n<b>Заголовок сохранён:</b>\n«{st['title']}»\n\n📐 <b>Выбери расположение текста:</b>", parse_mode="HTML", reply_markup=text_position_kb_am2())
+            else:
+                st["step"] = "waiting_text_position_am2"
+                user_state[uid] = st
+                bot.answer_callback_query(c.id, "Шаблон АМ 2 выбран ✅")
+                send_message_with_retry(c.message.chat.id, f"🎨 Выбран шаблон <b>АМ 2</b>\n\n📐 <b>Выбери расположение текста:</b>", parse_mode="HTML", reply_markup=text_position_kb_am2())
         else:
             st["step"] = "waiting_photo_am2"
             user_state[uid] = st
@@ -3454,10 +3551,18 @@ def on_tpl(c):
     
     elif tpl == "FDR_POST":
         if has_photo:
-            st["step"] = "waiting_title_fdr_post"
-            user_state[uid] = st
-            bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"💜 Выбран шаблон <b>Пост ФДР</b>\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:", parse_mode="HTML")
+            # Проверяем, есть ли уже заголовок
+            if st.get("title"):
+                # Заголовок уже есть - просим только выделение
+                st["step"] = "waiting_highlight_phrase_fdr_post"
+                user_state[uid] = st
+                bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
+                send_message_with_retry(c.message.chat.id, f"💜 Выбран шаблон <b>Пост ФДР</b>\n\n<b>Заголовок сохранён:</b>\n«{st['title']}»\n\n✏️ Отправь слова для выделения цветом (через пробел):", parse_mode="HTML")
+            else:
+                st["step"] = "waiting_title_fdr_post"
+                user_state[uid] = st
+                bot.answer_callback_query(c.id, "Шаблон 'Пост ФДР' выбран ✅")
+                send_message_with_retry(c.message.chat.id, f"💜 Выбран шаблон <b>Пост ФДР</b>\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:", parse_mode="HTML")
         else:
             st["step"] = "waiting_photo_fdr_post"
             user_state[uid] = st
@@ -3466,10 +3571,18 @@ def on_tpl(c):
     
     elif tpl == "FDR_STORY":
         if has_photo:
-            st["step"] = "waiting_title_fdr"
-            user_state[uid] = st
-            bot.answer_callback_query(c.id, "Шаблон 'Сторис ФДР' выбран ✅")
-            send_message_with_retry(c.message.chat.id, f"📱 Выбран шаблон <b>Сторис ФДР</b>\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b> для сторис:", parse_mode="HTML")
+            # Проверяем, есть ли уже заголовок
+            if st.get("title"):
+                # Заголовок уже есть - просим только тело текста
+                st["step"] = "waiting_body_fdr"
+                user_state[uid] = st
+                bot.answer_callback_query(c.id, "Шаблон 'Сторис ФДР' выбран ✅")
+                send_message_with_retry(c.message.chat.id, f"📱 Выбран шаблон <b>Сторис ФДР</b>\n\n<b>Заголовок сохранён:</b>\n«{st['title']}»\n\n✏️ Теперь отправь основной текст для сторис:", parse_mode="HTML")
+            else:
+                st["step"] = "waiting_title_fdr"
+                user_state[uid] = st
+                bot.answer_callback_query(c.id, "Шаблон 'Сторис ФДР' выбран ✅")
+                send_message_with_retry(c.message.chat.id, f"📱 Выбран шаблон <b>Сторис ФДР</b>\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b> для сторис:", parse_mode="HTML")
         else:
             st["step"] = "waiting_photo_fdr_story"
             user_state[uid] = st
@@ -3490,18 +3603,33 @@ def on_text_position(c):
     st = user_state.get(uid) or {}
     st["text_position"] = position
     
-    if st.get("photo_bytes"):
+    # Проверяем, есть ли уже заголовок
+    if st.get("title"):
+        # Заголовок уже есть - сразу создаем карточку
+        try:
+            card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), 
+                            text_position=position,
+                            bold_phrase=st.get("bold_phrase", ""))
+            st["card_bytes"] = card.getvalue()
+            st["step"] = "waiting_action"
+            user_state[uid] = st
+            caption = build_caption_html(st["title"], st["body_raw"])
+            position_text = "сверху" if position == "top" else "снизу"
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+            send_photo_with_retry(c.message.chat.id, BytesIO(st["card_bytes"]), 
+                                caption=f"✅ Текст расположен <b>{position_text}</b>\n\n{caption}", 
+                                parse_mode="HTML", reply_markup=preview_kb())
+            bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
+        except Exception as e:
+            logger.error(f"Error creating card: {e}")
+            bot.answer_callback_query(c.id, f"❌ Ошибка: {e}")
+    else:
+        # Заголовка нет - запрашиваем
         st["step"] = "waiting_title"
         user_state[uid] = st
         position_text = "сверху" if position == "top" else "снизу"
         bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
         send_message_with_retry(c.message.chat.id, f"✅ Текст будет расположен <b>{position_text}</b> фотографии.\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:", parse_mode="HTML")
-    else:
-        st["step"] = "waiting_photo"
-        user_state[uid] = st
-        position_text = "сверху" if position == "top" else "снизу"
-        send_message_with_retry(c.message.chat.id, f"✅ Текст будет расположен <b>{position_text}</b> фотографии.\n\nТеперь пришли фото 📷", parse_mode="HTML")
-        bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
     
     try:
         bot.delete_message(c.message.chat.id, c.message.message_id)
@@ -3515,11 +3643,22 @@ def on_am2_text_position(c):
     position = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     st["text_position"] = position
-    st["step"] = "waiting_title_am2"
-    user_state[uid] = st
-    pos_text = "сверху" if position == "top" else "снизу"
-    bot.answer_callback_query(c.id, f"Текст будет {pos_text} ✅")
-    send_message_with_retry(c.message.chat.id, f"✅ Текст будет расположен <b>{pos_text}</b>\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:", parse_mode="HTML")
+    
+    # Проверяем, есть ли уже заголовок
+    if st.get("title"):
+        # Заголовок уже есть - переходим к выбору даты/места
+        st["step"] = "waiting_date_place_choice_am2"
+        user_state[uid] = st
+        pos_text = "сверху" if position == "top" else "снизу"
+        bot.answer_callback_query(c.id, f"Текст будет {pos_text} ✅")
+        send_message_with_retry(c.message.chat.id, f"✅ Текст будет расположен <b>{pos_text}</b>\n\n<b>Заголовок сохранён:</b>\n«{st['title']}»\n\n📅 <b>Добавить дату и место?</b>", parse_mode="HTML", reply_markup=add_date_place_kb())
+    else:
+        st["step"] = "waiting_title_am2"
+        user_state[uid] = st
+        pos_text = "сверху" if position == "top" else "снизу"
+        bot.answer_callback_query(c.id, f"Текст будет {pos_text} ✅")
+        send_message_with_retry(c.message.chat.id, f"✅ Текст будет расположен <b>{pos_text}</b>\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b>:", parse_mode="HTML")
+    
     try:
         bot.delete_message(c.message.chat.id, c.message.message_id)
     except:
@@ -3620,7 +3759,7 @@ def on_article_action(c):
         user_state[uid] = st
         
         bot.answer_callback_query(c.id, "📝 Выбери шаблон для оформления")
-        send_message_with_retry(c.message.chat.id, "📝 Выбери шаблон оформления.", parse_mode="HTML", reply_markup=template_kb())
+        send_message_with_retry(c.message.chat.id, f"📝 <b>Заголовок сохранён:</b>\n«{st['title']}»\n\nВыбери шаблон оформления.", parse_mode="HTML", reply_markup=template_kb())
         try:
             bot.delete_message(c.message.chat.id, c.message.message_id)
         except:
@@ -3839,8 +3978,18 @@ def handle_forwarded_message(message):
         source_info = f"@{user.username}" if user.username else f"{user.first_name}"
     
     st = user_state.get(uid) or {}
-    st["original_text"] = original_text
-    st["original_text_for_ai"] = original_text
+    
+    # Извлекаем заголовок из текста, если он есть
+    if original_text:
+        title, body = split_title_and_body(original_text)
+        st["title"] = title
+        st["body_raw"] = body
+        st["original_text"] = original_text
+        st["original_text_for_ai"] = original_text
+    else:
+        st["original_text"] = ""
+        st["original_text_for_ai"] = ""
+    
     st["original_url"] = source_url
     st["step"] = "waiting_repost_action"
     st["photo_bytes"] = None
@@ -3873,11 +4022,6 @@ def handle_forwarded_message(message):
         st["has_media"] = True
         st["media_type"] = "video" if message.video else "document"
     
-    if original_text:
-        title, body = split_title_and_body(original_text)
-        st["title"] = title
-        st["body_raw"] = body
-    
     user_state[uid] = st
     
     text_preview = original_text[:200] if original_text else "(без текста)"
@@ -3892,8 +4036,14 @@ def handle_forwarded_message(message):
     if not media_status:
         media_status.append("⚠️ <b>Медиа:</b> не найдено")
     
+    # Показываем заголовок, если он есть
+    title_display = ""
+    if st.get("title"):
+        title_display = f"\n📌 <b>Заголовок:</b> {st['title']}"
+    
     send_message_with_retry(message.chat.id,
-        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{'<br>'.join(media_status)}\n📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
+        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{'<br>'.join(media_status)}"
+        f"{title_display}\n📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
         parse_mode="HTML", reply_markup=repost_action_kb())
 
 
@@ -3938,6 +4088,16 @@ def handle_article_link(message):
         st["extracted_title"] = result.get("title", "")
         st["extracted_url"] = result.get("url", url)
         st["step"] = "waiting_extracted_article"
+        
+        # Извлекаем заголовок
+        if result.get("title"):
+            st["title"] = result.get("title")
+            st["body_raw"] = result.get("text", "")
+        else:
+            title, body = split_title_and_body(result.get("text", ""))
+            st["title"] = title
+            st["body_raw"] = body
+        
         user_state[uid] = st
         
         try:
@@ -3993,7 +4153,7 @@ def handle_article_link(message):
             
             bot.send_message(
                 message.chat.id,
-                "🎯 <b>Что сделать с этой статьей?</b>",
+                f"🎯 <b>Что сделать с этой статьей?</b>\n\n📌 <b>Заголовок:</b> {st['title']}",
                 parse_mode="HTML",
                 reply_markup=kb
             )
@@ -4014,7 +4174,7 @@ def handle_article_link(message):
             )
             bot.send_message(
                 message.chat.id,
-                "🎯 <b>Что сделать с этой статьей?</b>",
+                f"🎯 <b>Что сделать с этой статьей?</b>\n\n📌 <b>Заголовок:</b> {st['title']}",
                 parse_mode="HTML",
                 reply_markup=kb
             )
@@ -4066,10 +4226,15 @@ def on_text(message):
         st["original_url"] = text
         st["original_text"] = text
         st["original_text_for_ai"] = text
+        # Извлекаем заголовок из текста (если это ссылка с текстом)
+        title, body = split_title_and_body(text)
+        st["title"] = title
+        st["body_raw"] = body
         st["step"] = "waiting_repost_action"
         user_state[uid] = st
         send_message_with_retry(message.chat.id,
-            f"📎 <b>Ссылка на пост обнаружена!</b>\n\n🔗 t.me/{username}/{post_id}",
+            f"📎 <b>Ссылка на пост обнаружена!</b>\n\n🔗 t.me/{username}/{post_id}\n"
+            f"{'📌 <b>Заголовок:</b> ' + st['title'] if st['title'] else ''}",
             parse_mode="HTML", reply_markup=repost_action_kb())
         return
     
@@ -4082,6 +4247,13 @@ def on_text(message):
         try:
             result = loop.run_until_complete(process_text_with_deepseek(text))
             bot.delete_message(message.chat.id, processing_msg.message_id)
+            # Сохраняем заголовок и тело
+            title, body = split_title_and_body(result)
+            st["title"] = title
+            st["body_raw"] = body
+            st["original_text"] = result
+            st["original_text_for_ai"] = result
+            user_state[uid] = st
             send_message_with_retry(message.chat.id, f"✍️ <b>Результат:</b>\n\n{result}", parse_mode="HTML", reply_markup=main_menu_kb())
         except Exception as e:
             bot.delete_message(message.chat.id, processing_msg.message_id)
@@ -4095,9 +4267,16 @@ def on_text(message):
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
+        # Сохраняем заголовок
         st["title"] = clean_markdown(text)
         if "body_raw" not in st:
             st["body_raw"] = ""
+        # Также обновляем original_text
+        if st.get("body_raw"):
+            st["original_text"] = f"{st['title']}\n\n{st['body_raw']}"
+        else:
+            st["original_text"] = st['title']
+        st["original_text_for_ai"] = st["original_text"]
         user_state[uid] = st
         try:
             card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), 
@@ -4120,6 +4299,8 @@ def on_text(message):
             return
         st["title"] = text
         st["body_raw"] = text
+        st["original_text"] = text
+        st["original_text_for_ai"] = text
         st["step"] = "waiting_date_place_choice_am2"
         user_state[uid] = st
         bot.reply_to(message, f"✅ Заголовок сохранён!\n\n📅 <b>Добавить дату и место?</b>", parse_mode="HTML", reply_markup=add_date_place_kb())
@@ -4188,6 +4369,8 @@ def on_text(message):
             return
         st["title"] = text
         st["body_raw"] = text
+        st["original_text"] = text
+        st["original_text_for_ai"] = text
         st["step"] = "waiting_highlight_phrase_fdr_post"
         user_state[uid] = st
         bot.reply_to(message, f"✅ Заголовок сохранён!\n\n✏️ Теперь отправь слова для выделения цветом (через пробел):", parse_mode="HTML")
@@ -4212,6 +4395,8 @@ def on_text(message):
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
         st["title"] = text
+        st["original_text"] = text
+        st["original_text_for_ai"] = text
         st["step"] = "waiting_body_fdr"
         user_state[uid] = st
         bot.reply_to(message, f"✅ Заголовок сохранён!\n\n✏️ Теперь отправь основной текст для сторис:", parse_mode="HTML")
@@ -4345,7 +4530,8 @@ def on_photo_or_document(message):
         st["step"] = "waiting_template"
         user_state[uid] = st
         
-        bot.reply_to(message, "📸 Медиа сохранено!\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
+        title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
+        bot.reply_to(message, f"📸 Медиа сохранено!{title_display}\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
         return
     except Exception as e:
         logger.error(f"Error processing media: {e}")
@@ -4386,6 +4572,11 @@ def cmd_start(message):
         f"• 📰 Извлечение статьи по ссылке (точное копирование)\n"
         f"• 📎 Репосты из каналов\n\n"
         f"<b>📌 Доступные каналы:</b> {channels_text}\n\n"
+        f"<b>💡 Как это работает:</b>\n"
+        f"1️⃣ Отправь пост (репост из канала, ссылку на статью или текст с фото)\n"
+        f"2️⃣ Нажми «Оформить пост»\n"
+        f"3️⃣ Заголовок подтянется автоматически из текста\n"
+        f"4️⃣ Выбери шаблон и получи готовый пост!\n\n"
         f"Выбери действие 👇",
         parse_mode="HTML", reply_markup=main_menu_kb())
 
