@@ -47,6 +47,7 @@ CHANNEL_MN = (os.getenv("CHANNEL_MN") or "").strip()
 CHANNEL_CHP = (os.getenv("CHANNEL_CHP") or "").strip()
 CHANNEL_AFISHA = (os.getenv("CHANNEL_AFISHA") or "").strip()
 CHANNEL_TEST = (os.getenv("CHANNEL_TEST") or "").strip()
+CHANNEL_PROBNY_MN = (os.getenv("CHANNEL_PROBNY_MN") or "").strip()
 
 if CHANNEL_MN and not CHANNEL_MN.startswith("@"):
     CHANNEL_MN = "@" + CHANNEL_MN
@@ -56,6 +57,8 @@ if CHANNEL_AFISHA and not CHANNEL_AFISHA.startswith("@"):
     CHANNEL_AFISHA = "@" + CHANNEL_AFISHA
 if CHANNEL_TEST and not CHANNEL_TEST.startswith("@"):
     CHANNEL_TEST = "@" + CHANNEL_TEST
+    if CHANNEL_PROBNY_MN and not CHANNEL_PROBNY_MN.startswith("@"):
+    CHANNEL_PROBNY_MN = "@" + CHANNEL_PROBNY_MN
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -235,7 +238,7 @@ def preview_kb():
     )
     return kb
 
-def channel_selection_kb():
+ddef channel_selection_kb():
     kb = InlineKeyboardMarkup(row_width=1)
     if CHANNEL_MN:
         kb.add(InlineKeyboardButton("📰 MINSK NEWS", callback_data="select_channel:mn"))
@@ -243,6 +246,8 @@ def channel_selection_kb():
         kb.add(InlineKeyboardButton("🚨 МИНСК ЧП", callback_data="select_channel:chp"))
     if CHANNEL_AFISHA:
         kb.add(InlineKeyboardButton("🎫 Афиша Минска", callback_data="select_channel:afisha"))
+    if CHANNEL_PROBNY_MN:
+        kb.add(InlineKeyboardButton("📰 Пробный МН", callback_data="select_channel:probnym"))
     if CHANNEL_TEST:
         kb.add(InlineKeyboardButton("🧪 ТЕСТОВЫЙ КАНАЛ", callback_data="select_channel:test"))
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="select_channel:cancel"))
@@ -256,6 +261,8 @@ def post_channel_selection_kb(post_type: str):
         kb.add(InlineKeyboardButton("🚨 МИНСК ЧП", callback_data=f"post_channel:{post_type}:chp"))
     if CHANNEL_AFISHA:
         kb.add(InlineKeyboardButton("🎫 Афиша Минска", callback_data=f"post_channel:{post_type}:afisha"))
+    if CHANNEL_PROBNY_MN:
+        kb.add(InlineKeyboardButton("📰 Пробный МН", callback_data=f"post_channel:{post_type}:probnym"))
     if CHANNEL_TEST:
         kb.add(InlineKeyboardButton("🧪 ТЕСТОВЫЙ КАНАЛ", callback_data=f"post_channel:{post_type}:test"))
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data=f"post_channel:{post_type}:cancel"))
@@ -2996,7 +3003,7 @@ def on_post_channel_select(c):
             )
         return
     
-    if channel_type == "mn":
+        if channel_type == "mn":
         target_channel = CHANNEL_MN
         channel_name = "MINSK NEWS"
     elif channel_type == "chp":
@@ -3005,6 +3012,9 @@ def on_post_channel_select(c):
     elif channel_type == "afisha":
         target_channel = CHANNEL_AFISHA
         channel_name = "Афиша Минска"
+    elif channel_type == "probnym":
+        target_channel = CHANNEL_PROBNY_MN
+        channel_name = "Пробный МН"
     elif channel_type == "test":
         target_channel = CHANNEL_TEST
         channel_name = "ТЕСТОВЫЙ КАНАЛ"
@@ -3161,7 +3171,7 @@ def on_select_channel(c):
             send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
         return
     
-    if channel_type == "mn":
+        if channel_type == "mn":
         target_channel = CHANNEL_MN
         channel_name = "MINSK NEWS"
     elif channel_type == "chp":
@@ -3170,15 +3180,14 @@ def on_select_channel(c):
     elif channel_type == "afisha":
         target_channel = CHANNEL_AFISHA
         channel_name = "Афиша Минска"
+    elif channel_type == "probnym":
+        target_channel = CHANNEL_PROBNY_MN
+        channel_name = "Пробный МН"
     elif channel_type == "test":
         target_channel = CHANNEL_TEST
         channel_name = "ТЕСТОВЫЙ КАНАЛ"
     else:
         bot.answer_callback_query(c.id, "❌ Неизвестный канал")
-        return
-    
-    if not target_channel:
-        bot.answer_callback_query(c.id, f"❌ Канал {channel_name} не настроен")
         return
     
     try:
@@ -3298,7 +3307,7 @@ def on_publish_to_channel(c):
         bot.answer_callback_query(c.id, "Нет активного поста. Начни с «Оформить пост» или обработай текст через ИИ.")
         return
     
-    if not CHANNEL_MN and not CHANNEL_CHP and not CHANNEL_AFISHA and not CHANNEL_TEST:
+        if not CHANNEL_MN and not CHANNEL_CHP and not CHANNEL_AFISHA and not CHANNEL_PROBNY_MN and not CHANNEL_TEST:
         bot.answer_callback_query(c.id, "❌ Каналы не настроены")
         send_message_with_retry(c.message.chat.id, "❌ Ни один канал для публикации не настроен.", reply_markup=main_menu_kb())
         return
@@ -4289,13 +4298,15 @@ def on_photo_or_document(message):
 def cmd_start(message):
     clear_state(message.from_user.id)
     
-    channels_list = []
+        channels_list = []
     if CHANNEL_MN:
         channels_list.append("📰 MINSK NEWS")
     if CHANNEL_CHP:
         channels_list.append("🚨 МИНСК ЧП")
     if CHANNEL_AFISHA:
         channels_list.append("🎫 Афиша Минска")
+    if CHANNEL_PROBNY_MN:
+        channels_list.append("📰 Пробный МН")
     if CHANNEL_TEST:
         channels_list.append("🧪 ТЕСТОВЫЙ")
     channels_text = ", ".join(channels_list) if channels_list else "не настроены"
