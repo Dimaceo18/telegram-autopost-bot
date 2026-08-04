@@ -3001,9 +3001,9 @@ def on_post_channel_select(c):
                 parse_mode="HTML",
                 reply_markup=post_action_kb("threads")
             )
-        return
+                return
     
-         if channel_type == "mn":
+    if channel_type == "mn":
         target_channel = CHANNEL_MN
         channel_name = "MINSK NEWS"
     elif channel_type == "chp":
