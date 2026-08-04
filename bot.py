@@ -114,15 +114,32 @@ HIGHLIGHT_COLORS = {
 
 
 # =========================
-# BOT
+# BOT - с увеличенными таймаутами и обработкой ошибок
 # =========================
+# Создаем сессию с увеличенными таймаутами
+session = requests.Session()
+session.timeout = 60
+
+# Настраиваем повторные попытки
+retry_strategy = Retry(
+    total=5,
+    backoff_factor=2,
+    status_forcelist=[408, 429, 500, 502, 503, 504],
+    allowed_methods=["HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS", "TRACE"]
+)
+adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
+session.mount("http://", adapter)
+session.mount("https://", adapter)
+
+# Создаем бота с кастомной сессией
 bot = telebot.TeleBot(TOKEN)
+bot.session = session
 
 try:
     bot.remove_webhook()
     logger.info("Webhook removed")
-except:
-    pass
+except Exception as e:
+    logger.warning(f"Failed to remove webhook: {e}")
 
 user_state: Dict[int, Dict] = {}
 user_album_cache: Dict[str, Dict] = {}
@@ -283,9 +300,9 @@ def prices_menu_kb():
 
 
 # =========================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (с увеличенными таймаутами)
 # =========================
-def send_message_with_retry(chat_id, text, parse_mode=None, reply_markup=None, max_retries=3):
+def send_message_with_retry(chat_id, text, parse_mode=None, reply_markup=None, max_retries=5):
     for attempt in range(max_retries):
         try:
             return bot.send_message(
@@ -295,9 +312,9 @@ def send_message_with_retry(chat_id, text, parse_mode=None, reply_markup=None, m
                 reply_markup=reply_markup
             )
         except Exception as e:
-            logger.error(f"Attempt {attempt + 1} failed: {e}")
+            logger.error(f"Send message attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
-                time.sleep(1 + attempt)
+                time.sleep(2 + attempt * 2)
             else:
                 try:
                     clean_text = re.sub(r'<[^>]+>', '', text)
@@ -310,9 +327,19 @@ def send_message_with_retry(chat_id, text, parse_mode=None, reply_markup=None, m
                     raise
     return None
 
-def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_markup=None, max_retries=3):
+def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_markup=None, max_retries=5):
     if caption and len(caption) > 950:
         caption = caption[:947] + "..."
+    
+    # Проверяем, что photo - это BytesIO или bytes с данными
+    if isinstance(photo, BytesIO):
+        if photo.getbuffer().nbytes == 0:
+            logger.error("Photo is empty")
+            return None
+        photo.seek(0)
+    elif isinstance(photo, bytes) and len(photo) == 0:
+        logger.error("Photo bytes are empty")
+        return None
     
     for attempt in range(max_retries):
         try:
@@ -326,7 +353,7 @@ def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_m
         except Exception as e:
             logger.error(f"Send photo attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
-                time.sleep(2 + attempt * 2)
+                time.sleep(3 + attempt * 3)
             else:
                 try:
                     return bot.send_photo(
@@ -338,14 +365,14 @@ def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_m
                     return None
     return None
 
-def send_media_group_with_retry(chat_id, media_list, max_retries=3):
+def send_media_group_with_retry(chat_id, media_list, max_retries=5):
     for attempt in range(max_retries):
         try:
             return bot.send_media_group(chat_id, media_list)
         except Exception as e:
             logger.error(f"Media group attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
-                time.sleep(2 + attempt * 2)
+                time.sleep(3 + attempt * 3)
             else:
                 for media in media_list:
                     try:
@@ -362,15 +389,19 @@ def check_file_size(file_bytes: bytes) -> bool:
     return len(file_bytes) <= MAX_FILE_SIZE
 
 def tg_file_bytes(file_id: str) -> bytes:
-    try:
-        file_info = bot.get_file(file_id)
-        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-        r = requests.get(file_url, timeout=30)
-        r.raise_for_status()
-        return r.content
-    except Exception as e:
-        logger.error(f"Failed to download file: {e}")
-        raise
+    for attempt in range(3):
+        try:
+            file_info = bot.get_file(file_id)
+            file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+            r = requests.get(file_url, timeout=60)
+            r.raise_for_status()
+            return r.content
+        except Exception as e:
+            logger.error(f"Failed to download file (attempt {attempt + 1}): {e}")
+            if attempt < 2:
+                time.sleep(3)
+            else:
+                raise
 
 def get_video_info(file_id: str, video_obj) -> Dict:
     return {
@@ -405,7 +436,7 @@ def download_fonts():
         if not os.path.exists(font_name):
             try:
                 logger.info(f"Downloading {font_name}...")
-                response = requests.get(url, timeout=30)
+                response = requests.get(url, timeout=60)
                 with open(font_name, "wb") as f:
                     f.write(response.content)
                 logger.info(f"Downloaded {font_name}")
@@ -1487,7 +1518,7 @@ async def process_text_with_deepseek(text: str) -> str:
 
 Вот текст:"""
     
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             response = await client.post(
                 DEEPSEEK_API_URL,
@@ -1542,7 +1573,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
         
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             try:
                 response = await client.post(
                     DEEPSEEK_API_URL,
@@ -1610,7 +1641,7 @@ async def process_text_with_deepseek_tg(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             response = await client.post(
                 DEEPSEEK_API_URL,
@@ -1703,7 +1734,7 @@ async def process_text_with_deepseek_threads(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
         
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             try:
                 response = await client.post(
                     DEEPSEEK_API_URL,
@@ -1771,7 +1802,7 @@ async def process_text_with_deepseek_threads(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             response = await client.post(
                 DEEPSEEK_API_URL,
@@ -1862,7 +1893,7 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
         
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             try:
                 response = await client.post(
                     DEEPSEEK_API_URL,
@@ -1929,7 +1960,7 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             response = await client.post(
                 DEEPSEEK_API_URL,
@@ -2020,7 +2051,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
         
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             try:
                 response = await client.post(
                     DEEPSEEK_API_URL,
@@ -2087,7 +2118,7 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 
 Верни ТОЛЬКО готовый пост, без пояснений."""
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             response = await client.post(
                 DEEPSEEK_API_URL,
@@ -2181,7 +2212,7 @@ URL статьи: {url}
 Верни только текст статьи, без пояснений.
 """
 
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 DEEPSEEK_API_URL,
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
@@ -2875,9 +2906,6 @@ def on_threads_action(c):
         send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
 
 
-# =========================
-# ИСПРАВЛЕННЫЙ ОБРАБОТЧИК - добавлен перевод строки
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("post_channel:"))
 def on_post_channel_select(c):
     uid = c.from_user.id
