@@ -57,7 +57,7 @@ if CHANNEL_AFISHA and not CHANNEL_AFISHA.startswith("@"):
     CHANNEL_AFISHA = "@" + CHANNEL_AFISHA
 if CHANNEL_TEST and not CHANNEL_TEST.startswith("@"):
     CHANNEL_TEST = "@" + CHANNEL_TEST
-    if CHANNEL_PROBNY_MN and not CHANNEL_PROBNY_MN.startswith("@"):
+if CHANNEL_PROBNY_MN and not CHANNEL_PROBNY_MN.startswith("@"):
     CHANNEL_PROBNY_MN = "@" + CHANNEL_PROBNY_MN
 
 if not TOKEN:
