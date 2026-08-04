@@ -3171,12 +3171,12 @@ def on_select_channel(c):
             send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
         return
     
-     if channel_type == "mn":        # <- здесь 4 пробела
-        target_channel = CHANNEL_MN # <- здесь 8 пробелов (на 4 больше)
-        channel_name = "MINSK NEWS" # <- здесь 8 пробелов
-    elif channel_type == "chp":     # <- здесь 4 пробела
-        target_channel = CHANNEL_CHP # <- здесь 8 пробелов
-        channel_name = "МИНСК ЧП"   # <- здесь 8 пробелов
+    if channel_type == "mn":
+        target_channel = CHANNEL_MN
+        channel_name = "MINSK NEWS"
+    elif channel_type == "chp":
+        target_channel = CHANNEL_CHP
+        channel_name = "МИНСК ЧП"
     elif channel_type == "afisha":
         target_channel = CHANNEL_AFISHA
         channel_name = "Афиша Минска"
