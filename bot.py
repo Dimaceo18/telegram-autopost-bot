@@ -1419,6 +1419,43 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
         logger.error(f"Error applying CHP watermark: {e}")
         raise
 
+def apply_watermark_probnym(photo_bytes: bytes) -> BytesIO:
+    """Наносит водяной знак MINSK NEWS для канала Пробный МН с прозрачностью 15%"""
+    try:
+        img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
+        img_width, img_height = img.size
+        watermark = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(watermark)
+        
+        # Размер шрифта 24px
+        font_size = 24
+        try:
+            font = load_font(FONT_MN, font_size)
+        except:
+            font = ImageFont.load_default()
+        
+        watermark_text = "MINSK NEWS"
+        bbox = draw.textbbox((0, 0), watermark_text, font=font)
+        text_width_val = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        # Центрируем текст
+        x = (img_width - text_width_val) // 2
+        y = (img_height - text_height) // 2
+        
+        # 15% прозрачности = альфа 38 (из 255)
+        draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 38))
+        
+        result = Image.alpha_composite(img, watermark)
+        result = result.convert("RGB")
+        output = BytesIO()
+        result.save(output, format="JPEG", quality=95, optimize=True)
+        output.seek(0)
+        return output
+    except Exception as e:
+        logger.error(f"Error applying probnym watermark: {e}")
+        return BytesIO(photo_bytes)
+
 
 # =========================
 # ФУНКЦИИ DEEPSEEK
@@ -3055,13 +3092,26 @@ def on_post_channel_select(c):
             
             for photo in media_group.get("photos", []):
                 try:
+                    # Для канала "Пробный МН" наносим водяной знак
+                    if channel_type == "probnym":
+                        watermarked = apply_watermark_probnym(photo)
+                        photo_bytes_io = watermarked
+                    else:
+                        photo_bytes_io = BytesIO(photo)
+                    
+                    if first:
+                        media_list.append(InputMediaPhoto(photo_bytes_io, caption=post_text, parse_mode="HTML"))
+                        first = False
+                    else:
+                        media_list.append(InputMediaPhoto(photo_bytes_io))
+                except Exception as e:
+                    logger.error(f"Error adding photo to media list: {e}")
+                    # В случае ошибки отправляем оригинал
                     if first:
                         media_list.append(InputMediaPhoto(BytesIO(photo), caption=post_text, parse_mode="HTML"))
                         first = False
                     else:
                         media_list.append(InputMediaPhoto(BytesIO(photo)))
-                except Exception as e:
-                    logger.error(f"Error adding photo to media list: {e}")
             
             for video in media_group.get("videos", []):
                 try:
@@ -3105,7 +3155,14 @@ def on_post_channel_select(c):
         # 2. Если нет альбома, проверяем отдельное фото
         if not has_media and photo_bytes:
             try:
-                bot.send_photo(target_channel, BytesIO(photo_bytes), caption=post_text, parse_mode="HTML")
+                # Для канала "Пробный МН" наносим водяной знак
+                if channel_type == "probnym":
+                    watermarked_photo = apply_watermark_probnym(photo_bytes)
+                    photo_to_send = watermarked_photo
+                else:
+                    photo_to_send = BytesIO(photo_bytes)
+                
+                bot.send_photo(target_channel, photo_to_send, caption=post_text, parse_mode="HTML")
                 has_media = True
                 logger.info(f"Published photo to {channel_name}")
             except Exception as e:
@@ -3151,6 +3208,9 @@ def on_post_channel_select(c):
             f"❌ Не удалось опубликовать: {e}",
             reply_markup=main_menu_kb()
         )
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("select_channel:"))
 def on_select_channel(c):
     uid = c.from_user.id
     channel_type = c.data.split(":")[1]
