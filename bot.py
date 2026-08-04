@@ -2521,8 +2521,8 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
     
     if videos:
         st["video_info"] = videos[0]
-        st["video_file_id"] = videos[0].get('file_id')
-        logger.info(f"Saved {len(videos)} videos for user {uid}")
+        st["video_file_id"] = videos[0].get('file_id')  # <-- ВАЖНО: сохраняем file_id отдельно
+        logger.info(f"Saved {len(videos)} videos for user {uid}, file_id: {st['video_file_id']}")
     
     if videos and not photos:
         st["video_file_id"] = videos[0].get('file_id')
@@ -3751,12 +3751,15 @@ def handle_forwarded_message(message):
             except Exception as e:
                 logger.error(f"Error extracting photo from album: {e}")
         
-        if message.video:
-            try:
-                video_info = get_video_info(message.video.file_id, message.video)
-                user_album_cache[media_group_id]["videos"].append(video_info)
-            except Exception as e:
-                logger.error(f"Error extracting video from album: {e}")
+       if message.video:
+    try:
+        video_info = get_video_info(message.video.file_id, message.video)
+        st["video_info"] = video_info
+        st["video_file_id"] = message.video.file_id  # <-- ВАЖНО
+        st["media_group"]["videos"].append(video_info)
+        logger.info(f"Saved video for user {uid}, file_id: {message.video.file_id}")
+    except Exception as e:
+        logger.error(f"Error extracting video from forward: {e}")
         
         threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, True), daemon=True).start()
         return
