@@ -3303,7 +3303,7 @@ def on_publish_to_channel(c):
     uid = c.from_user.id
     st = user_state.get(uid) or {}
     
-       if not st or st.get("step") not in ["waiting_action", "waiting_after_ai"]:
+    if not st or st.get("step") not in ["waiting_action", "waiting_after_ai"]:
         bot.answer_callback_query(c.id, "Нет активного поста. Начни с «Оформить пост» или обработай текст через ИИ.")
         return
     
@@ -4298,7 +4298,7 @@ def on_photo_or_document(message):
 def cmd_start(message):
     clear_state(message.from_user.id)
     
-        channels_list = []
+    channels_list = []
     if CHANNEL_MN:
         channels_list.append("📰 MINSK NEWS")
     if CHANNEL_CHP:
