@@ -431,6 +431,18 @@ def clean_markdown(text: str) -> str:
     text = re.sub(r'`([^`]+)`', r'\1', text)
     return text.strip()
 
+def clean_title_for_card(title: str) -> str:
+    """Очищает заголовок от смайликов для использования на карточке"""
+    if not title:
+        return ""
+    # Удаляем смайлики
+    clean = remove_emojis(title)
+    # Убираем лишние пробелы
+    clean = re.sub(r'\s+', ' ', clean)
+    # Убираем специальные символы, которые могут мешать
+    clean = clean.strip()
+    return clean
+
 def split_title_and_body(text: str) -> Tuple[str, str]:
     """Разделяет текст на заголовок и тело."""
     if not text:
@@ -935,7 +947,8 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
         margin_top = 130
     max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)
     
-    clean_title = clean_markdown(title_text)
+    # Очищаем заголовок от смайликов
+    clean_title = clean_title_for_card(title_text)
     text = (clean_title or "").strip().upper()
     
     title_max_h = int(TARGET_H * 0.23)
@@ -999,6 +1012,9 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
+    # Очищаем заголовок от смайликов
+    clean_title = clean_title_for_card(title_text)
+    
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
@@ -1019,7 +1035,6 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
     footer_h = fb[3] - fb[1]
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     
-    clean_title = clean_markdown(title_text)
     text = (clean_title or "").strip().upper()
     
     font, lines, heights, spacing, total_text_height = fit_text_block(
@@ -1058,6 +1073,10 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
 
 def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, bold_phrase: str = "") -> BytesIO:
     ensure_fonts()
+    # Очищаем заголовок от смайликов
+    clean_title = clean_title_for_card(title_text)
+    clean_bold_phrase = clean_title_for_card(bold_phrase) if bold_phrase else ""
+    
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
@@ -1078,10 +1097,7 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     footer_h = fb[3] - fb[1]
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     
-    clean_title = clean_markdown(title_text)
     text = (clean_title or "").strip().upper()
-    
-    clean_bold_phrase = clean_markdown(bold_phrase)
     bold_phrase_upper = clean_bold_phrase.strip().upper() if clean_bold_phrase else ""
     bold_words = set(bold_phrase_upper.split())
     
@@ -1133,6 +1149,9 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
 
 def make_card_mn_tg(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
+    # Очищаем заголовок от смайликов
+    clean_title = clean_title_for_card(title_text)
+    
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
@@ -1158,6 +1177,9 @@ def make_card_mn_tg(photo_bytes: bytes, title_text: str, text_position: str = TE
 
 def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
+    # Очищаем заголовок от смайликов
+    clean_title = clean_title_for_card(title_text)
+    
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
@@ -1173,7 +1195,6 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
     safe_w = img.width - 2 * margin_x
     title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
     
-    clean_title = clean_markdown(title_text)
     text = (clean_title or "").strip().upper()
     
     font, lines, heights, spacing, total_h = fit_text_block(
@@ -1201,6 +1222,9 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
 
 def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     ensure_fonts()
+    # Очищаем заголовок от смайликов
+    clean_title = clean_title_for_card(title_text)
+    
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
@@ -1210,7 +1234,6 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     band_h = int(img.height * AM_TOP_BLUR_PCT)
     safe_w = img.width - 2 * margin_x
     
-    clean_title = clean_markdown(title_text)
     text = (clean_title or "").strip().upper()
     
     text_zone_top = int(band_h * 0.12)
@@ -1241,12 +1264,15 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
 def make_card_am2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP,
                   date: str = "", place: str = "", rubric: str = "",
                   highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
-    return create_poster_am2(photo_bytes, title_text, text_position, date, place, rubric,
+    # Очищаем заголовок от смайликов
+    clean_title = clean_title_for_card(title_text)
+    return create_poster_am2(photo_bytes, clean_title, text_position, date, place, rubric,
                              highlight_word, highlight_color, is_yellow)
 
 def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> BytesIO:
     ensure_fonts()
-    clean_title = clean_markdown(title)
+    # Очищаем заголовок от смайликов
+    clean_title = clean_title_for_card(title)
     clean_body = clean_markdown(body_text)
     
     canvas = Image.new("RGB", (STORY_W, STORY_H), (0, 0, 0))
@@ -1291,6 +1317,10 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
 
 def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: str) -> BytesIO:
     ensure_fonts()
+    # Очищаем заголовок от смайликов
+    clean_title = clean_title_for_card(title_text)
+    clean_highlight = clean_title_for_card(highlight_phrase) if highlight_phrase else ""
+    
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
     img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
@@ -1301,10 +1331,7 @@ def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: st
     margin_bottom = int(img.height * 0.08)
     safe_w = img.width - 2 * margin_x
     
-    clean_title = clean_markdown(title_text)
     title_text_upper = clean_title.strip().upper()
-    
-    clean_highlight = clean_markdown(highlight_phrase)
     highlight_phrase_upper = clean_highlight.strip().upper()
     highlight_words = set(highlight_phrase_upper.split())
     
@@ -1360,22 +1387,27 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
               text_position: str = TEXT_POSITION_TOP, 
               bold_phrase: str = "", date: str = "", place: str = "", rubric: str = "",
               highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
+    # Очищаем заголовок от смайликов
+    clean_title = clean_title_for_card(title_text)
+    clean_bold_phrase = clean_title_for_card(bold_phrase) if bold_phrase else ""
+    clean_highlight_phrase = clean_title_for_card(highlight_phrase) if highlight_phrase else ""
+    
     if template == "CHP":
-        return make_card_chp(photo_bytes, title_text, text_position)
+        return make_card_chp(photo_bytes, clean_title, text_position)
     if template == "AM":
-        return make_card_am(photo_bytes, title_text)
+        return make_card_am(photo_bytes, clean_title)
     if template == "AM2":
-        return make_card_am2(photo_bytes, title_text, text_position, date, place, rubric,
+        return make_card_am2(photo_bytes, clean_title, text_position, date, place, rubric,
                             highlight_word, highlight_color, is_yellow)
     if template == "FDR_STORY":
-        return make_card_fdr_story(photo_bytes, title_text, body_text)
+        return make_card_fdr_story(photo_bytes, clean_title, body_text)
     if template == "FDR_POST":
-        return make_card_fdr_post(photo_bytes, title_text, highlight_phrase)
+        return make_card_fdr_post(photo_bytes, clean_title, clean_highlight_phrase)
     if template == "MN_TG":
-        return make_card_mn_tg(photo_bytes, title_text, text_position)
+        return make_card_mn_tg(photo_bytes, clean_title, text_position)
     if template == "MN2":
-        return make_card_mn2(photo_bytes, title_text, text_position, bold_phrase)
-    return make_card_mn(photo_bytes, title_text, text_position)
+        return make_card_mn2(photo_bytes, clean_title, text_position, clean_bold_phrase)
+    return make_card_mn(photo_bytes, clean_title, text_position)
 
 
 # =========================
@@ -2479,7 +2511,7 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
     
     if caption:
         title, body = split_title_and_body(caption)
-        st["title"] = title
+        st["title"] = clean_title_for_card(title)
         st["body_raw"] = body
         st["original_text"] = caption
         st["original_text_for_ai"] = caption
@@ -2674,7 +2706,7 @@ def on_repost_action(c):
             st["ai_processed_text"] = result
             st["original_text"] = result
             title, body, formatted_text = format_ai_response(result)
-            st["title"] = title
+            st["title"] = clean_title_for_card(title)
             st["body_raw"] = body
             st["step"] = "waiting_after_ai"
             user_state[uid] = st
@@ -2885,7 +2917,7 @@ def on_ai_action(c):
             st["ai_processed_text"] = result
             st["original_text"] = result
             title, body, formatted_text = format_ai_response(result)
-            st["title"] = title
+            st["title"] = clean_title_for_card(title)
             st["body_raw"] = body
             st["step"] = "waiting_after_ai"
             user_state[uid] = st
@@ -3753,7 +3785,7 @@ def on_article_action(c):
         st["original_text"] = st.get("extracted_text", "")
         st["original_text_for_ai"] = st.get("extracted_text", "")
         title, body = split_title_and_body(st["extracted_text"])
-        st["title"] = title if title else "Статья"
+        st["title"] = clean_title_for_card(title) if title else "Статья"
         st["body_raw"] = body
         st["step"] = "waiting_template"
         user_state[uid] = st
@@ -3781,7 +3813,7 @@ def on_article_action(c):
             st["ai_processed_text"] = result
             st["original_text"] = result
             title, body, formatted_text = format_ai_response(result)
-            st["title"] = title
+            st["title"] = clean_title_for_card(title)
             st["body_raw"] = body
             st["step"] = "waiting_after_ai"
             user_state[uid] = st
@@ -3914,7 +3946,9 @@ def on_article_action(c):
         
         bot.answer_callback_query(c.id, "📢 Выбери канал для публикации")
         st["original_text"] = st.get("extracted_text", "")
-        st["title"], st["body_raw"] = split_title_and_body(st["original_text"])
+        title, body = split_title_and_body(st["original_text"])
+        st["title"] = clean_title_for_card(title)
+        st["body_raw"] = body
         user_state[uid] = st
         send_message_with_retry(c.message.chat.id, "📢 <b>Выбери канал для публикации текста:</b>", parse_mode="HTML", reply_markup=channel_selection_kb())
         try:
@@ -3982,7 +4016,7 @@ def handle_forwarded_message(message):
     # Извлекаем заголовок из текста, если он есть
     if original_text:
         title, body = split_title_and_body(original_text)
-        st["title"] = title
+        st["title"] = clean_title_for_card(title)
         st["body_raw"] = body
         st["original_text"] = original_text
         st["original_text_for_ai"] = original_text
@@ -4091,11 +4125,11 @@ def handle_article_link(message):
         
         # Извлекаем заголовок
         if result.get("title"):
-            st["title"] = result.get("title")
+            st["title"] = clean_title_for_card(result.get("title"))
             st["body_raw"] = result.get("text", "")
         else:
             title, body = split_title_and_body(result.get("text", ""))
-            st["title"] = title
+            st["title"] = clean_title_for_card(title)
             st["body_raw"] = body
         
         user_state[uid] = st
@@ -4228,7 +4262,7 @@ def on_text(message):
         st["original_text_for_ai"] = text
         # Извлекаем заголовок из текста (если это ссылка с текстом)
         title, body = split_title_and_body(text)
-        st["title"] = title
+        st["title"] = clean_title_for_card(title)
         st["body_raw"] = body
         st["step"] = "waiting_repost_action"
         user_state[uid] = st
@@ -4249,7 +4283,7 @@ def on_text(message):
             bot.delete_message(message.chat.id, processing_msg.message_id)
             # Сохраняем заголовок и тело
             title, body = split_title_and_body(result)
-            st["title"] = title
+            st["title"] = clean_title_for_card(title)
             st["body_raw"] = body
             st["original_text"] = result
             st["original_text_for_ai"] = result
@@ -4267,8 +4301,8 @@ def on_text(message):
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
-        # Сохраняем заголовок
-        st["title"] = clean_markdown(text)
+        # Сохраняем заголовок с очисткой от смайликов
+        st["title"] = clean_title_for_card(text)
         if "body_raw" not in st:
             st["body_raw"] = ""
         # Также обновляем original_text
@@ -4297,7 +4331,7 @@ def on_text(message):
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
-        st["title"] = text
+        st["title"] = clean_title_for_card(text)
         st["body_raw"] = text
         st["original_text"] = text
         st["original_text_for_ai"] = text
@@ -4367,7 +4401,7 @@ def on_text(message):
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
-        st["title"] = text
+        st["title"] = clean_title_for_card(text)
         st["body_raw"] = text
         st["original_text"] = text
         st["original_text_for_ai"] = text
@@ -4394,7 +4428,7 @@ def on_text(message):
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
-        st["title"] = text
+        st["title"] = clean_title_for_card(text)
         st["original_text"] = text
         st["original_text_for_ai"] = text
         st["step"] = "waiting_body_fdr"
@@ -4495,6 +4529,7 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
             return
     
+    # Обработка фото/видео для создания поста
     try:
         if message.photo:
             file_id = message.photo[-1].file_id
@@ -4506,12 +4541,25 @@ def on_photo_or_document(message):
             st["saved_photo_bytes"] = photo_bytes
             st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
             st["media_group"]["photos"].append(photo_bytes)
+            
             if message.caption:
                 st["original_text"] = message.caption
                 st["original_text_for_ai"] = message.caption
                 title, body = split_title_and_body(message.caption)
-                st["title"] = title
+                st["title"] = clean_title_for_card(title)
                 st["body_raw"] = body
+            
+            # Если есть заголовок в подписи или текст уже есть - переходим к шаблону
+            if st.get("title"):
+                st["step"] = "waiting_template"
+                user_state[uid] = st
+                title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
+                bot.reply_to(message, f"📸 Фото сохранено!{title_display}\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
+            else:
+                st["step"] = "waiting_title"
+                user_state[uid] = st
+                bot.reply_to(message, "📸 Фото сохранено!\n\n✏️ Теперь отправь <b>ТЕКСТ</b> для поста:", parse_mode="HTML")
+            return
         
         if message.video:
             video_info = get_video_info(message.video.file_id, message.video)
@@ -4519,20 +4567,25 @@ def on_photo_or_document(message):
             st["video_file_id"] = message.video.file_id
             st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
             st["media_group"]["videos"].append(video_info)
+            
             if message.caption:
                 st["original_text"] = message.caption
                 st["original_text_for_ai"] = message.caption
                 title, body = split_title_and_body(message.caption)
-                st["title"] = title
+                st["title"] = clean_title_for_card(title)
                 st["body_raw"] = body
-            logger.info(f"Saved video for user {uid}, file_id: {message.video.file_id}")
-        
-        st["step"] = "waiting_template"
-        user_state[uid] = st
-        
-        title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
-        bot.reply_to(message, f"📸 Медиа сохранено!{title_display}\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
-        return
+            
+            if st.get("title"):
+                st["step"] = "waiting_template"
+                user_state[uid] = st
+                title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
+                bot.reply_to(message, f"🎬 Видео сохранено!{title_display}\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
+            else:
+                st["step"] = "waiting_title"
+                user_state[uid] = st
+                bot.reply_to(message, "🎬 Видео сохранено!\n\n✏️ Теперь отправь <b>ТЕКСТ</b> для поста:", parse_mode="HTML")
+            return
+            
     except Exception as e:
         logger.error(f"Error processing media: {e}")
         bot.reply_to(message, f"❌ Ошибка: {e}")
