@@ -4461,6 +4461,10 @@ def on_photo_or_document(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     
+    # Проверяем, не является ли это репостом (обрабатывается в handle_forwarded_message)
+    if message.forward_from_chat or message.forward_from:
+        return
+    
     if hasattr(message, 'media_group_id') and message.media_group_id:
         media_group_id = message.media_group_id
         if media_group_id not in user_album_cache:
@@ -4487,6 +4491,7 @@ def on_photo_or_document(message):
         threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, False), daemon=True).start()
         return
     
+    # Обработка кнопки "Улучшить качество"
     if st.get("step") == "waiting_enhance_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -4505,6 +4510,7 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
             return
     
+    # Обработка кнопки "Водяные знаки"
     if st.get("step") == "waiting_watermark_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -4529,7 +4535,84 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
             return
     
-    # Обработка фото/видео для создания поста
+    # ==============================================
+    # ОСНОВНАЯ ОБРАБОТКА ФОТО ДЛЯ СОЗДАНИЯ ПОСТА
+    # ==============================================
+    
+    # Проверяем, что пользователь в процессе создания поста
+    step = st.get("step")
+    
+    # Если пользователь нажал "Оформить пост" и отправил фото
+    if step == "waiting_photo_first" or step == "waiting_photo" or step == "waiting_photo_am2" or step == "waiting_photo_fdr_post" or step == "waiting_photo_fdr_story":
+        try:
+            if message.photo:
+                file_id = message.photo[-1].file_id
+                photo_bytes = tg_file_bytes(file_id)
+                if not check_file_size(photo_bytes):
+                    bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
+                    return
+                
+                # Сохраняем фото
+                st["photo_bytes"] = photo_bytes
+                st["saved_photo_bytes"] = photo_bytes
+                st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
+                st["media_group"]["photos"].append(photo_bytes)
+                
+                # Проверяем, есть ли текст в подписи к фото
+                if message.caption:
+                    st["original_text"] = message.caption
+                    st["original_text_for_ai"] = message.caption
+                    title, body = split_title_and_body(message.caption)
+                    st["title"] = clean_title_for_card(title)
+                    st["body_raw"] = body
+                    user_state[uid] = st
+                    
+                    # Если есть заголовок в подписи - сразу переходим к выбору шаблона
+                    if st.get("title"):
+                        st["step"] = "waiting_template"
+                        user_state[uid] = st
+                        bot.reply_to(message, f"📸 Фото сохранено!\n\n📌 <b>Заголовок из подписи:</b>\n«{st['title']}»\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
+                        return
+                
+                # Если нет заголовка - запрашиваем текст
+                st["step"] = "waiting_title"
+                user_state[uid] = st
+                bot.reply_to(message, "📸 Фото сохранено!\n\n✏️ Теперь отправь <b>ТЕКСТ</b> для поста:", parse_mode="HTML")
+                return
+            
+            if message.video:
+                video_info = get_video_info(message.video.file_id, message.video)
+                st["video_info"] = video_info
+                st["video_file_id"] = message.video.file_id
+                st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
+                st["media_group"]["videos"].append(video_info)
+                
+                if message.caption:
+                    st["original_text"] = message.caption
+                    st["original_text_for_ai"] = message.caption
+                    title, body = split_title_and_body(message.caption)
+                    st["title"] = clean_title_for_card(title)
+                    st["body_raw"] = body
+                    user_state[uid] = st
+                    
+                    if st.get("title"):
+                        st["step"] = "waiting_template"
+                        user_state[uid] = st
+                        bot.reply_to(message, f"🎬 Видео сохранено!\n\n📌 <b>Заголовок из подписи:</b>\n«{st['title']}»\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
+                        return
+                
+                st["step"] = "waiting_title"
+                user_state[uid] = st
+                bot.reply_to(message, "🎬 Видео сохранено!\n\n✏️ Теперь отправь <b>ТЕКСТ</b> для поста:", parse_mode="HTML")
+                return
+                
+        except Exception as e:
+            logger.error(f"Error processing media: {e}")
+            bot.reply_to(message, f"❌ Ошибка: {e}")
+            return
+    
+    # Если пользователь уже выбрал шаблон и отправил фото (для случаев, когда фото пришло после выбора шаблона)
+    # Или если просто отправлено фото без активного состояния - сохраняем и переходим к шаблону
     try:
         if message.photo:
             file_id = message.photo[-1].file_id
@@ -4548,18 +4631,6 @@ def on_photo_or_document(message):
                 title, body = split_title_and_body(message.caption)
                 st["title"] = clean_title_for_card(title)
                 st["body_raw"] = body
-            
-            # Если есть заголовок в подписи или текст уже есть - переходим к шаблону
-            if st.get("title"):
-                st["step"] = "waiting_template"
-                user_state[uid] = st
-                title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
-                bot.reply_to(message, f"📸 Фото сохранено!{title_display}\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
-            else:
-                st["step"] = "waiting_title"
-                user_state[uid] = st
-                bot.reply_to(message, "📸 Фото сохранено!\n\n✏️ Теперь отправь <b>ТЕКСТ</b> для поста:", parse_mode="HTML")
-            return
         
         if message.video:
             video_info = get_video_info(message.video.file_id, message.video)
@@ -4567,25 +4638,26 @@ def on_photo_or_document(message):
             st["video_file_id"] = message.video.file_id
             st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
             st["media_group"]["videos"].append(video_info)
-            
             if message.caption:
                 st["original_text"] = message.caption
                 st["original_text_for_ai"] = message.caption
                 title, body = split_title_and_body(message.caption)
                 st["title"] = clean_title_for_card(title)
                 st["body_raw"] = body
-            
-            if st.get("title"):
-                st["step"] = "waiting_template"
-                user_state[uid] = st
-                title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
-                bot.reply_to(message, f"🎬 Видео сохранено!{title_display}\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
-            else:
-                st["step"] = "waiting_title"
-                user_state[uid] = st
-                bot.reply_to(message, "🎬 Видео сохранено!\n\n✏️ Теперь отправь <b>ТЕКСТ</b> для поста:", parse_mode="HTML")
-            return
-            
+            logger.info(f"Saved video for user {uid}, file_id: {message.video.file_id}")
+        
+        # Если есть заголовок - переходим к шаблону
+        if st.get("title"):
+            st["step"] = "waiting_template"
+            user_state[uid] = st
+            title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
+            bot.reply_to(message, f"📸 Медиа сохранено!{title_display}\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
+        else:
+            # Если заголовка нет - запрашиваем текст
+            st["step"] = "waiting_title"
+            user_state[uid] = st
+            bot.reply_to(message, "📸 Медиа сохранено!\n\n✏️ Теперь отправь <b>ТЕКСТ</b> для поста:", parse_mode="HTML")
+        return
     except Exception as e:
         logger.error(f"Error processing media: {e}")
         bot.reply_to(message, f"❌ Ошибка: {e}")
@@ -4638,7 +4710,13 @@ def cmd_start(message):
 def cmd_post(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
+    # Сбрасываем старые данные и устанавливаем шаг ожидания фото
     st["step"] = "waiting_photo_first"
+    st["title"] = ""  # Очищаем заголовок
+    st["body_raw"] = ""
+    st["photo_bytes"] = None
+    st["saved_photo_bytes"] = None
+    st["template"] = "MN"
     user_state[uid] = st
     send_message_with_retry(message.chat.id, "📸 Отправь фото для оформления поста:", reply_markup=main_menu_kb())
 
