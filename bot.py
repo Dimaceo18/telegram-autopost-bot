@@ -4717,6 +4717,7 @@ def cmd_post(message):
     st["photo_bytes"] = None
     st["saved_photo_bytes"] = None
     st["template"] = "MN"
+    st["text_position"] = TEXT_POSITION_TOP
     user_state[uid] = st
     send_message_with_retry(message.chat.id, "📸 Отправь фото для оформления поста:", reply_markup=main_menu_kb())
 
