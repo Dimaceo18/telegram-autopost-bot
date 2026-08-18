@@ -48,6 +48,8 @@ CHANNEL_CHP = (os.getenv("CHANNEL_CHP") or "").strip()
 CHANNEL_AFISHA = (os.getenv("CHANNEL_AFISHA") or "").strip()
 CHANNEL_TEST = (os.getenv("CHANNEL_TEST") or "").strip()
 CHANNEL_PROBNY_MN = (os.getenv("CHANNEL_PROBNY_MN") or "").strip()
+CHANNEL_BELTOPOR = (os.getenv("CHANNEL_BELTOPOR") or "").strip()
+CHANNEL_MINSKACH = (os.getenv("CHANNEL_MINSKACH") or "").strip()
 
 if CHANNEL_MN and not CHANNEL_MN.startswith("@"):
     CHANNEL_MN = "@" + CHANNEL_MN
@@ -59,6 +61,10 @@ if CHANNEL_TEST and not CHANNEL_TEST.startswith("@"):
     CHANNEL_TEST = "@" + CHANNEL_TEST
 if CHANNEL_PROBNY_MN and not CHANNEL_PROBNY_MN.startswith("@"):
     CHANNEL_PROBNY_MN = "@" + CHANNEL_PROBNY_MN
+if CHANNEL_BELTOPOR and not CHANNEL_BELTOPOR.startswith("@"):
+    CHANNEL_BELTOPOR = "@" + CHANNEL_BELTOPOR
+if CHANNEL_MINSKACH and not CHANNEL_MINSKACH.startswith("@"):
+    CHANNEL_MINSKACH = "@" + CHANNEL_MINSKACH
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -248,6 +254,10 @@ def channel_selection_kb():
         kb.add(InlineKeyboardButton("🎫 Афиша Минска", callback_data="select_channel:afisha"))
     if CHANNEL_PROBNY_MN:
         kb.add(InlineKeyboardButton("📰 Пробный МН", callback_data="select_channel:probnym"))
+    if CHANNEL_BELTOPOR:
+        kb.add(InlineKeyboardButton("🪓 Бел.топор", callback_data="select_channel:beltopor"))
+    if CHANNEL_MINSKACH:
+        kb.add(InlineKeyboardButton("🏙️ Минскач", callback_data="select_channel:minskach"))
     if CHANNEL_TEST:
         kb.add(InlineKeyboardButton("🧪 ТЕСТОВЫЙ КАНАЛ", callback_data="select_channel:test"))
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="select_channel:cancel"))
@@ -263,6 +273,10 @@ def post_channel_selection_kb(post_type: str):
         kb.add(InlineKeyboardButton("🎫 Афиша Минска", callback_data=f"post_channel:{post_type}:afisha"))
     if CHANNEL_PROBNY_MN:
         kb.add(InlineKeyboardButton("📰 Пробный МН", callback_data=f"post_channel:{post_type}:probnym"))
+    if CHANNEL_BELTOPOR:
+        kb.add(InlineKeyboardButton("🪓 Бел.топор", callback_data=f"post_channel:{post_type}:beltopor"))
+    if CHANNEL_MINSKACH:
+        kb.add(InlineKeyboardButton("🏙️ Минскач", callback_data=f"post_channel:{post_type}:minskach"))
     if CHANNEL_TEST:
         kb.add(InlineKeyboardButton("🧪 ТЕСТОВЫЙ КАНАЛ", callback_data=f"post_channel:{post_type}:test"))
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data=f"post_channel:{post_type}:cancel"))
@@ -435,11 +449,8 @@ def clean_title_for_card(title: str) -> str:
     """Очищает заголовок от смайликов для использования на карточке"""
     if not title:
         return ""
-    # Удаляем смайлики
     clean = remove_emojis(title)
-    # Убираем лишние пробелы
     clean = re.sub(r'\s+', ' ', clean)
-    # Убираем специальные символы, которые могут мешать
     clean = clean.strip()
     return clean
 
@@ -449,21 +460,18 @@ def split_title_and_body(text: str) -> Tuple[str, str]:
         return "", ""
     text = text.strip()
     
-    # Если есть перенос строки - первая строка заголовок
     if '\n' in text:
         lines = text.split('\n')
         title = lines[0].strip()
         body = '\n'.join(lines[1:]).strip()
         return title, body
     
-    # Если текст длинный и есть точка с пробелом - разделяем по первому предложению
     if len(text) > 100 and '. ' in text:
         parts = text.split('. ', 1)
         title = (parts[0] + '.').strip()
         body = parts[1].strip() if len(parts) > 1 else ""
         return title, body
     
-    # Иначе весь текст как заголовок
     return text, ""
 
 def remove_emojis(text: str) -> str:
@@ -492,7 +500,6 @@ def extract_title_from_text(text: str) -> str:
     if not text:
         return ""
     
-    # Удаляем эмодзи
     emoji_pattern = re.compile(
         "["
         "\U0001F600-\U0001F64F"
@@ -512,10 +519,8 @@ def extract_title_from_text(text: str) -> str:
     )
     clean_text = emoji_pattern.sub('', text).strip()
     
-    # Разделяем на заголовок и тело
     title, body = split_title_and_body(clean_text)
     
-    # Если заголовок слишком длинный - обрезаем
     if len(title) > 150:
         title = title[:147] + "..."
     
@@ -968,7 +973,6 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
         margin_top = 130
     max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)
     
-    # Очищаем заголовок от смайликов
     clean_title = clean_title_for_card(title_text)
     text = (clean_title or "").strip().upper()
     
@@ -1033,7 +1037,6 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
-    # Очищаем заголовок от смайликов
     clean_title = clean_title_for_card(title_text)
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -1094,7 +1097,6 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
 
 def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, bold_phrase: str = "") -> BytesIO:
     ensure_fonts()
-    # Очищаем заголовок от смайликов
     clean_title = clean_title_for_card(title_text)
     clean_bold_phrase = clean_title_for_card(bold_phrase) if bold_phrase else ""
     
@@ -1170,7 +1172,6 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
 
 def make_card_mn_tg(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
-    # Очищаем заголовок от смайликов
     clean_title = clean_title_for_card(title_text)
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -1198,7 +1199,6 @@ def make_card_mn_tg(photo_bytes: bytes, title_text: str, text_position: str = TE
 
 def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
-    # Очищаем заголовок от смайликов
     clean_title = clean_title_for_card(title_text)
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -1243,7 +1243,6 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
 
 def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     ensure_fonts()
-    # Очищаем заголовок от смайликов
     clean_title = clean_title_for_card(title_text)
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
@@ -1285,14 +1284,12 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
 def make_card_am2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP,
                   date: str = "", place: str = "", rubric: str = "",
                   highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
-    # Очищаем заголовок от смайликов
     clean_title = clean_title_for_card(title_text)
     return create_poster_am2(photo_bytes, clean_title, text_position, date, place, rubric,
                              highlight_word, highlight_color, is_yellow)
 
 def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> BytesIO:
     ensure_fonts()
-    # Очищаем заголовок от смайликов
     clean_title = clean_title_for_card(title)
     clean_body = clean_markdown(body_text)
     
@@ -1338,7 +1335,6 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
 
 def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: str) -> BytesIO:
     ensure_fonts()
-    # Очищаем заголовок от смайликов
     clean_title = clean_title_for_card(title_text)
     clean_highlight = clean_title_for_card(highlight_phrase) if highlight_phrase else ""
     
@@ -1408,7 +1404,6 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
               text_position: str = TEXT_POSITION_TOP, 
               bold_phrase: str = "", date: str = "", place: str = "", rubric: str = "",
               highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
-    # Очищаем заголовок от смайликов
     clean_title = clean_title_for_card(title_text)
     clean_bold_phrase = clean_title_for_card(bold_phrase) if bold_phrase else ""
     clean_highlight_phrase = clean_title_for_card(highlight_phrase) if highlight_phrase else ""
@@ -1521,7 +1516,6 @@ def apply_watermark_probnym(photo_bytes: bytes) -> BytesIO:
         watermark = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(watermark)
         
-        # Размер шрифта 24px
         font_size = 24
         try:
             font = load_font(FONT_MN, font_size)
@@ -1533,11 +1527,9 @@ def apply_watermark_probnym(photo_bytes: bytes) -> BytesIO:
         text_width_val = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
         
-        # Центрируем текст
         x = (img_width - text_width_val) // 2
         y = (img_height - text_height) // 2
         
-        # 15% прозрачности = альфа 38 (из 255)
         draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 38))
         
         result = Image.alpha_composite(img, watermark)
@@ -2672,9 +2664,7 @@ def on_repost_action(c):
     st = user_state.get(uid) or {}
     
     if action == "design":
-        # Проверяем, есть ли уже заголовок
         if st.get("title"):
-            # Заголовок уже есть - сразу переходим к выбору шаблона
             st["step"] = "waiting_template"
             user_state[uid] = st
             bot.answer_callback_query(c.id, f"📝 Использую заголовок: {st['title'][:50]}...")
@@ -2683,7 +2673,6 @@ def on_repost_action(c):
                 parse_mode="HTML", 
                 reply_markup=template_kb())
         else:
-            # Заголовка нет - просим ввести
             st["step"] = "waiting_title"
             user_state[uid] = st
             bot.answer_callback_query(c.id, "✏️ Введите заголовок")
@@ -2856,9 +2845,7 @@ def on_ai_action(c):
     st = user_state.get(uid) or {}
     
     if action == "design":
-        # Проверяем, есть ли уже заголовок
         if st.get("title"):
-            # Заголовок уже есть - сразу переходим к выбору шаблона
             if st.get("saved_photo_bytes"):
                 st["photo_bytes"] = st["saved_photo_bytes"]
             st["step"] = "waiting_template"
@@ -2869,7 +2856,6 @@ def on_ai_action(c):
                 parse_mode="HTML", 
                 reply_markup=template_kb())
         else:
-            # Заголовка нет - просим ввести
             if st.get("saved_photo_bytes"):
                 st["photo_bytes"] = st["saved_photo_bytes"]
             st["step"] = "waiting_title"
@@ -3150,8 +3136,13 @@ def on_post_channel_select(c):
     elif channel_type == "probnym":
         target_channel = CHANNEL_PROBNY_MN
         channel_name = "Пробный МН"
-        # Ссылка для подписки
         subscribe_link = "\n\n<a href='https://t.me/+eI2GN7rcsZliZGYy'>✅ Подписаться на канал</a>"
+    elif channel_type == "beltopor":
+        target_channel = CHANNEL_BELTOPOR
+        channel_name = "Бел.топор"
+    elif channel_type == "minskach":
+        target_channel = CHANNEL_MINSKACH
+        channel_name = "Минскач"
     elif channel_type == "test":
         target_channel = CHANNEL_TEST
         channel_name = "ТЕСТОВЫЙ КАНАЛ"
@@ -3169,7 +3160,6 @@ def on_post_channel_select(c):
         else:
             post_text = st.get("threads_post_text", "")
         
-        # Добавляем ссылку только для канала "Пробный МН"
         if channel_type == "probnym" and post_text:
             post_text = post_text + subscribe_link
         
@@ -3177,20 +3167,19 @@ def on_post_channel_select(c):
             bot.answer_callback_query(c.id, "❌ Нет текста для публикации")
             return
         
-        media_group = st.get("media_group", {"photos": [], "videos": []})
-        photo_bytes = st.get("photo_bytes") or st.get("saved_photo_bytes")
-        video_file_id = st.get("video_file_id")
+        # ИСПРАВЛЕНИЕ: СНАЧАЛА ПРОВЕРЯЕМ ОФОРМЛЕННУЮ КАРТОЧКУ
+        if st.get("card_bytes"):
+            bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=post_text, parse_mode="HTML")
+            bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с оформлением")
+            has_media = True
         
-        has_media = False
-        
-        # 1. Проверяем альбом (несколько фото/видео)
-        if media_group.get("photos") or media_group.get("videos"):
+        elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+            media_group = st.get("media_group", {"photos": [], "videos": []})
             media_list = []
             first = True
             
             for photo in media_group.get("photos", []):
                 try:
-                    # Для канала "Пробный МН" наносим водяной знак
                     if channel_type == "probnym":
                         watermarked = apply_watermark_probnym(photo)
                         photo_bytes_io = watermarked
@@ -3204,7 +3193,6 @@ def on_post_channel_select(c):
                         media_list.append(InputMediaPhoto(photo_bytes_io))
                 except Exception as e:
                     logger.error(f"Error adding photo to media list: {e}")
-                    # В случае ошибки отправляем оригинал
                     if first:
                         media_list.append(InputMediaPhoto(BytesIO(photo), caption=post_text, parse_mode="HTML"))
                         first = False
@@ -3250,15 +3238,13 @@ def on_post_channel_select(c):
                 except Exception as e:
                     logger.error(f"Error sending single media: {e}")
         
-        # 2. Если нет альбома, проверяем отдельное фото
-        if not has_media and photo_bytes:
+        elif st.get("photo_bytes"):
             try:
-                # Для канала "Пробный МН" наносим водяной знак
                 if channel_type == "probnym":
-                    watermarked_photo = apply_watermark_probnym(photo_bytes)
+                    watermarked_photo = apply_watermark_probnym(st["photo_bytes"])
                     photo_to_send = watermarked_photo
                 else:
-                    photo_to_send = BytesIO(photo_bytes)
+                    photo_to_send = BytesIO(st["photo_bytes"])
                 
                 bot.send_photo(target_channel, photo_to_send, caption=post_text, parse_mode="HTML")
                 has_media = True
@@ -3266,17 +3252,15 @@ def on_post_channel_select(c):
             except Exception as e:
                 logger.error(f"Error sending photo: {e}")
         
-        # 3. Если нет фото, проверяем видео
-        if not has_media and video_file_id:
+        elif st.get("video_file_id"):
             try:
-                bot.send_video(target_channel, video_file_id, caption=post_text, parse_mode="HTML")
+                bot.send_video(target_channel, st["video_file_id"], caption=post_text, parse_mode="HTML")
                 has_media = True
                 logger.info(f"Published video to {channel_name}")
             except Exception as e:
                 logger.error(f"Error sending video: {e}")
         
-        # 4. Если ничего не отправилось, отправляем только текст
-        if not has_media:
+        else:
             try:
                 bot.send_message(target_channel, post_text, parse_mode="HTML")
                 logger.info(f"Published text only to {channel_name}")
@@ -3344,6 +3328,12 @@ def on_select_channel(c):
     elif channel_type == "probnym":
         target_channel = CHANNEL_PROBNY_MN
         channel_name = "Пробный МН"
+    elif channel_type == "beltopor":
+        target_channel = CHANNEL_BELTOPOR
+        channel_name = "Бел.топор"
+    elif channel_type == "minskach":
+        target_channel = CHANNEL_MINSKACH
+        channel_name = "Минскач"
     elif channel_type == "test":
         target_channel = CHANNEL_TEST
         channel_name = "ТЕСТОВЫЙ КАНАЛ"
@@ -3365,19 +3355,20 @@ def on_select_channel(c):
         else:
             caption_text = html.escape(full_text)
         
-        if st.get("photo_bytes"):
-            send_photo_with_retry(
-                target_channel,
-                BytesIO(st["photo_bytes"]),
-                caption=caption_text,
-                parse_mode="HTML"
-            )
-            bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с фото")
-        
-        elif st.get("card_bytes"):
+        # ИСПРАВЛЕНИЕ: СНАЧАЛА ПРОВЕРЯЕМ ОФОРМЛЕННУЮ КАРТОЧКУ
+        if st.get("card_bytes"):
             send_photo_with_retry(
                 target_channel,
                 BytesIO(st["card_bytes"]),
+                caption=caption_text,
+                parse_mode="HTML"
+            )
+            bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с оформлением")
+        
+        elif st.get("photo_bytes"):
+            send_photo_with_retry(
+                target_channel,
+                BytesIO(st["photo_bytes"]),
                 caption=caption_text,
                 parse_mode="HTML"
             )
@@ -3428,9 +3419,9 @@ def on_action(call):
             else:
                 caption = html.escape(body)
             
-            photo_to_send = st.get("photo_bytes")
-            if photo_to_send is None:
-                photo_to_send = st.get("card_bytes")
+            photo_to_send = st.get("card_bytes")
+            if not photo_to_send:
+                photo_to_send = st.get("photo_bytes")
             
             if photo_to_send:
                 channel = os.getenv("CHANNEL_USERNAME", "").strip()
@@ -3522,17 +3513,14 @@ def on_tpl(c):
     
     has_photo = st.get("photo_bytes") is not None
     
-    # Для шаблонов, где нужно выбирать положение текста
     if tpl in ["MN", "CHP", "MN_TG", "MN2"]:
         if has_photo:
-            # Сначала запрашиваем положение текста
             st["step"] = "waiting_text_position"
             user_state[uid] = st
             template_names = {"MN": "МН", "MN_TG": "МН ТГ", "CHP": "ЧП ВМ", "MN2": "МН 2"}
             template_name = template_names.get(tpl, tpl)
             bot.answer_callback_query(c.id, f"Шаблон {template_name} выбран ✅")
             
-            # Показываем заголовок, если он уже есть
             title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
             send_message_with_retry(c.message.chat.id, 
                 f"📰 Выбран шаблон <b>{template_name}</b>{title_display}\n\n📸 Фото уже есть!\n\n<b>Где разместить текст?</b>\n⬆️ Сверху или ⬇️ Снизу",
@@ -3546,9 +3534,7 @@ def on_tpl(c):
             send_message_with_retry(c.message.chat.id, f"📰 Выбран шаблон <b>{template_name}</b>\n\nТеперь пришли фото 📷", parse_mode="HTML")
     
     elif tpl == "AM":
-        # Для AM не нужен выбор положения (текст всегда сверху)
         if has_photo:
-            # Сначала запрашиваем положение текста (для единообразия)
             st["step"] = "waiting_text_position"
             user_state[uid] = st
             bot.answer_callback_query(c.id, "Шаблон АМ выбран ✅")
@@ -3579,7 +3565,6 @@ def on_tpl(c):
     
     elif tpl == "FDR_POST":
         if has_photo:
-            # Проверяем, есть ли уже заголовок
             if st.get("title"):
                 st["step"] = "waiting_highlight_phrase_fdr_post"
                 user_state[uid] = st
@@ -3633,9 +3618,7 @@ def on_text_position(c):
     st["text_position"] = position
     position_text = "сверху" if position == "top" else "снизу"
     
-    # Проверяем, есть ли уже заголовок
     if st.get("title"):
-        # Заголовок уже есть - сразу создаем карточку
         try:
             card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), 
                             text_position=position,
@@ -3654,7 +3637,6 @@ def on_text_position(c):
             bot.answer_callback_query(c.id, f"❌ Ошибка: {e}")
             send_message_with_retry(c.message.chat.id, f"❌ Ошибка при создании карточки: {e}")
     else:
-        # Заголовка нет - запрашиваем
         st["step"] = "waiting_title"
         user_state[uid] = st
         bot.answer_callback_query(c.id, f"Текст будет {position_text} ✅")
@@ -3675,9 +3657,7 @@ def on_am2_text_position(c):
     st = user_state.get(uid) or {}
     st["text_position"] = position
     
-    # Проверяем, есть ли уже заголовок
     if st.get("title"):
-        # Заголовок уже есть - переходим к выбору даты/места
         st["step"] = "waiting_date_place_choice_am2"
         user_state[uid] = st
         pos_text = "сверху" if position == "top" else "снизу"
@@ -4012,7 +3992,6 @@ def handle_forwarded_message(message):
     
     st = user_state.get(uid) or {}
     
-    # Извлекаем заголовок из текста, если он есть
     if original_text:
         title, body = split_title_and_body(original_text)
         st["title"] = clean_title_for_card(title)
@@ -4069,7 +4048,6 @@ def handle_forwarded_message(message):
     if not media_status:
         media_status.append("⚠️ <b>Медиа:</b> не найдено")
     
-    # Показываем заголовок, если он есть
     title_display = ""
     if st.get("title"):
         title_display = f"\n📌 <b>Заголовок:</b> {st['title']}"
@@ -4122,7 +4100,6 @@ def handle_article_link(message):
         st["extracted_url"] = result.get("url", url)
         st["step"] = "waiting_extracted_article"
         
-        # Извлекаем заголовок
         if result.get("title"):
             st["title"] = clean_title_for_card(result.get("title"))
             st["body_raw"] = result.get("text", "")
@@ -4259,7 +4236,6 @@ def on_text(message):
         st["original_url"] = text
         st["original_text"] = text
         st["original_text_for_ai"] = text
-        # Извлекаем заголовок из текста (если это ссылка с текстом)
         title, body = split_title_and_body(text)
         st["title"] = clean_title_for_card(title)
         st["body_raw"] = body
@@ -4280,7 +4256,6 @@ def on_text(message):
         try:
             result = loop.run_until_complete(process_text_with_deepseek(text))
             bot.delete_message(message.chat.id, processing_msg.message_id)
-            # Сохраняем заголовок и тело
             title, body = split_title_and_body(result)
             st["title"] = clean_title_for_card(title)
             st["body_raw"] = body
@@ -4300,22 +4275,18 @@ def on_text(message):
         if not text:
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
-        # Сохраняем заголовок с очисткой от смайликов
         st["title"] = clean_title_for_card(text)
         if "body_raw" not in st:
             st["body_raw"] = ""
-        # Также обновляем original_text
         if st.get("body_raw"):
             st["original_text"] = f"{st['title']}\n\n{st['body_raw']}"
         else:
             st["original_text"] = st['title']
         st["original_text_for_ai"] = st["original_text"]
         
-        # Переходим к выбору шаблона
         st["step"] = "waiting_template"
         user_state[uid] = st
         
-        # Показываем заголовок и предлагаем выбрать шаблон
         bot.reply_to(message, 
             f"✅ <b>Заголовок сохранён:</b>\n«{st['title']}»\n\nТеперь выбери шаблон оформления:",
             parse_mode="HTML", 
@@ -4456,7 +4427,6 @@ def on_photo_or_document(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     
-    # Проверяем, не является ли это репостом (обрабатывается в handle_forwarded_message)
     if message.forward_from_chat or message.forward_from:
         return
     
@@ -4486,7 +4456,6 @@ def on_photo_or_document(message):
         threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, False), daemon=True).start()
         return
     
-    # Обработка кнопки "Улучшить качество"
     if st.get("step") == "waiting_enhance_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -4505,7 +4474,6 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
             return
     
-    # Обработка кнопки "Водяные знаки"
     if st.get("step") == "waiting_watermark_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -4530,14 +4498,8 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
             return
     
-    # ==============================================
-    # ОСНОВНАЯ ОБРАБОТКА ФОТО ДЛЯ СОЗДАНИЯ ПОСТА
-    # ==============================================
-    
-    # Проверяем, что пользователь в процессе создания поста
     step = st.get("step")
     
-    # Если пользователь нажал "Оформить пост" и отправил фото
     if step == "waiting_photo_first" or step == "waiting_photo" or step == "waiting_photo_am2" or step == "waiting_photo_fdr_post" or step == "waiting_photo_fdr_story":
         try:
             if message.photo:
@@ -4547,13 +4509,11 @@ def on_photo_or_document(message):
                     bot.reply_to(message, "❌ Файл слишком большой. Максимальный размер 20MB.")
                     return
                 
-                # Сохраняем фото
                 st["photo_bytes"] = photo_bytes
                 st["saved_photo_bytes"] = photo_bytes
                 st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
                 st["media_group"]["photos"].append(photo_bytes)
                 
-                # Проверяем, есть ли текст в подписи к фото
                 if message.caption:
                     st["original_text"] = message.caption
                     st["original_text_for_ai"] = message.caption
@@ -4562,14 +4522,12 @@ def on_photo_or_document(message):
                     st["body_raw"] = body
                     user_state[uid] = st
                     
-                    # Если есть заголовок в подписи - сразу переходим к выбору шаблона
                     if st.get("title"):
                         st["step"] = "waiting_template"
                         user_state[uid] = st
                         bot.reply_to(message, f"📸 Фото сохранено!\n\n📌 <b>Заголовок из подписи:</b>\n«{st['title']}»\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
                         return
                 
-                # Если нет заголовка - запрашиваем заголовок
                 st["step"] = "waiting_title"
                 user_state[uid] = st
                 bot.reply_to(message, "📸 Фото сохранено!\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b> для поста (он будет на фото):", parse_mode="HTML")
@@ -4606,8 +4564,6 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
             return
     
-    # Если пользователь уже выбрал шаблон и отправил фото (для случаев, когда фото пришло после выбора шаблона)
-    # Или если просто отправлено фото без активного состояния - сохраняем и переходим к шаблону
     try:
         if message.photo:
             file_id = message.photo[-1].file_id
@@ -4641,14 +4597,12 @@ def on_photo_or_document(message):
                 st["body_raw"] = body
             logger.info(f"Saved video for user {uid}, file_id: {message.video.file_id}")
         
-        # Если есть заголовок - переходим к шаблону
         if st.get("title"):
             st["step"] = "waiting_template"
             user_state[uid] = st
             title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
             bot.reply_to(message, f"📸 Медиа сохранено!{title_display}\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
         else:
-            # Если заголовка нет - запрашиваем заголовок
             st["step"] = "waiting_title"
             user_state[uid] = st
             bot.reply_to(message, "📸 Медиа сохранено!\n\n✏️ Теперь отправь <b>ЗАГОЛОВОК</b> для поста (он будет на фото):", parse_mode="HTML")
@@ -4676,6 +4630,10 @@ def cmd_start(message):
         channels_list.append("🎫 Афиша Минска")
     if CHANNEL_PROBNY_MN:
         channels_list.append("📰 Пробный МН")
+    if CHANNEL_BELTOPOR:
+        channels_list.append("🪓 Бел.топор")
+    if CHANNEL_MINSKACH:
+        channels_list.append("🏙️ Минскач")
     if CHANNEL_TEST:
         channels_list.append("🧪 ТЕСТОВЫЙ")
     channels_text = ", ".join(channels_list) if channels_list else "не настроены"
@@ -4707,9 +4665,8 @@ def cmd_start(message):
 def cmd_post(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
-    # Сбрасываем старые данные и устанавливаем шаг ожидания фото
     st["step"] = "waiting_photo_first"
-    st["title"] = ""  # Очищаем заголовок
+    st["title"] = ""
     st["body_raw"] = ""
     st["photo_bytes"] = None
     st["saved_photo_bytes"] = None
