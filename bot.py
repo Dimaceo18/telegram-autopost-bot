@@ -263,6 +263,7 @@ def channel_selection_kb():
         kb.add(InlineKeyboardButton("🏙️ Минскач", callback_data="select_channel:minskach"))
     if CHANNEL_TEST:
         kb.add(InlineKeyboardButton("🧪 ТЕСТОВЫЙ КАНАЛ", callback_data="select_channel:test"))
+    kb.add(InlineKeyboardButton("📝 Оформить пост перед публикацией", callback_data="select_channel:design_before_publish"))
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="select_channel:cancel"))
     return kb
 
@@ -282,6 +283,7 @@ def post_channel_selection_kb(post_type: str):
         kb.add(InlineKeyboardButton("🏙️ Минскач", callback_data=f"post_channel:{post_type}:minskach"))
     if CHANNEL_TEST:
         kb.add(InlineKeyboardButton("🧪 ТЕСТОВЫЙ КАНАЛ", callback_data=f"post_channel:{post_type}:test"))
+    kb.add(InlineKeyboardButton("📝 Оформить пост перед публикацией", callback_data=f"post_channel:{post_type}:design_before_publish"))
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data=f"post_channel:{post_type}:cancel"))
     return kb
 
@@ -3144,6 +3146,38 @@ def on_post_channel_select(c):
     _, post_type, channel_type = c.data.split(":", 2)
     st = user_state.get(uid) or {}
     
+    # НОВЫЙ ОБРАБОТЧИК - Оформить пост перед публикацией
+    if channel_type == "design_before_publish":
+        bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
+        if st.get("photo_bytes") or st.get("saved_photo_bytes"):
+            if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
+                st["photo_bytes"] = st["saved_photo_bytes"]
+            st["step"] = "waiting_template"
+            user_state[uid] = st
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📝 <b>Заголовок сохранён:</b>\n«{st['title']}»\n\nВыбери шаблон оформления:",
+                parse_mode="HTML",
+                reply_markup=template_kb()
+            )
+        else:
+            st["step"] = "waiting_photo"
+            user_state[uid] = st
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            send_message_with_retry(
+                c.message.chat.id,
+                "📸 Отправь фото для оформления поста",
+                parse_mode="HTML"
+            )
+        return
+    
     if channel_type == "cancel":
         bot.answer_callback_query(c.id, "Отменено")
         try:
@@ -3356,6 +3390,38 @@ def on_select_channel(c):
     uid = c.from_user.id
     channel_type = c.data.split(":")[1]
     st = user_state.get(uid) or {}
+    
+    # НОВЫЙ ОБРАБОТЧИК - Оформить пост перед публикацией
+    if channel_type == "design_before_publish":
+        bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
+        if st.get("photo_bytes") or st.get("saved_photo_bytes"):
+            if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
+                st["photo_bytes"] = st["saved_photo_bytes"]
+            st["step"] = "waiting_template"
+            user_state[uid] = st
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📝 <b>Заголовок сохранён:</b>\n«{st['title']}»\n\nВыбери шаблон оформления:",
+                parse_mode="HTML",
+                reply_markup=template_kb()
+            )
+        else:
+            st["step"] = "waiting_photo"
+            user_state[uid] = st
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            send_message_with_retry(
+                c.message.chat.id,
+                "📸 Отправь фото для оформления поста",
+                parse_mode="HTML"
+            )
+        return
     
     if channel_type == "cancel":
         bot.answer_callback_query(c.id, "Отменено")
@@ -4314,7 +4380,7 @@ def on_text(message):
     
     step = st.get("step")
     
-    # РЕДАКТИРОВАНИЕ ТЕКСТА (НОВЫЕ ОБРАБОТЧИКИ)
+    # РЕДАКТИРОВАНИЕ ТЕКСТА
     if step == "waiting_edit_repost_text":
         if not text:
             bot.reply_to(message, "❌ Текст не может быть пустым")
@@ -4849,7 +4915,8 @@ def cmd_start(message):
         f"• 📱 Пост для Тредс (400 символов, заголовок до 150 символов)\n"
         f"• 📰 Извлечение статьи по ссылке (точное копирование)\n"
         f"• 📎 Репосты из каналов\n"
-        f"• ✏️ Редактирование текста после ИИ\n\n"
+        f"• ✏️ Редактирование текста после ИИ\n"
+        f"• 📝 Оформление поста перед публикацией\n\n"
         f"<b>📌 Доступные каналы:</b> {channels_text}\n\n"
         f"<b>💡 Как это работает:</b>\n"
         f"1️⃣ Нажми «Оформить пост»\n"
