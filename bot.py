@@ -159,18 +159,20 @@ def repost_action_kb():
         InlineKeyboardButton("📝 Оформить пост", callback_data="repost:design"),
         InlineKeyboardButton("🤖 Обработать через ИИ", callback_data="repost:ai"),
         InlineKeyboardButton("📱 Пост для ТГ (500 симв.)", callback_data="repost:tg"),
-        InlineKeyboardButton("📱 Пост для Тредс (400 симв.)", callback_data="repost:threads")
+        InlineKeyboardButton("📱 Пост для Тредс (400 симв.)", callback_data="repost:threads"),
+        InlineKeyboardButton("💧 Нанести водяной знак", callback_data="repost:watermark"),
+        InlineKeyboardButton("✏️ Редактировать текст", callback_data="repost:edit")
     )
-    kb.add(InlineKeyboardButton("💧 Нанести водяной знак", callback_data="repost:watermark"))
     return kb
 
 def after_ai_kb():
-    kb = InlineKeyboardMarkup(row_width=1)
+    kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📝 Оформить пост", callback_data="ai:design"),
         InlineKeyboardButton("💧 Водяной знак", callback_data="ai:watermark"),
         InlineKeyboardButton("📢 Выбрать канал", callback_data="ai:select_channel"),
         InlineKeyboardButton("🔄 Переделать через ИИ", callback_data="ai:redo"),
+        InlineKeyboardButton("✏️ Редактировать текст", callback_data="ai:edit"),
         InlineKeyboardButton("◀️ Вернуться назад", callback_data="ai:back")
     )
     return kb
@@ -179,7 +181,8 @@ def post_action_kb(post_type: str = "tg"):
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("🔄 Переделать еще раз", callback_data=f"{post_type}:redo"),
-        InlineKeyboardButton("📢 Выбрать канал", callback_data=f"{post_type}:select_channel")
+        InlineKeyboardButton("📢 Выбрать канал", callback_data=f"{post_type}:select_channel"),
+        InlineKeyboardButton("✏️ Редактировать текст", callback_data=f"{post_type}:edit")
     )
     kb.add(InlineKeyboardButton("◀️ Назад", callback_data=f"{post_type}:back"))
     return kb
@@ -405,7 +408,6 @@ def get_video_info(file_id: str, video_obj) -> Dict:
 
 def clear_state(user_id: int):
     if user_id in user_state:
-        # Сохраняем только базовые данные при очистке
         user_state[user_id] = {"step": "idle"}
 
 def ensure_fonts():
@@ -447,7 +449,6 @@ def clean_markdown(text: str) -> str:
     return text.strip()
 
 def clean_title_for_card(title: str) -> str:
-    """Очищает заголовок от смайликов для использования на карточке"""
     if not title:
         return ""
     clean = remove_emojis(title)
@@ -456,7 +457,6 @@ def clean_title_for_card(title: str) -> str:
     return clean
 
 def split_title_and_body(text: str) -> Tuple[str, str]:
-    """Разделяет текст на заголовок и тело."""
     if not text:
         return "", ""
     text = text.strip()
@@ -476,7 +476,6 @@ def split_title_and_body(text: str) -> Tuple[str, str]:
     return text, ""
 
 def remove_emojis(text: str) -> str:
-    """Удаляет эмодзи из текста"""
     emoji_pattern = re.compile(
         "["
         "\U0001F600-\U0001F64F"
@@ -497,7 +496,6 @@ def remove_emojis(text: str) -> str:
     return emoji_pattern.sub('', text)
 
 def extract_title_from_text(text: str) -> str:
-    """Извлекает заголовок из текста, удаляя эмодзи и лишние символы."""
     if not text:
         return ""
     
@@ -1034,7 +1032,7 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
 
 
 # =========================
-# CARD MAKING FUNCTIONS - ВСЕ ВОЗВРАЩАЮТ BytesIO
+# CARD MAKING FUNCTIONS
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
@@ -1510,29 +1508,23 @@ def apply_watermark_chp(photo_bytes: bytes) -> BytesIO:
         raise
 
 def apply_watermark_probnym(photo_bytes: bytes) -> BytesIO:
-    """Наносит водяной знак MINSK NEWS для канала Пробный МН с прозрачностью 15%"""
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
         img_width, img_height = img.size
         watermark = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(watermark)
-        
         font_size = 24
         try:
             font = load_font(FONT_MN, font_size)
         except:
             font = ImageFont.load_default()
-        
         watermark_text = "MINSK NEWS"
         bbox = draw.textbbox((0, 0), watermark_text, font=font)
         text_width_val = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
-        
         x = (img_width - text_width_val) // 2
         y = (img_height - text_height) // 2
-        
         draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 38))
-        
         result = Image.alpha_composite(img, watermark)
         result = result.convert("RGB")
         output = BytesIO()
@@ -1547,9 +1539,7 @@ def apply_watermark_probnym(photo_bytes: bytes) -> BytesIO:
 # =========================
 # ФУНКЦИИ DEEPSEEK
 # =========================
-
 async def process_text_with_deepseek(text: str) -> str:
-    """Обработка текста через DeepSeek AI (сокращение до ~650 символов)"""
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
@@ -1593,7 +1583,6 @@ async def process_text_with_deepseek(text: str) -> str:
 
 
 async def detect_emoji_with_ai(text: str) -> str:
-    """Определяет подходящий эмодзи для текста через ИИ"""
     if not DEEPSEEK_API_KEY:
         return detect_topic_emoji_local(text)
     
@@ -1655,7 +1644,6 @@ async def detect_emoji_with_ai(text: str) -> str:
 
 
 def detect_topic_emoji_local(text: str) -> str:
-    """Локальное определение эмодзи (резерв)"""
     text_lower = text.lower()
     topics = {
         "🚨": ["дтп", "авар", "пожар", "взрыв", "происшеств", "чп", "полици", "милици", "скорая", "мчс", "катастроф", "пострада"],
@@ -1683,7 +1671,6 @@ def detect_topic_emoji_local(text: str) -> str:
 
 
 async def process_text_with_deepseek_tg(text: str) -> str:
-    """Создание поста для Telegram (до 500 символов)"""
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
@@ -1846,7 +1833,6 @@ async def process_text_with_deepseek_tg(text: str) -> str:
 
 
 async def process_text_with_deepseek_threads(text: str) -> str:
-    """Создание поста для Threads (до 400 символов)"""
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
@@ -2009,7 +1995,6 @@ async def process_text_with_deepseek_threads(text: str) -> str:
 
 
 async def process_text_with_deepseek_tg_redo(text: str) -> str:
-    """Переделка поста для Telegram"""
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
@@ -2169,7 +2154,6 @@ async def process_text_with_deepseek_tg_redo(text: str) -> str:
 
 
 async def process_text_with_deepseek_threads_redo(text: str) -> str:
-    """Переделка поста для Threads"""
     if not DEEPSEEK_API_KEY:
         return "❌ API ключ DeepSeek не настроен."
     
@@ -2329,7 +2313,6 @@ async def process_text_with_deepseek_threads_redo(text: str) -> str:
 
 
 async def extract_article_content(url: str) -> Dict[str, any]:
-    """Извлечение текста статьи по ссылке"""
     if not DEEPSEEK_API_KEY:
         return {
             "text": "❌ API ключ DeepSeek не настроен. Добавьте DEEPSEEK_API_KEY в переменные окружения.",
@@ -2487,7 +2470,7 @@ def run_http_server():
 
 
 # =========================
-# ОБРАБОТЧИК АЛЬБОМОВ - ИСПРАВЛЕН
+# ОБРАБОТЧИК АЛЬБОМОВ
 # =========================
 def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
     time.sleep(2)
@@ -2508,26 +2491,23 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
         st["original_text"] = caption
         st["original_text_for_ai"] = caption
     
-    # СОХРАНЯЕМ ВСЕ МЕДИА В ОТДЕЛЬНУЮ ПЕРЕМЕННУЮ
     st["media_group"] = {"photos": photos, "videos": videos}
     
     if photos:
-        # Берем ПЕРВОЕ фото для оформления, но сохраняем ВСЕ
         st["photo_bytes"] = photos[0]
         st["saved_photo_bytes"] = photos[0]
-        st["album_photos"] = photos  # Сохраняем все фото альбома
+        st["album_photos"] = photos
         logger.info(f"Saved {len(photos)} photos for user {uid}")
     
     if videos:
         st["video_info"] = videos[0]
         st["video_file_id"] = videos[0].get('file_id')
-        st["album_videos"] = videos  # Сохраняем все видео альбома
+        st["album_videos"] = videos
         logger.info(f"Saved {len(videos)} videos for user {uid}, file_id: {st['video_file_id']}")
     
     if videos and not photos:
         st["video_file_id"] = videos[0].get('file_id')
     
-    # ОЧИЩАЕМ card_bytes при новом альбоме
     st["card_bytes"] = None
     st["step"] = "waiting_repost_action"
     user_state[uid] = st
@@ -2550,9 +2530,8 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
 
 
 # =========================
-# ВСЕ CALLBACK ОБРАБОТЧИКИ
+# CALLBACK ОБРАБОТЧИКИ
 # =========================
-
 @bot.callback_query_handler(func=lambda c: c.data.startswith("prices:"))
 def on_prices_callback(c):
     action = c.data.split(":", 1)[1]
@@ -2714,6 +2693,25 @@ def on_repost_action(c):
         finally:
             loop.close()
     
+    elif action == "edit":
+        bot.answer_callback_query(c.id, "✏️ Отправьте новый текст")
+        st["step"] = "waiting_edit_repost_text"
+        user_state[uid] = st
+        
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+        
+        send_message_with_retry(
+            c.message.chat.id,
+            "✏️ <b>Отправьте новый текст поста</b>\n\n"
+            "Вы можете полностью переписать текст или изменить его.\n"
+            "После отправки вы сможете оформить пост или опубликовать его.",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb()
+        )
+    
     elif action == "tg":
         if not st.get("original_text"):
             bot.answer_callback_query(c.id, "❌ Нет текста для обработки")
@@ -2870,6 +2868,25 @@ def on_ai_action(c):
             bot.answer_callback_query(c.id, "✏️ Введите заголовок")
             send_message_with_retry(c.message.chat.id, "✏️ Отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
     
+    elif action == "edit":
+        bot.answer_callback_query(c.id, "✏️ Отправьте новый текст")
+        st["step"] = "waiting_edit_ai_text"
+        user_state[uid] = st
+        
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+        
+        send_message_with_retry(
+            c.message.chat.id,
+            "✏️ <b>Отправьте новый текст поста</b>\n\n"
+            "Вы можете полностью переписать текст или изменить его.\n"
+            "После отправки вы сможете оформить пост или опубликовать его.",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb()
+        )
+    
     elif action == "watermark":
         if st.get("photo_bytes") or st.get("saved_photo_bytes"):
             if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
@@ -2939,7 +2956,25 @@ def on_tg_action(c):
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
-    if action == "redo":
+    if action == "edit":
+        bot.answer_callback_query(c.id, "✏️ Отправьте новый текст для Telegram")
+        st["step"] = "waiting_edit_tg_text"
+        user_state[uid] = st
+        
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+        
+        send_message_with_retry(
+            c.message.chat.id,
+            "✏️ <b>Отправьте новый текст для поста в Telegram</b>\n\n"
+            "Заголовок должен быть не более 150 символов.",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb()
+        )
+    
+    elif action == "redo":
         bot.answer_callback_query(c.id, "🔄 Переделываю пост для Telegram...")
         processing_msg = bot.send_message(c.message.chat.id, "⏳ Переделываю пост... (до 30 секунд)")
         
@@ -3015,7 +3050,25 @@ def on_threads_action(c):
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
-    if action == "redo":
+    if action == "edit":
+        bot.answer_callback_query(c.id, "✏️ Отправьте новый текст для Threads")
+        st["step"] = "waiting_edit_threads_text"
+        user_state[uid] = st
+        
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except:
+            pass
+        
+        send_message_with_retry(
+            c.message.chat.id,
+            "✏️ <b>Отправьте новый текст для поста в Threads</b>\n\n"
+            "Заголовок должен быть не более 150 символов.",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb()
+        )
+    
+    elif action == "redo":
         bot.answer_callback_query(c.id, "🔄 Переделываю пост для Threads...")
         processing_msg = bot.send_message(c.message.chat.id, "⏳ Переделываю пост... (до 30 секунд)")
         
@@ -3174,15 +3227,11 @@ def on_post_channel_select(c):
             bot.answer_callback_query(c.id, "❌ Нет текста для публикации")
             return
         
-        # ====== ИСПРАВЛЕНИЕ: ИСПОЛЬЗУЕМ card_bytes ДЛЯ ПУБЛИКАЦИИ ======
-        # Проверяем, есть ли оформленная карточка
         if st.get("card_bytes"):
-            # Отправляем оформленное фото
             bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=post_text, parse_mode="HTML")
             bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с оформлением")
             has_media = True
         
-        # Если есть альбом (несколько фото/видео)
         elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
             media_group = st.get("media_group", {"photos": [], "videos": []})
             media_list = []
@@ -3248,7 +3297,6 @@ def on_post_channel_select(c):
                 except Exception as e:
                     logger.error(f"Error sending single media: {e}")
         
-        # Отдельное фото
         elif st.get("photo_bytes"):
             try:
                 if channel_type == "probnym":
@@ -3263,7 +3311,6 @@ def on_post_channel_select(c):
             except Exception as e:
                 logger.error(f"Error sending photo: {e}")
         
-        # Видео
         elif st.get("video_file_id"):
             try:
                 bot.send_video(target_channel, st["video_file_id"], caption=post_text, parse_mode="HTML")
@@ -3272,7 +3319,6 @@ def on_post_channel_select(c):
             except Exception as e:
                 logger.error(f"Error sending video: {e}")
         
-        # Только текст
         else:
             try:
                 bot.send_message(target_channel, post_text, parse_mode="HTML")
@@ -3305,9 +3351,6 @@ def on_post_channel_select(c):
         )
 
 
-# =========================
-# ОБРАБОТЧИК select_channel - ИСПРАВЛЕН
-# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("select_channel:"))
 def on_select_channel(c):
     uid = c.from_user.id
@@ -3371,7 +3414,6 @@ def on_select_channel(c):
         else:
             caption_text = html.escape(full_text)
         
-        # ====== ИСПРАВЛЕНИЕ: ИСПОЛЬЗУЕМ card_bytes ДЛЯ ПУБЛИКАЦИИ ======
         if st.get("card_bytes"):
             send_photo_with_retry(
                 target_channel,
@@ -3435,7 +3477,6 @@ def on_action(call):
             else:
                 caption = html.escape(body)
             
-            # ИСПОЛЬЗУЕМ card_bytes
             photo_to_send = st.get("card_bytes")
             if not photo_to_send:
                 photo_to_send = st.get("photo_bytes")
@@ -3523,7 +3564,6 @@ def on_tpl(c):
             pass
         return
     
-    # ОЧИЩАЕМ СТАРУЮ КАРТОЧКУ ПРИ ВЫБОРЕ НОВОГО ШАБЛОНА
     st["card_bytes"] = None
     st["template"] = tpl
     
@@ -3639,7 +3679,6 @@ def on_text_position(c):
     
     if st.get("title") and st.get("photo_bytes"):
         try:
-            # СОЗДАЕМ НОВУЮ КАРТОЧКУ
             card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), 
                             text_position=position,
                             bold_phrase=st.get("bold_phrase", ""))
@@ -3676,7 +3715,7 @@ def on_am2_text_position(c):
     position = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     st["text_position"] = position
-    st["card_bytes"] = None  # Очищаем старую карточку
+    st["card_bytes"] = None
     
     if st.get("title") and st.get("photo_bytes"):
         st["step"] = "waiting_date_place_choice_am2"
@@ -3702,7 +3741,7 @@ def on_am2_date_place_choice(c):
     uid = c.from_user.id
     choice = c.data.split(":")[1]
     st = user_state.get(uid) or {}
-    st["card_bytes"] = None  # Очищаем старую карточку
+    st["card_bytes"] = None
     if choice == "yes":
         st["step"] = "waiting_date_am2"
         user_state[uid] = st
@@ -3733,7 +3772,7 @@ def on_am2_color_select(c):
     uid = c.from_user.id
     color_key = c.data.split(":")[1]
     st = user_state.get(uid) or {}
-    st["card_bytes"] = None  # Очищаем старую карточку
+    st["card_bytes"] = None
     if color_key == "none":
         st["highlight_word"] = ""
         st["highlight_color"] = None
@@ -3789,7 +3828,7 @@ def on_article_action(c):
         title, body = split_title_and_body(st["extracted_text"])
         st["title"] = clean_title_for_card(title) if title else "Статья"
         st["body_raw"] = body
-        st["card_bytes"] = None  # Очищаем старую карточку
+        st["card_bytes"] = None
         st["step"] = "waiting_template"
         user_state[uid] = st
         
@@ -3961,9 +4000,8 @@ def on_article_action(c):
 
 
 # =========================
-# ОБРАБОТЧИКИ СООБЩЕНИЙ (текст, фото, репосты)
+# ОБРАБОТЧИКИ СООБЩЕНИЙ
 # =========================
-
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
                      func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
 def handle_forwarded_message(message):
@@ -4032,7 +4070,7 @@ def handle_forwarded_message(message):
     st["video_info"] = None
     st["video_file_id"] = None
     st["media_group"] = {"photos": [], "videos": []}
-    st["card_bytes"] = None  # Очищаем старую карточку
+    st["card_bytes"] = None
     
     if message.photo:
         try:
@@ -4124,7 +4162,7 @@ def handle_article_link(message):
         st["extracted_title"] = result.get("title", "")
         st["extracted_url"] = result.get("url", url)
         st["step"] = "waiting_extracted_article"
-        st["card_bytes"] = None  # Очищаем старую карточку
+        st["card_bytes"] = None
         
         if result.get("title"):
             st["title"] = clean_title_for_card(result.get("title"))
@@ -4276,6 +4314,130 @@ def on_text(message):
     
     step = st.get("step")
     
+    # РЕДАКТИРОВАНИЕ ТЕКСТА (НОВЫЕ ОБРАБОТЧИКИ)
+    if step == "waiting_edit_repost_text":
+        if not text:
+            bot.reply_to(message, "❌ Текст не может быть пустым")
+            return
+        
+        st["original_text"] = text
+        st["original_text_for_ai"] = text
+        title, body = split_title_and_body(text)
+        st["title"] = clean_title_for_card(title)
+        st["body_raw"] = body
+        st["step"] = "waiting_repost_action"
+        user_state[uid] = st
+        
+        title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
+        
+        bot.reply_to(
+            message,
+            f"✅ <b>Текст обновлен!</b>{title_display}\n\n"
+            f"📝 Текст: {text[:200]}...\n\n"
+            f"Что дальше?",
+            parse_mode="HTML",
+            reply_markup=repost_action_kb()
+        )
+        return
+    
+    if step == "waiting_edit_ai_text":
+        if not text:
+            bot.reply_to(message, "❌ Текст не может быть пустым")
+            return
+        
+        st["original_text"] = text
+        st["original_text_for_ai"] = text
+        title, body = split_title_and_body(text)
+        st["title"] = clean_title_for_card(title)
+        st["body_raw"] = body
+        st["step"] = "waiting_after_ai"
+        user_state[uid] = st
+        
+        formatted_text = format_ai_response(text)[2]
+        
+        bot.reply_to(
+            message,
+            f"✅ <b>Текст обновлен!</b>\n\n{formatted_text}\n\n"
+            f"Что дальше?",
+            parse_mode="HTML",
+            reply_markup=after_ai_kb()
+        )
+        return
+    
+    if step == "waiting_edit_tg_text":
+        if not text:
+            bot.reply_to(message, "❌ Текст не может быть пустым")
+            return
+        
+        clean_text = remove_emojis(text)
+        title, body = split_title_and_body(clean_text)
+        
+        if len(title) > 150:
+            title = title[:147] + "..."
+        
+        formatted_text = f"<b>{html.escape(title)}</b>\n\n{html.escape(body)}"
+        st["tg_post_text"] = formatted_text
+        st["title"] = clean_title_for_card(title)
+        st["body_raw"] = body
+        st["step"] = "waiting_post_action"
+        user_state[uid] = st
+        
+        media_info = ""
+        if st.get("photo_bytes"):
+            media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+        elif st.get("video_info"):
+            media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+        elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+            photo_count = len(st["media_group"].get("photos", []))
+            video_count = len(st["media_group"].get("videos", []))
+            media_info = f"\n📸 <b>Медиа:</b> {photo_count} фото, {video_count} видео"
+        
+        bot.reply_to(
+            message,
+            f"✅ <b>Текст обновлен!</b>\n\n{formatted_text}{media_info}\n\n"
+            f"Что дальше?",
+            parse_mode="HTML",
+            reply_markup=post_action_kb("tg")
+        )
+        return
+    
+    if step == "waiting_edit_threads_text":
+        if not text:
+            bot.reply_to(message, "❌ Текст не может быть пустым")
+            return
+        
+        clean_text = remove_emojis(text)
+        title, body = split_title_and_body(clean_text)
+        
+        if len(title) > 150:
+            title = title[:147] + "..."
+        
+        formatted_text = f"<b>{html.escape(title)}</b>\n\n{html.escape(body)}"
+        st["threads_post_text"] = formatted_text
+        st["title"] = clean_title_for_card(title)
+        st["body_raw"] = body
+        st["step"] = "waiting_post_action"
+        user_state[uid] = st
+        
+        media_info = ""
+        if st.get("photo_bytes"):
+            media_info = "\n📸 <b>Медиа:</b> фото сохранено"
+        elif st.get("video_info"):
+            media_info = "\n🎬 <b>Медиа:</b> видео сохранено"
+        elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
+            photo_count = len(st["media_group"].get("photos", []))
+            video_count = len(st["media_group"].get("videos", []))
+            media_info = f"\n📸 <b>Медиа:</b> {photo_count} фото, {video_count} видео"
+        
+        bot.reply_to(
+            message,
+            f"✅ <b>Текст обновлен!</b>\n\n{formatted_text}{media_info}\n\n"
+            f"Что дальше?",
+            parse_mode="HTML",
+            reply_markup=post_action_kb("threads")
+        )
+        return
+    
     if step == "waiting_ai_text":
         processing_msg = bot.reply_to(message, "🤖 Обрабатываю текст в ИИ...")
         loop = asyncio.new_event_loop()
@@ -4310,7 +4472,7 @@ def on_text(message):
         else:
             st["original_text"] = st['title']
         st["original_text_for_ai"] = st["original_text"]
-        st["card_bytes"] = None  # Очищаем старую карточку
+        st["card_bytes"] = None
         
         st["step"] = "waiting_template"
         user_state[uid] = st
@@ -4548,7 +4710,7 @@ def on_photo_or_document(message):
                 st["saved_photo_bytes"] = photo_bytes
                 st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
                 st["media_group"]["photos"].append(photo_bytes)
-                st["card_bytes"] = None  # Очищаем старую карточку
+                st["card_bytes"] = None
                 
                 if message.caption:
                     st["original_text"] = message.caption
@@ -4655,7 +4817,6 @@ def on_photo_or_document(message):
 # =========================
 # КОМАНДЫ
 # =========================
-
 @bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
     clear_state(message.from_user.id)
@@ -4687,7 +4848,8 @@ def cmd_start(message):
         f"• 📱 Пост для ТГ (500 символов, заголовок до 150 символов)\n"
         f"• 📱 Пост для Тредс (400 символов, заголовок до 150 символов)\n"
         f"• 📰 Извлечение статьи по ссылке (точное копирование)\n"
-        f"• 📎 Репосты из каналов\n\n"
+        f"• 📎 Репосты из каналов\n"
+        f"• ✏️ Редактирование текста после ИИ\n\n"
         f"<b>📌 Доступные каналы:</b> {channels_text}\n\n"
         f"<b>💡 Как это работает:</b>\n"
         f"1️⃣ Нажми «Оформить пост»\n"
@@ -4782,7 +4944,6 @@ def handle_ai_text_button(message):
 # =========================
 # GRACEFUL SHUTDOWN
 # =========================
-
 def signal_handler(sig, frame):
     logger.info("Shutting down gracefully...")
     try:
@@ -4798,7 +4959,6 @@ signal.signal(signal.SIGTERM, signal_handler)
 # =========================
 # MAIN
 # =========================
-
 if __name__ == "__main__":
     logger.info("Starting bot...")
     try:
