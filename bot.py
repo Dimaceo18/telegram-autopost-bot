@@ -3149,6 +3149,17 @@ def on_post_channel_select(c):
     # НОВЫЙ ОБРАБОТЧИК - Оформить пост перед публикацией
     if channel_type == "design_before_publish":
         bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
+        
+        # Используем ТЕКУЩИЙ текст из st["original_text"] (он уже обновлен после ИИ)
+        current_text = st.get("original_text", "")
+        if current_text:
+            title, body = split_title_and_body(current_text)
+            st["title"] = clean_title_for_card(title)
+            st["body_raw"] = body
+            st["original_text_for_ai"] = current_text
+            st["card_bytes"] = None  # Очищаем старую карточку
+            logger.info(f"📝 Использую текст после ИИ: {title[:50]}...")
+        
         if st.get("photo_bytes") or st.get("saved_photo_bytes"):
             if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
                 st["photo_bytes"] = st["saved_photo_bytes"]
@@ -3394,6 +3405,17 @@ def on_select_channel(c):
     # НОВЫЙ ОБРАБОТЧИК - Оформить пост перед публикацией
     if channel_type == "design_before_publish":
         bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
+        
+        # Используем ТЕКУЩИЙ текст из st["original_text"] (он уже обновлен после ИИ)
+        current_text = st.get("original_text", "")
+        if current_text:
+            title, body = split_title_and_body(current_text)
+            st["title"] = clean_title_for_card(title)
+            st["body_raw"] = body
+            st["original_text_for_ai"] = current_text
+            st["card_bytes"] = None  # Очищаем старую карточку
+            logger.info(f"📝 Использую текст после ИИ: {title[:50]}...")
+        
         if st.get("photo_bytes") or st.get("saved_photo_bytes"):
             if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
                 st["photo_bytes"] = st["saved_photo_bytes"]
