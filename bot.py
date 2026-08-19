@@ -405,6 +405,7 @@ def get_video_info(file_id: str, video_obj) -> Dict:
 
 def clear_state(user_id: int):
     if user_id in user_state:
+        # Сохраняем только базовые данные при очистке
         user_state[user_id] = {"step": "idle"}
 
 def ensure_fonts():
@@ -1033,7 +1034,7 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
 
 
 # =========================
-# CARD MAKING FUNCTIONS
+# CARD MAKING FUNCTIONS - ВСЕ ВОЗВРАЩАЮТ BytesIO
 # =========================
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
@@ -2486,7 +2487,7 @@ def run_http_server():
 
 
 # =========================
-# ОБРАБОТЧИК АЛЬБОМОВ
+# ОБРАБОТЧИК АЛЬБОМОВ - ИСПРАВЛЕН
 # =========================
 def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
     time.sleep(2)
@@ -2507,21 +2508,27 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
         st["original_text"] = caption
         st["original_text_for_ai"] = caption
     
+    # СОХРАНЯЕМ ВСЕ МЕДИА В ОТДЕЛЬНУЮ ПЕРЕМЕННУЮ
     st["media_group"] = {"photos": photos, "videos": videos}
     
     if photos:
+        # Берем ПЕРВОЕ фото для оформления, но сохраняем ВСЕ
         st["photo_bytes"] = photos[0]
         st["saved_photo_bytes"] = photos[0]
+        st["album_photos"] = photos  # Сохраняем все фото альбома
         logger.info(f"Saved {len(photos)} photos for user {uid}")
     
     if videos:
         st["video_info"] = videos[0]
         st["video_file_id"] = videos[0].get('file_id')
+        st["album_videos"] = videos  # Сохраняем все видео альбома
         logger.info(f"Saved {len(videos)} videos for user {uid}, file_id: {st['video_file_id']}")
     
     if videos and not photos:
         st["video_file_id"] = videos[0].get('file_id')
     
+    # ОЧИЩАЕМ card_bytes при новом альбоме
+    st["card_bytes"] = None
     st["step"] = "waiting_repost_action"
     user_state[uid] = st
     
@@ -3167,12 +3174,15 @@ def on_post_channel_select(c):
             bot.answer_callback_query(c.id, "❌ Нет текста для публикации")
             return
         
-        # ИСПРАВЛЕНИЕ: СНАЧАЛА ПРОВЕРЯЕМ ОФОРМЛЕННУЮ КАРТОЧКУ
+        # ====== ИСПРАВЛЕНИЕ: ИСПОЛЬЗУЕМ card_bytes ДЛЯ ПУБЛИКАЦИИ ======
+        # Проверяем, есть ли оформленная карточка
         if st.get("card_bytes"):
+            # Отправляем оформленное фото
             bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=post_text, parse_mode="HTML")
             bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с оформлением")
             has_media = True
         
+        # Если есть альбом (несколько фото/видео)
         elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
             media_group = st.get("media_group", {"photos": [], "videos": []})
             media_list = []
@@ -3238,6 +3248,7 @@ def on_post_channel_select(c):
                 except Exception as e:
                     logger.error(f"Error sending single media: {e}")
         
+        # Отдельное фото
         elif st.get("photo_bytes"):
             try:
                 if channel_type == "probnym":
@@ -3252,6 +3263,7 @@ def on_post_channel_select(c):
             except Exception as e:
                 logger.error(f"Error sending photo: {e}")
         
+        # Видео
         elif st.get("video_file_id"):
             try:
                 bot.send_video(target_channel, st["video_file_id"], caption=post_text, parse_mode="HTML")
@@ -3260,6 +3272,7 @@ def on_post_channel_select(c):
             except Exception as e:
                 logger.error(f"Error sending video: {e}")
         
+        # Только текст
         else:
             try:
                 bot.send_message(target_channel, post_text, parse_mode="HTML")
@@ -3292,6 +3305,9 @@ def on_post_channel_select(c):
         )
 
 
+# =========================
+# ОБРАБОТЧИК select_channel - ИСПРАВЛЕН
+# =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("select_channel:"))
 def on_select_channel(c):
     uid = c.from_user.id
@@ -3355,7 +3371,7 @@ def on_select_channel(c):
         else:
             caption_text = html.escape(full_text)
         
-        # ИСПРАВЛЕНИЕ: СНАЧАЛА ПРОВЕРЯЕМ ОФОРМЛЕННУЮ КАРТОЧКУ
+        # ====== ИСПРАВЛЕНИЕ: ИСПОЛЬЗУЕМ card_bytes ДЛЯ ПУБЛИКАЦИИ ======
         if st.get("card_bytes"):
             send_photo_with_retry(
                 target_channel,
@@ -3419,6 +3435,7 @@ def on_action(call):
             else:
                 caption = html.escape(body)
             
+            # ИСПОЛЬЗУЕМ card_bytes
             photo_to_send = st.get("card_bytes")
             if not photo_to_send:
                 photo_to_send = st.get("photo_bytes")
@@ -3506,6 +3523,8 @@ def on_tpl(c):
             pass
         return
     
+    # ОЧИЩАЕМ СТАРУЮ КАРТОЧКУ ПРИ ВЫБОРЕ НОВОГО ШАБЛОНА
+    st["card_bytes"] = None
     st["template"] = tpl
     
     if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
@@ -3618,8 +3637,9 @@ def on_text_position(c):
     st["text_position"] = position
     position_text = "сверху" if position == "top" else "снизу"
     
-    if st.get("title"):
+    if st.get("title") and st.get("photo_bytes"):
         try:
+            # СОЗДАЕМ НОВУЮ КАРТОЧКУ
             card = make_card(st["photo_bytes"], st["title"], st.get("template", "MN"), 
                             text_position=position,
                             bold_phrase=st.get("bold_phrase", ""))
@@ -3656,8 +3676,9 @@ def on_am2_text_position(c):
     position = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     st["text_position"] = position
+    st["card_bytes"] = None  # Очищаем старую карточку
     
-    if st.get("title"):
+    if st.get("title") and st.get("photo_bytes"):
         st["step"] = "waiting_date_place_choice_am2"
         user_state[uid] = st
         pos_text = "сверху" if position == "top" else "снизу"
@@ -3681,6 +3702,7 @@ def on_am2_date_place_choice(c):
     uid = c.from_user.id
     choice = c.data.split(":")[1]
     st = user_state.get(uid) or {}
+    st["card_bytes"] = None  # Очищаем старую карточку
     if choice == "yes":
         st["step"] = "waiting_date_am2"
         user_state[uid] = st
@@ -3693,9 +3715,9 @@ def on_am2_date_place_choice(c):
         user_state[uid] = st
         try:
             card = create_poster_am2(st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"), "", "", "", "", None, False)
-            st["preview_bytes"] = card.getvalue()
+            st["card_bytes"] = card.getvalue()
             user_state[uid] = st
-            bot.send_photo(c.message.chat.id, photo=BytesIO(st["preview_bytes"]),
+            bot.send_photo(c.message.chat.id, photo=BytesIO(st["card_bytes"]),
                 caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши СЛОВО для выделения цветом</b>\n(или «-» чтобы пропустить):",
                 parse_mode="HTML")
         except Exception as e:
@@ -3711,6 +3733,7 @@ def on_am2_color_select(c):
     uid = c.from_user.id
     color_key = c.data.split(":")[1]
     st = user_state.get(uid) or {}
+    st["card_bytes"] = None  # Очищаем старую карточку
     if color_key == "none":
         st["highlight_word"] = ""
         st["highlight_color"] = None
@@ -3766,6 +3789,7 @@ def on_article_action(c):
         title, body = split_title_and_body(st["extracted_text"])
         st["title"] = clean_title_for_card(title) if title else "Статья"
         st["body_raw"] = body
+        st["card_bytes"] = None  # Очищаем старую карточку
         st["step"] = "waiting_template"
         user_state[uid] = st
         
@@ -3937,7 +3961,7 @@ def on_article_action(c):
 
 
 # =========================
-# ОБРАБОТЧИКИ СООБЩЕНИЙ
+# ОБРАБОТЧИКИ СООБЩЕНИЙ (текст, фото, репосты)
 # =========================
 
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
@@ -4008,6 +4032,7 @@ def handle_forwarded_message(message):
     st["video_info"] = None
     st["video_file_id"] = None
     st["media_group"] = {"photos": [], "videos": []}
+    st["card_bytes"] = None  # Очищаем старую карточку
     
     if message.photo:
         try:
@@ -4099,6 +4124,7 @@ def handle_article_link(message):
         st["extracted_title"] = result.get("title", "")
         st["extracted_url"] = result.get("url", url)
         st["step"] = "waiting_extracted_article"
+        st["card_bytes"] = None  # Очищаем старую карточку
         
         if result.get("title"):
             st["title"] = clean_title_for_card(result.get("title"))
@@ -4239,6 +4265,7 @@ def on_text(message):
         title, body = split_title_and_body(text)
         st["title"] = clean_title_for_card(title)
         st["body_raw"] = body
+        st["card_bytes"] = None
         st["step"] = "waiting_repost_action"
         user_state[uid] = st
         send_message_with_retry(message.chat.id,
@@ -4283,6 +4310,7 @@ def on_text(message):
         else:
             st["original_text"] = st['title']
         st["original_text_for_ai"] = st["original_text"]
+        st["card_bytes"] = None  # Очищаем старую карточку
         
         st["step"] = "waiting_template"
         user_state[uid] = st
@@ -4298,9 +4326,9 @@ def on_text(message):
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
         st["title"] = clean_title_for_card(text)
-        st["body_raw"] = text
-        st["original_text"] = text
+        st["body_raw"] = text        st["original_text"] = text
         st["original_text_for_ai"] = text
+        st["card_bytes"] = None
         st["step"] = "waiting_date_place_choice_am2"
         user_state[uid] = st
         bot.reply_to(message, f"✅ Заголовок сохранён!\n\n📅 <b>Добавить дату и место?</b>", parse_mode="HTML", reply_markup=add_date_place_kb())
@@ -4308,6 +4336,7 @@ def on_text(message):
     
     if step == "waiting_date_am2":
         st["date"] = text
+        st["card_bytes"] = None
         st["step"] = "waiting_place_am2"
         user_state[uid] = st
         bot.reply_to(message, f"✅ Дата: {text}\n\n✏️ <b>Введи МЕСТО</b>:", parse_mode="HTML")
@@ -4315,13 +4344,14 @@ def on_text(message):
     
     if step == "waiting_place_am2":
         st["place"] = text
+        st["card_bytes"] = None
         st["step"] = "waiting_highlight_word_am2"
         user_state[uid] = st
         try:
             card = create_poster_am2(st["photo_bytes"], st.get("title", ""), st.get("text_position", "top"), st.get("date", ""), st.get("place", ""), "", "", None, False)
-            st["preview_bytes"] = card.getvalue()
+            st["card_bytes"] = card.getvalue()
             user_state[uid] = st
-            bot.send_photo(message.chat.id, photo=BytesIO(st["preview_bytes"]),
+            bot.send_photo(message.chat.id, photo=BytesIO(st["card_bytes"]),
                 caption=f"✅ <b>Предпросмотр</b>\n\n✏️ <b>Напиши СЛОВО для выделения цветом</b>\n(или «-» чтобы пропустить):",
                 parse_mode="HTML")
         except Exception as e:
@@ -4333,6 +4363,7 @@ def on_text(message):
             st["highlight_word"] = ""
             st["highlight_color"] = None
             st["is_yellow"] = False
+            st["card_bytes"] = None
             st["step"] = "waiting_rubric_am2"
             user_state[uid] = st
             bot.reply_to(message, f"✏️ <b>Введи РУБРИКУ</b>:", parse_mode="HTML")
@@ -4340,6 +4371,7 @@ def on_text(message):
             title = st.get("title", "").lower()
             if text.lower() in title:
                 st["temp_highlight_word"] = text
+                st["card_bytes"] = None
                 st["step"] = "waiting_color_am2"
                 user_state[uid] = st
                 bot.reply_to(message, f"✅ Слово «{text}» <b>НАЙДЕНО</b>!\n\n🎨 <b>Выбери цвет:</b>", parse_mode="HTML", reply_markup=color_kb_am2())
@@ -4371,6 +4403,7 @@ def on_text(message):
         st["body_raw"] = text
         st["original_text"] = text
         st["original_text_for_ai"] = text
+        st["card_bytes"] = None
         st["step"] = "waiting_highlight_phrase_fdr_post"
         user_state[uid] = st
         bot.reply_to(message, f"✅ Заголовок сохранён!\n\n✏️ Теперь отправь слова для выделения цветом (через пробел):", parse_mode="HTML")
@@ -4397,6 +4430,7 @@ def on_text(message):
         st["title"] = clean_title_for_card(text)
         st["original_text"] = text
         st["original_text_for_ai"] = text
+        st["card_bytes"] = None
         st["step"] = "waiting_body_fdr"
         user_state[uid] = st
         bot.reply_to(message, f"✅ Заголовок сохранён!\n\n✏️ Теперь отправь основной текст для сторис:", parse_mode="HTML")
@@ -4513,6 +4547,7 @@ def on_photo_or_document(message):
                 st["saved_photo_bytes"] = photo_bytes
                 st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
                 st["media_group"]["photos"].append(photo_bytes)
+                st["card_bytes"] = None  # Очищаем старую карточку
                 
                 if message.caption:
                     st["original_text"] = message.caption
@@ -4539,6 +4574,7 @@ def on_photo_or_document(message):
                 st["video_file_id"] = message.video.file_id
                 st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
                 st["media_group"]["videos"].append(video_info)
+                st["card_bytes"] = None
                 
                 if message.caption:
                     st["original_text"] = message.caption
@@ -4575,6 +4611,7 @@ def on_photo_or_document(message):
             st["saved_photo_bytes"] = photo_bytes
             st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
             st["media_group"]["photos"].append(photo_bytes)
+            st["card_bytes"] = None
             
             if message.caption:
                 st["original_text"] = message.caption
@@ -4589,6 +4626,7 @@ def on_photo_or_document(message):
             st["video_file_id"] = message.video.file_id
             st["media_group"] = st.get("media_group", {"photos": [], "videos": []})
             st["media_group"]["videos"].append(video_info)
+            st["card_bytes"] = None
             if message.caption:
                 st["original_text"] = message.caption
                 st["original_text_for_ai"] = message.caption
@@ -4670,6 +4708,7 @@ def cmd_post(message):
     st["body_raw"] = ""
     st["photo_bytes"] = None
     st["saved_photo_bytes"] = None
+    st["card_bytes"] = None
     st["template"] = "MN"
     st["text_position"] = TEXT_POSITION_TOP
     user_state[uid] = st
