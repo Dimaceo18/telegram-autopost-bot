@@ -4326,7 +4326,8 @@ def on_text(message):
             bot.reply_to(message, "❌ Заголовок не может быть пустым")
             return
         st["title"] = clean_title_for_card(text)
-        st["body_raw"] = text        st["original_text"] = text
+        st["body_raw"] = text        
+        st["original_text"] = text
         st["original_text_for_ai"] = text
         st["card_bytes"] = None
         st["step"] = "waiting_date_place_choice_am2"
