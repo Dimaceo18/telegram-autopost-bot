@@ -181,10 +181,11 @@ def post_action_kb(post_type: str = "tg"):
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("🔄 Переделать еще раз", callback_data=f"{post_type}:redo"),
+        InlineKeyboardButton("📝 Оформить пост", callback_data=f"{post_type}:design"),
         InlineKeyboardButton("📢 Выбрать канал", callback_data=f"{post_type}:select_channel"),
-        InlineKeyboardButton("✏️ Редактировать текст", callback_data=f"{post_type}:edit")
+        InlineKeyboardButton("✏️ Редактировать текст", callback_data=f"{post_type}:edit"),
+        InlineKeyboardButton("◀️ Назад", callback_data=f"{post_type}:back")
     )
-    kb.add(InlineKeyboardButton("◀️ Назад", callback_data=f"{post_type}:back"))
     return kb
 
 def template_kb():
@@ -292,6 +293,7 @@ def watermark_type_kb():
     kb.add(
         InlineKeyboardButton("📰 МН (MINSK NEWS)", callback_data="watermark:mn"),
         InlineKeyboardButton("🚨 ЧП (Минск ЧП)", callback_data="watermark:chp"),
+        InlineKeyboardButton("🖼️ ЛОГО MN", callback_data="watermark:logo_mn"),
         InlineKeyboardButton("◀️ Назад", callback_data="watermark:back")
     )
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="watermark:cancel"))
@@ -1537,6 +1539,51 @@ def apply_watermark_probnym(photo_bytes: bytes) -> BytesIO:
         logger.error(f"Error applying probnym watermark: {e}")
         return BytesIO(photo_bytes)
 
+def apply_watermark_logo_mn(photo_bytes: bytes) -> BytesIO:
+    """Наносит логотип MN в правом верхнем углу с прозрачностью 15% и размером 10% от ширины фото"""
+    try:
+        img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
+        img_width, img_height = img.size
+        
+        logo_path = "logomn.png"
+        if not os.path.exists(logo_path):
+            logger.error(f"❌ Файл логотипа {logo_path} не найден!")
+            raise FileNotFoundError(f"Логотип {logo_path} не найден")
+        
+        logo = Image.open(logo_path).convert("RGBA")
+        
+        logo_size = int(img_width * 0.10)
+        logo_width, logo_height = logo.size
+        
+        if logo_width > logo_height:
+            new_width = logo_size
+            new_height = int(logo_height * (logo_size / logo_width))
+        else:
+            new_height = logo_size
+            new_width = int(logo_width * (logo_size / logo_height))
+        
+        logo = logo.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        alpha = logo.split()[3]
+        alpha = alpha.point(lambda p: int(p * 0.15))
+        logo.putalpha(alpha)
+        
+        margin = 20
+        x = img_width - new_width - margin
+        y = margin
+        
+        img.paste(logo, (x, y), logo)
+        img = img.convert("RGB")
+        
+        output = BytesIO()
+        img.save(output, format="PNG", quality=95, optimize=True)
+        output.seek(0)
+        return output
+        
+    except Exception as e:
+        logger.error(f"Error applying logo watermark: {e}")
+        raise
+
 
 # =========================
 # ФУНКЦИИ DEEPSEEK
@@ -2579,15 +2626,32 @@ def on_watermark_type(c):
     if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
         st["photo_bytes"] = st["saved_photo_bytes"]
     
+    if wm_type == "logo_mn":
+        if not os.path.exists("logomn.png"):
+            bot.answer_callback_query(c.id, "❌ Логотип не найден на сервере!")
+            send_message_with_retry(
+                c.message.chat.id,
+                "❌ Файл логотипа `logomn.png` не найден на сервере.\n"
+                "Пожалуйста, загрузите его в корневую папку бота.",
+                parse_mode="HTML"
+            )
+            return
+    
     bot.answer_callback_query(c.id, f"✅ Наношу водяной знак {wm_type.upper()}...")
     
     try:
         if wm_type == "mn":
             result = apply_watermark_mn(st["photo_bytes"])
             watermark_name = "MINSK NEWS"
-        else:
+        elif wm_type == "chp":
             result = apply_watermark_chp(st["photo_bytes"])
             watermark_name = "ЧП Минск"
+        elif wm_type == "logo_mn":
+            result = apply_watermark_logo_mn(st["photo_bytes"])
+            watermark_name = "ЛОГО MN"
+        else:
+            bot.answer_callback_query(c.id, "❌ Неизвестный тип водяного знака")
+            return
         
         watermarked_photo = result.getvalue()
         st["photo_bytes"] = watermarked_photo
@@ -2623,8 +2687,17 @@ def on_watermark_type(c):
             send_message_with_retry(c.message.chat.id, "✅ Водяной знак нанесён!", reply_markup=main_menu_kb())
             return
             
+    except FileNotFoundError as e:
+        logger.error(f"File not found: {e}")
+        bot.answer_callback_query(c.id, "❌ Логотип не найден!")
+        send_message_with_retry(
+            c.message.chat.id,
+            f"❌ {e}\n\nПожалуйста, загрузите файл `logomn.png` в корневую папку бота.",
+            parse_mode="HTML"
+        )
     except Exception as e:
         logger.error(f"Error applying watermark: {e}")
+        bot.answer_callback_query(c.id, "❌ Ошибка при нанесении водяного знака")
         send_message_with_retry(c.message.chat.id, f"❌ Ошибка: {e}")
 
 
@@ -2958,6 +3031,54 @@ def on_tg_action(c):
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
+    # НОВЫЙ ОБРАБОТЧИК - Оформить пост для TG
+    if action == "design":
+        bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
+        
+        # Используем ТЕКУЩИЙ текст из st["tg_post_text"] (текст от ИИ для TG)
+        tg_text = st.get("tg_post_text", "")
+        if tg_text:
+            # Извлекаем заголовок и тело из текста
+            clean_text = remove_emojis(tg_text)
+            # Убираем эмодзи в начале
+            clean_text = re.sub(r'^[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF]\s*', '', clean_text)
+            title, body = split_title_and_body(clean_text)
+            st["title"] = clean_title_for_card(title) if title else "Без заголовка"
+            st["body_raw"] = body
+            st["original_text"] = tg_text
+            st["original_text_for_ai"] = tg_text
+            st["card_bytes"] = None
+            logger.info(f"📝 Оформление TG поста с текстом от ИИ: {title[:50] if title else 'нет'}...")
+        
+        if st.get("photo_bytes") or st.get("saved_photo_bytes"):
+            if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
+                st["photo_bytes"] = st["saved_photo_bytes"]
+            st["step"] = "waiting_template"
+            user_state[uid] = st
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📝 <b>Заголовок сохранён:</b>\n«{st['title']}»\n\nВыбери шаблон оформления:",
+                parse_mode="HTML",
+                reply_markup=template_kb()
+            )
+        else:
+            st["step"] = "waiting_photo"
+            user_state[uid] = st
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            send_message_with_retry(
+                c.message.chat.id,
+                "📸 Отправь фото для оформления поста",
+                parse_mode="HTML"
+            )
+        return
+    
     if action == "edit":
         bot.answer_callback_query(c.id, "✏️ Отправьте новый текст для Telegram")
         st["step"] = "waiting_edit_tg_text"
@@ -3033,6 +3154,10 @@ def on_tg_action(c):
     
     elif action == "select_channel":
         bot.answer_callback_query(c.id, "📢 Выбери канал")
+        if st.get("tg_post_text"):
+            st["original_text"] = st["tg_post_text"]
+            st["original_text_for_ai"] = st["tg_post_text"]
+            user_state[uid] = st
         send_message_with_retry(
             c.message.chat.id,
             "📢 <b>Выбери канал для публикации поста:</b>",
@@ -3051,6 +3176,52 @@ def on_threads_action(c):
     uid = c.from_user.id
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
+    
+    # НОВЫЙ ОБРАБОТЧИК - Оформить пост для Threads
+    if action == "design":
+        bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
+        
+        # Используем ТЕКУЩИЙ текст из st["threads_post_text"] (текст от ИИ для Threads)
+        threads_text = st.get("threads_post_text", "")
+        if threads_text:
+            clean_text = remove_emojis(threads_text)
+            clean_text = re.sub(r'^[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF]\s*', '', clean_text)
+            title, body = split_title_and_body(clean_text)
+            st["title"] = clean_title_for_card(title) if title else "Без заголовка"
+            st["body_raw"] = body
+            st["original_text"] = threads_text
+            st["original_text_for_ai"] = threads_text
+            st["card_bytes"] = None
+            logger.info(f"📝 Оформление Threads поста с текстом от ИИ: {title[:50] if title else 'нет'}...")
+        
+        if st.get("photo_bytes") or st.get("saved_photo_bytes"):
+            if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
+                st["photo_bytes"] = st["saved_photo_bytes"]
+            st["step"] = "waiting_template"
+            user_state[uid] = st
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            send_message_with_retry(
+                c.message.chat.id,
+                f"📝 <b>Заголовок сохранён:</b>\n«{st['title']}»\n\nВыбери шаблон оформления:",
+                parse_mode="HTML",
+                reply_markup=template_kb()
+            )
+        else:
+            st["step"] = "waiting_photo"
+            user_state[uid] = st
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except:
+                pass
+            send_message_with_retry(
+                c.message.chat.id,
+                "📸 Отправь фото для оформления поста",
+                parse_mode="HTML"
+            )
+        return
     
     if action == "edit":
         bot.answer_callback_query(c.id, "✏️ Отправьте новый текст для Threads")
@@ -3127,6 +3298,10 @@ def on_threads_action(c):
     
     elif action == "select_channel":
         bot.answer_callback_query(c.id, "📢 Выбери канал")
+        if st.get("threads_post_text"):
+            st["original_text"] = st["threads_post_text"]
+            st["original_text_for_ai"] = st["threads_post_text"]
+            user_state[uid] = st
         send_message_with_retry(
             c.message.chat.id,
             "📢 <b>Выбери канал для публикации поста:</b>",
@@ -3157,7 +3332,7 @@ def on_post_channel_select(c):
             st["title"] = clean_title_for_card(title)
             st["body_raw"] = body
             st["original_text_for_ai"] = current_text
-            st["card_bytes"] = None  # Очищаем старую карточку
+            st["card_bytes"] = None
             logger.info(f"📝 Использую текст после ИИ: {title[:50]}...")
         
         if st.get("photo_bytes") or st.get("saved_photo_bytes"):
@@ -3413,7 +3588,7 @@ def on_select_channel(c):
             st["title"] = clean_title_for_card(title)
             st["body_raw"] = body
             st["original_text_for_ai"] = current_text
-            st["card_bytes"] = None  # Очищаем старую карточку
+            st["card_bytes"] = None
             logger.info(f"📝 Использую текст после ИИ: {title[:50]}...")
         
         if st.get("photo_bytes") or st.get("saved_photo_bytes"):
@@ -4931,7 +5106,7 @@ def cmd_start(message):
         f"<b>📝 Основные функции:</b>\n"
         f"• 📝 Оформление постов с фото (7 шаблонов)\n"
         f"• ✨ Улучшение качества фото\n"
-        f"• 💧 Водяные знаки\n"
+        f"• 💧 Водяные знаки (MINSK NEWS, ЧП Минск, ЛОГО MN)\n"
         f"• 🤖 Текст в ИИ (сокращение до 650 символов)\n"
         f"• 📱 Пост для ТГ (500 символов, заголовок до 150 символов)\n"
         f"• 📱 Пост для Тредс (400 символов, заголовок до 150 символов)\n"
