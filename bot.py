@@ -5536,50 +5536,102 @@ def cmd_done_video(message):
 # =========================
 # MAIN
 # =========================
-# ... (ВАШ MAIN БЕЗ ИЗМЕНЕНИЙ, НО С ДОБАВЛЕНИЕМ ВИДЕО-ОБРАБОТЧИКА)
-
-
-# =========================
-# MAIN
-# =========================
 if __name__ == "__main__":
     logger.info("Starting bot...")
+    
+    # Функция для остановки других инстансов
+    def kill_other_instances():
+        try:
+            # Удаляем вебхук
+            url = f"https://api.telegram.org/bot{TOKEN}/deleteWebhook"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                logger.info("✅ Webhook deleted")
+            
+            # Пробуем остановить другие инстансы через stopPolling
+            try:
+                stop_url = f"https://api.telegram.org/bot{TOKEN}/stopPolling"
+                requests.post(stop_url, timeout=5)
+            except:
+                pass
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Error killing other instances: {e}")
+    
+    # Пытаемся остановить другие инстансы
+    for attempt in range(5):
+        try:
+            kill_other_instances()
+            time.sleep(2)
+            logger.info(f"✅ Instance cleanup attempt {attempt + 1}")
+            break
+        except Exception as e:
+            logger.warning(f"⚠️ Cleanup attempt {attempt + 1} failed: {e}")
+            time.sleep(2)
+    
+    # Финальное удаление вебхука перед запуском
+    try:
+        bot.remove_webhook()
+        logger.info("✅ Webhook removed")
+    except Exception as e:
+        logger.warning(f"⚠️ Webhook removal: {e}")
+    
+    time.sleep(3)  # Даем время другим инстансам остановиться
+    
     try:
         download_fonts()
         ensure_fonts()
-        logger.info("Fonts loaded successfully")
+        logger.info("✅ Fonts loaded successfully")
         
-        for attempt in range(3):
-            try:
-                bot.remove_webhook()
-                time.sleep(1)
-                logger.info(f"Webhook removed (attempt {attempt + 1})")
-                break
-            except Exception as e:
-                logger.warning(f"Failed to remove webhook (attempt {attempt + 1}): {e}")
-                time.sleep(2)
-        
+        # Запускаем health check сервер
         http_thread = threading.Thread(target=run_http_server, daemon=True)
         http_thread.start()
         logger.info("🌐 Health check server thread started")
         
-        logger.info("🤖 Bot started polling...")
+        logger.info("🚀 Bot started polling...")
+        
+        # Основной цикл с обработкой ошибок
         while True:
             try:
-                bot.infinity_polling(timeout=60, long_polling_timeout=60)
+                bot.infinity_polling(
+                    timeout=60,
+                    long_polling_timeout=60,
+                    skip_pending=True  # Пропускаем старые сообщения
+                )
             except Exception as e:
-                logger.error(f"Polling error: {e}")
-                if "409" in str(e):
-                    logger.error("Conflict detected! Waiting 30 seconds...")
-                    try:
-                        bot.remove_webhook()
-                    except:
-                        pass
-                    time.sleep(30)
+                error_str = str(e)
+                logger.error(f"❌ Polling error: {error_str}")
+                
+                if "409" in error_str or "Conflict" in error_str:
+                    logger.warning("⚠️ Conflict detected! Another bot instance is running.")
+                    logger.info("🔄 Attempting to recover...")
+                    
+                    # Пытаемся удалить вебхук
+                    for attempt in range(3):
+                        try:
+                            bot.remove_webhook()
+                            logger.info(f"✅ Webhook removed on retry {attempt + 1}")
+                            break
+                        except Exception as retry_e:
+                            logger.warning(f"⚠️ Retry {attempt + 1} failed: {retry_e}")
+                            time.sleep(2)
+                    
+                    # Ждем перед перезапуском
+                    logger.info("⏳ Waiting 15 seconds before restart...")
+                    time.sleep(15)
                 else:
-                    time.sleep(10)
+                    logger.info(f"⏳ Waiting 15 seconds before retry...")
+                    time.sleep(15)
                 continue
                 
+    except KeyboardInterrupt:
+        logger.info("🛑 Bot stopped by user")
     except Exception as e:
         logger.error(f"❌ Bot crashed: {e}")
         raise
+    finally:
+        try:
+            bot.remove_webhook()
+            logger.info("✅ Webhook removed on shutdown")
+        except:
+            pass
