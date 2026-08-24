@@ -9,14 +9,9 @@ import signal
 import sys
 import threading
 import asyncio
-import tempfile
-import shutil
-import traceback
-import subprocess
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urljoin
-from collections import defaultdict
 
 import requests
 import httpx
@@ -30,41 +25,6 @@ from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# Проверяем и устанавливаем moviepy для работы с видео
-try:
-    from moviepy import VideoFileClip, ImageSequenceClip
-    from moviepy.video.fx import resize
-    from moviepy.video.compositing.concatenate import concatenate_videoclips
-    from moviepy.audio.io.AudioFileClip import AudioFileClip
-    from moviepy.audio.fx.all import audio_loop
-except ImportError:
-    try:
-        from moviepy.video.io.VideoFileClip import VideoFileClip
-        from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
-        from moviepy.video.compositing.concatenate import concatenate_videoclips
-        from moviepy.audio.io.AudioFileClip import AudioFileClip
-        from moviepy.audio.fx.all import audio_loop
-        try:
-            from moviepy.video.fx import resize
-        except:
-            resize = None
-    except:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy==1.0.3"])
-        from moviepy.video.io.VideoFileClip import VideoFileClip
-        from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
-        from moviepy.video.compositing.concatenate import concatenate_videoclips
-        from moviepy.audio.io.AudioFileClip import AudioFileClip
-        from moviepy.audio.fx.all import audio_loop
-        try:
-            from moviepy.video.fx import resize
-        except:
-            resize = None
-
-try:
-    import numpy as np
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy"])
-    import numpy as np
 
 # =========================
 # LOGGING
@@ -161,18 +121,6 @@ HIGHLIGHT_COLORS = {
     "blue": (80, 150, 255)
 }
 
-# Форматы видео
-VIDEO_FORMATS = {
-    "4x5": {"width": 720, "height": 900, "ratio": "4:5"},
-    "9x16": {"width": 720, "height": 1280, "ratio": "9:16"}
-}
-
-# URL для аудиофайлов на GitHub
-AUDIO_URLS = {
-    "важная": "https://raw.githubusercontent.com/Dimaceo18/testovaya/main/vajnoe.mp3",
-    "обычная": "https://raw.githubusercontent.com/Dimaceo18/testovaya/main/obychnaya.mp3"
-}
-
 
 # =========================
 # BOT
@@ -188,10 +136,6 @@ except:
 user_state: Dict[int, Dict] = {}
 user_album_cache: Dict[str, Dict] = {}
 
-# Для хранения данных видео-сессий
-user_video_sessions: Dict[int, Dict] = {}
-pending_media_groups = defaultdict(lambda: {"photos": [], "video": None, "caption": "", "processed": False})
-
 
 # =========================
 # UI BUTTONS
@@ -201,13 +145,12 @@ BTN_ENHANCE = "✨ Улучшить качество"
 BTN_WATERMARK = "💧 Водяные знаки"
 BTN_PRICES = "💰 Цены"
 BTN_AI_TEXT = "🤖 Текст в ИИ"
-BTN_MAKE_VIDEO = "🎬 Сделать видео"
 
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_AI_TEXT))
     kb.row(KeyboardButton(BTN_ENHANCE), KeyboardButton(BTN_WATERMARK))
-    kb.row(KeyboardButton(BTN_PRICES), KeyboardButton(BTN_MAKE_VIDEO))
+    kb.row(KeyboardButton(BTN_PRICES))
     return kb
 
 def repost_action_kb():
@@ -218,8 +161,7 @@ def repost_action_kb():
         InlineKeyboardButton("📱 Пост для ТГ (500 симв.)", callback_data="repost:tg"),
         InlineKeyboardButton("📱 Пост для Тредс (400 симв.)", callback_data="repost:threads"),
         InlineKeyboardButton("💧 Нанести водяной знак", callback_data="repost:watermark"),
-        InlineKeyboardButton("✏️ Редактировать текст", callback_data="repost:edit"),
-        InlineKeyboardButton("🎬 Сделать видео", callback_data="repost:make_video")
+        InlineKeyboardButton("✏️ Редактировать текст", callback_data="repost:edit")
     )
     return kb
 
@@ -367,56 +309,6 @@ def prices_menu_kb():
     kb.add(InlineKeyboardButton("❌ Закрыть", callback_data="prices:close"))
     return kb
 
-# Клавиатуры для создания видео
-def video_title_kb():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("📝 Оставить заголовок", callback_data="video:title_keep"),
-        InlineKeyboardButton("✏️ Свой заголовок", callback_data="video:title_custom"),
-        InlineKeyboardButton("🤖 Улучшить через ИИ", callback_data="video:title_ai"),
-        InlineKeyboardButton("⏭️ Без текста", callback_data="video:title_no_text"),
-        InlineKeyboardButton("❌ Отмена", callback_data="video:cancel")
-    )
-    return kb
-
-def video_audio_kb():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("🎵 Оставить звук", callback_data="video:audio_original"),
-        InlineKeyboardButton("📢 Важное", callback_data="video:audio_важная"),
-        InlineKeyboardButton("🎵 Обычное", callback_data="video:audio_обычная"),
-        InlineKeyboardButton("🔇 Без звука", callback_data="video:audio_silent"),
-        InlineKeyboardButton("❌ Отмена", callback_data="video:cancel")
-    )
-    return kb
-
-def video_format_kb():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("📱 4:5", callback_data="video:format_4x5"),
-        InlineKeyboardButton("📱 9:16", callback_data="video:format_9x16"),
-        InlineKeyboardButton("❌ Отмена", callback_data="video:cancel")
-    )
-    return kb
-
-def video_mode_kb():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("🎬 На всё видео", callback_data="video:mode_full"),
-        InlineKeyboardButton("📌 Только начало (5с)", callback_data="video:mode_5sec"),
-        InlineKeyboardButton("❌ Отмена", callback_data="video:cancel")
-    )
-    return kb
-
-def video_slideshow_duration_kb():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("⏱️ 3 секунды", callback_data="video:slideshow_3"),
-        InlineKeyboardButton("⏱️ 5 секунд", callback_data="video:slideshow_5"),
-        InlineKeyboardButton("❌ Отмена", callback_data="video:cancel")
-    )
-    return kb
-
 
 # =========================
 # HELPER FUNCTIONS
@@ -474,36 +366,6 @@ def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_m
                     return None
     return None
 
-def send_video_with_retry(chat_id, video, caption=None, parse_mode=None, reply_markup=None, width=None, height=None, max_retries=3):
-    if caption and len(caption) > 950:
-        caption = caption[:947] + "..."
-    
-    for attempt in range(max_retries):
-        try:
-            return bot.send_video(
-                chat_id=chat_id,
-                video=video,
-                caption=caption,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup,
-                width=width,
-                height=height
-            )
-        except Exception as e:
-            logger.error(f"Send video attempt {attempt + 1} failed: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2 + attempt * 2)
-            else:
-                try:
-                    return bot.send_video(
-                        chat_id=chat_id,
-                        video=video,
-                        reply_markup=reply_markup
-                    )
-                except:
-                    return None
-    return None
-
 def send_media_group_with_retry(chat_id, media_list, max_retries=3):
     for attempt in range(max_retries):
         try:
@@ -551,8 +413,6 @@ def get_video_info(file_id: str, video_obj) -> Dict:
 def clear_state(user_id: int):
     if user_id in user_state:
         user_state[user_id] = {"step": "idle"}
-    if user_id in user_video_sessions:
-        user_video_sessions[user_id] = {"step": "idle"}
 
 def ensure_fonts():
     fonts = [FONT_MN, FONT_MN_BOLD, FONT_CHP, FONT_AM, FONT_MONTSERRAT_BLACK, FONT_PATH, FONT_REGULAR]
@@ -715,20 +575,6 @@ def crop_to_square(img: Image.Image) -> Image.Image:
     left = (w - size) // 2
     top = (h - size) // 2
     return img.crop((left, top, left + size, top + size))
-
-def crop_to_ratio(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
-    w, h = img.size
-    target_ratio = target_w / target_h
-    cur_ratio = w / h
-    
-    if cur_ratio > target_ratio:
-        new_w = int(h * target_ratio)
-        left = (w - new_w) // 2
-        return img.crop((left, 0, left + new_w, h))
-    else:
-        new_h = int(w / target_ratio)
-        top = (h - new_h) // 2
-        return img.crop((0, top, w, top + new_h))
 
 
 # =========================
@@ -1201,7 +1047,7 @@ def strip_html_tags(text: str) -> str:
 
 
 # =========================
-# CARD MAKING FUNCTIONS
+# CARD MAKING FUNCTIONS - ЗАМЕНИТЬ ВЕСЬ ЭТОТ БЛОК
 # =========================
 
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
@@ -1614,6 +1460,96 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
 
 
 # =========================
+# AM2 FUNCTIONS - ЗАМЕНИТЬ create_poster_am2
+# =========================
+
+def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
+                      date: str = "", place: str = "", rubric: str = "",
+                      highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
+    clean_title = strip_html_tags(title_text)
+    clean_title = clean_title_for_card(clean_title)
+    
+    if highlight_color is None:
+        highlight_color = HIGHLIGHT_COLORS["yellow"]
+        is_yellow = True
+    img = Image.open(BytesIO(image_bytes)).convert("RGB")
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+    if text_position == "top":
+        img = apply_gradient_direction(img, "top", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
+    else:
+        img = apply_gradient_direction(img, "bottom", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
+    draw = ImageDraw.Draw(img)
+    rubric_bottom = 0
+    if rubric:
+        rubric_bottom = draw_rubric_top_center_am2(draw, rubric, highlight_color, is_yellow)
+    margin_top = int(TARGET_H * MARGIN_TOP_PCT)
+    if rubric_bottom > 0:
+        margin_top = rubric_bottom + 40
+    else:
+        margin_top = 130
+    max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)
+    
+    text = (clean_title or "").strip().upper()
+    
+    title_max_h = int(TARGET_H * 0.23)
+    font, lines, heights, spacing, total_h = fit_text_block_center(
+        draw=draw, text=text, font_path=FONT_PATH, safe_w=max_text_width,
+        max_block_h=title_max_h, max_lines=6, start_size=int(TARGET_H * 0.11),
+        min_size=24, line_spacing_ratio=LINE_SPACING_RATIO
+    )
+    if is_yellow:
+        date_place_text_color = BLACK
+    else:
+        date_place_text_color = WHITE
+    if text_position == "top":
+        y = margin_top
+        for i, ln in enumerate(lines):
+            line_w = text_width(draw, ln, font)
+            x = (TARGET_W - line_w) // 2
+            draw_highlighted_text_am2(draw, ln, highlight_word, highlight_color, font, x, y)
+            y += heights[i] + spacing
+        if date or place:
+            date_place_y = TARGET_H - DATE_PLACE_BOTTOM_MARGIN
+            if date:
+                date_place_y = draw_rounded_rect_with_text_am2(
+                    draw, f"ДАТА: {date}", highlight_color, date_place_text_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y, DATE_PLACE_PADDING, DATE_PLACE_RADIUS
+                )
+            if place:
+                draw_rounded_rect_with_text_am2(
+                    draw, f"МЕСТО: {place}", highlight_color, date_place_text_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y, DATE_PLACE_PADDING, DATE_PLACE_RADIUS
+                )
+    else:
+        date_place_y = DATE_PLACE_TOP_MARGIN
+        if date or place:
+            if date:
+                date_place_y = draw_rounded_rect_with_text_am2(
+                    draw, f"ДАТА: {date}", highlight_color, date_place_text_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y, DATE_PLACE_PADDING, DATE_PLACE_RADIUS
+                )
+            if place:
+                draw_rounded_rect_with_text_am2(
+                    draw, f"МЕСТО: {place}", highlight_color, date_place_text_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y, DATE_PLACE_PADDING, DATE_PLACE_RADIUS
+                )
+            y = date_place_y + 65
+        else:
+            y = margin_top
+        for i, ln in enumerate(lines):
+            line_w = text_width(draw, ln, font)
+            x = (TARGET_W - line_w) // 2
+            draw_highlighted_text_am2(draw, ln, highlight_word, highlight_color, font, x, y)
+            y += heights[i] + spacing
+    out = BytesIO()
+    img.save(out, format="JPEG", quality=95, subsampling=0)
+    out.seek(0)
+    return out
+
+
+# =========================
 # IMAGE ENHANCEMENT
 # =========================
 def enhance_image_simple(image_bytes: bytes) -> BytesIO:
@@ -1724,6 +1660,7 @@ def apply_watermark_probnym(photo_bytes: bytes) -> BytesIO:
         return BytesIO(photo_bytes)
 
 def apply_watermark_logo_mn(photo_bytes: bytes) -> BytesIO:
+    """Наносит логотип MN в правом верхнем углу с прозрачностью 15% и размером 10% от ширины фото"""
     try:
         img = Image.open(BytesIO(photo_bytes)).convert("RGBA")
         img_width, img_height = img.size
@@ -1766,886 +1703,6 @@ def apply_watermark_logo_mn(photo_bytes: bytes) -> BytesIO:
     except Exception as e:
         logger.error(f"Error applying logo watermark: {e}")
         raise
-
-
-# =========================
-# ВИДЕО ФУНКЦИИ (из второго бота)
-# =========================
-
-def download_audio_from_github(audio_type: str) -> Optional[bytes]:
-    try:
-        url = AUDIO_URLS.get(audio_type)
-        if not url:
-            return None
-        
-        logger.info(f"⬇️ Скачивание аудио {audio_type}...")
-        response = requests.get(url, timeout=30)
-        
-        if response.status_code == 200:
-            logger.info(f"✅ Аудио {audio_type} скачано! Размер: {len(response.content) / 1024:.1f} KB")
-            return response.content
-        return None
-    except Exception as e:
-        logger.error(f"❌ Ошибка скачивания аудио {audio_type}: {e}")
-        return None
-
-def process_video_frame(frame: np.ndarray, title_text: str, format_name: str = "4x5", no_text: bool = False) -> np.ndarray:
-    """Обработка одного кадра для видео с выбором формата"""
-    try:
-        img = Image.fromarray(frame).convert("RGB")
-        
-        format_config = VIDEO_FORMATS.get(format_name, VIDEO_FORMATS["4x5"])
-        target_w = format_config["width"]
-        target_h = format_config["height"]
-        
-        img = crop_to_4x5(img)
-        img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
-        img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-        
-        if no_text:
-            img = apply_bottom_gradient_soft(img, height_pct=0.05, max_alpha=30)
-            return np.array(img)
-        
-        img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
-        
-        draw = ImageDraw.Draw(img)
-        margin_x = int(img.width * 0.06)
-        margin_bottom = int(img.height * 0.08)
-        safe_w = img.width - 2 * margin_x
-        title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
-        
-        clean_title = clean_title_for_card(title_text)
-        text = (clean_title or "Без заголовка").strip().upper()
-        
-        font, lines, heights, spacing, total_h = fit_text_block(
-            draw=draw, text=text, font_path=FONT_CHP, safe_w=safe_w,
-            max_block_h=title_max_h, max_lines=6, start_size=int(img.height * 0.11),
-            min_size=16, line_spacing_ratio=0.22
-        )
-        
-        line_height = font.size
-        total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
-        
-        y = img.height - margin_bottom - total_text_height
-        
-        for ln in lines:
-            draw.text((margin_x, y), ln, font=font, fill="white")
-            y += line_height + 2
-        
-        return np.array(img)
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка обработки кадра: {e}")
-        return frame
-
-def process_video_fast(video_bytes: bytes, title_text: str, only_first_seconds: int = 0, audio_bytes: Optional[bytes] = None, keep_original_audio: bool = True, format_name: str = "4x5", no_text: bool = False) -> BytesIO:
-    """Быстрая обработка видео с оптимизациями и возможностью добавления аудио"""
-    temp_input = None
-    temp_output = None
-    temp_audio = None
-    
-    try:
-        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
-            f.write(video_bytes)
-            temp_input = f.name
-        
-        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
-            temp_output = f.name
-        
-        logger.info(f"📹 Загрузка видео...")
-        video = VideoFileClip(temp_input)
-        logger.info(f"📹 Видео загружено: {video.duration}с, {video.size}")
-        
-        original_audio = video.audio
-        
-        if only_first_seconds > 0:
-            logger.info(f"📹 Обрабатываем только первые {only_first_seconds} секунд, остальное без изменений")
-            
-            if video.duration > only_first_seconds:
-                first_part = video.subclip(0, only_first_seconds)
-                second_part = video.subclip(only_first_seconds, video.duration)
-                
-                def process_frame(frame):
-                    return process_video_frame(frame, title_text, format_name, no_text)
-                
-                processed_first = first_part.fl_image(process_frame)
-                processed_video = concatenate_videoclips([processed_first, second_part])
-                
-                first_part.close()
-                second_part.close()
-                processed_first.close()
-            else:
-                logger.info(f"📹 Видео короче {only_first_seconds}с, обрабатываем полностью")
-                def process_frame(frame):
-                    return process_video_frame(frame, title_text, format_name, no_text)
-                processed_video = video.fl_image(process_frame)
-        else:
-            logger.info(f"📹 Обрабатываем всё видео")
-            def process_frame(frame):
-                return process_video_frame(frame, title_text, format_name, no_text)
-            processed_video = video.fl_image(process_frame)
-        
-        if audio_bytes:
-            try:
-                logger.info(f"🎵 Добавление нового аудио...")
-                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
-                    f.write(audio_bytes)
-                    temp_audio = f.name
-                
-                audio_clip = AudioFileClip(temp_audio)
-                if audio_clip.duration > processed_video.duration:
-                    audio_clip = audio_clip.subclip(0, processed_video.duration)
-                else:
-                    audio_clip = audio_loop(audio_clip, duration=processed_video.duration)
-                
-                processed_video = processed_video.set_audio(audio_clip)
-                logger.info(f"✅ Новое аудио добавлено")
-            except Exception as e:
-                logger.error(f"❌ Ошибка добавления аудио: {e}")
-        elif not keep_original_audio:
-            logger.info(f"🔇 Удаляем звук из видео")
-            processed_video = processed_video.without_audio()
-        elif original_audio is not None:
-            try:
-                logger.info(f"🎵 Сохраняем оригинальное аудио...")
-                processed_video = processed_video.set_audio(original_audio)
-                logger.info(f"✅ Оригинальное аудио сохранено")
-            except Exception as e:
-                logger.error(f"❌ Ошибка сохранения аудио: {e}")
-        
-        logger.info(f"💾 Сохранение видео...")
-        processed_video.write_videofile(
-            temp_output,
-            codec='libx264',
-            audio_codec='aac',
-            fps=video.fps,
-            bitrate='5000k',
-            threads=4,
-            preset='medium',
-            logger=None
-        )
-        
-        video.close()
-        processed_video.close()
-        if original_audio:
-            original_audio.close()
-        
-        with open(temp_output, 'rb') as f:
-            result_bytes = f.read()
-        
-        logger.info(f"✅ Видео обработано! Размер: {len(result_bytes) / (1024*1024):.2f} MB")
-        
-        output = BytesIO()
-        output.write(result_bytes)
-        output.seek(0)
-        return output
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка при обработке видео: {e}")
-        traceback.print_exc()
-        output = BytesIO(video_bytes)
-        output.seek(0)
-        return output
-    
-    finally:
-        try:
-            if temp_input and os.path.exists(temp_input):
-                os.unlink(temp_input)
-            if temp_output and os.path.exists(temp_output):
-                os.unlink(temp_output)
-            if temp_audio and os.path.exists(temp_audio):
-                os.unlink(temp_audio)
-        except:
-            pass
-
-def create_slideshow_video(photos: List[bytes], title_text: str, audio_bytes: Optional[bytes] = None, only_first_seconds: int = 0, duration_per_photo: float = 3.0, format_name: str = "4x5", no_text: bool = False) -> Optional[BytesIO]:
-    """Создание слайд-шоу с возможностью выбора времени показа каждого слайда и формата"""
-    temp_dir = tempfile.mkdtemp()
-    
-    try:
-        logger.info(f"📸 Создание слайдшоу из {len(photos)} фото, время слайда: {duration_per_photo}с, формат: {format_name}, no_text: {no_text}")
-        
-        if len(photos) < 1:
-            logger.error(f"❌ Нет фото для слайдшоу")
-            return None
-        
-        format_config = VIDEO_FORMATS.get(format_name, VIDEO_FORMATS["4x5"])
-        target_w = format_config["width"]
-        target_h = format_config["height"]
-        
-        photo_paths = []
-        for i, photo_bytes in enumerate(photos):
-            img = Image.open(BytesIO(photo_bytes)).convert("RGB")
-            img = crop_to_4x5(img)
-            img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
-            img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-            
-            if no_text or i > 0:
-                img = apply_bottom_gradient_soft(img, height_pct=0.05, max_alpha=30)
-            else:
-                img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
-                
-                if only_first_seconds == 0 and not no_text:
-                    draw = ImageDraw.Draw(img)
-                    margin_x = int(img.width * 0.06)
-                    margin_bottom = int(img.height * 0.08)
-                    safe_w = img.width - 2 * margin_x
-                    title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
-                    
-                    clean_title = clean_title_for_card(title_text)
-                    text = (clean_title or "Без заголовка").strip().upper()
-                    
-                    font, lines, heights, spacing, total_h = fit_text_block(
-                        draw=draw, text=text, font_path=FONT_CHP, safe_w=safe_w,
-                        max_block_h=title_max_h, max_lines=6, start_size=int(img.height * 0.11),
-                        min_size=16, line_spacing_ratio=0.22
-                    )
-                    
-                    line_height = font.size
-                    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
-                    y = img.height - margin_bottom - total_text_height
-                    
-                    for ln in lines:
-                        draw.text((margin_x, y), ln, font=font, fill="white")
-                        y += line_height + 2
-            
-            path = os.path.join(temp_dir, f"photo_{i}.png")
-            img.save(path)
-            photo_paths.append(path)
-        
-        clips = []
-        for path in photo_paths:
-            clip = ImageSequenceClip([path], durations=[duration_per_photo])
-            try:
-                if resize:
-                    def make_zoom(t):
-                        progress = t / duration_per_photo
-                        return 1.0 + 0.1 * (progress * progress * (3 - 2 * progress))
-                    clip = clip.fx(resize, make_zoom)
-            except:
-                pass
-            clips.append(clip)
-        
-        final_clip = concatenate_videoclips(clips)
-        
-        if audio_bytes:
-            try:
-                audio_path = os.path.join(temp_dir, "audio.mp3")
-                with open(audio_path, 'wb') as f:
-                    f.write(audio_bytes)
-                
-                audio_clip = AudioFileClip(audio_path)
-                if audio_clip.duration > final_clip.duration:
-                    audio_clip = audio_clip.subclip(0, final_clip.duration)
-                else:
-                    audio_clip = audio_loop(audio_clip, duration=final_clip.duration)
-                
-                final_clip = final_clip.set_audio(audio_clip)
-            except:
-                pass
-        
-        output_path = os.path.join(temp_dir, "slideshow.mp4")
-        final_clip.write_videofile(
-            output_path,
-            fps=24,
-            codec='libx264',
-            audio_codec='aac',
-            threads=4,
-            preset='medium',
-            logger=None
-        )
-        
-        with open(output_path, 'rb') as f:
-            result_bytes = f.read()
-        
-        output = BytesIO()
-        output.write(result_bytes)
-        output.seek(0)
-        
-        logger.info(f"✅ Слайдшоу создано! Размер: {len(result_bytes) / (1024*1024):.2f} MB")
-        return output
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка создания слайдшоу: {e}")
-        traceback.print_exc()
-        return None
-    
-    finally:
-        try:
-            shutil.rmtree(temp_dir)
-        except:
-            pass
-
-
-# =========================
-# ОБРАБОТЧИКИ ВИДЕО
-# =========================
-
-def init_video_session(user_id: int):
-    """Инициализация сессии для видео.
-
-    ВАЖНО: сессия пересоздаётся с полным набором ключей не только когда
-    её вообще нет в словаре, но и когда она "пустая" (например, после
-    clear_state(), который обнуляет её до {"step": "idle"}). Раньше в
-    этом случае init_video_session() ничего не делал (ключ уже
-    присутствовал), и следующая попытка сделать видео падала с
-    KeyError на session["photos"] / session["video_bytes"].
-    """
-    existing = user_video_sessions.get(user_id)
-    needs_reset = (
-        existing is None
-        or "photos" not in existing
-        or "video_bytes" not in existing
-    )
-    if needs_reset:
-        user_video_sessions[user_id] = {
-            "step": "idle",
-            "video_bytes": None,
-            "photos": [],
-            "title": "",
-            "auto_title": "",
-            "audio_bytes": None,
-            "audio_selected": "",
-            "keep_original_audio": True,
-            "format": "4x5",
-            "mode": "full",
-            "slideshow_duration": 3.0,
-            "no_text": False,
-            "original_caption": "",
-            "is_slideshow": False,
-            "is_video": False
-        }
-    return user_video_sessions[user_id]
-
-def handle_start_video(message):
-    """Начало создания видео"""
-    uid = message.from_user.id
-    session = init_video_session(uid)
-    session["step"] = "waiting_media"
-    
-    send_message_with_retry(
-        message.chat.id,
-        "🎬 <b>Создание видео</b>\n\n"
-        "Отправьте <b>фото</b> (для слайд-шоу) или <b>видео</b> (для обработки).\n"
-        "Можно отправить несколько фото для слайд-шоу.\n\n"
-        "Когда закончите отправлять фото, нажмите /done_video",
-        parse_mode="HTML",
-        reply_markup=main_menu_kb()
-    )
-
-def handle_video_media(message):
-    """Обработка медиа для видео"""
-    uid = message.from_user.id
-    
-    if uid not in user_video_sessions:
-        send_message_with_retry(message.chat.id, "❌ Сначала нажмите '🎬 Сделать видео'", reply_markup=main_menu_kb())
-        return
-    
-    session = user_video_sessions[uid]
-    
-    if session["step"] != "waiting_media":
-        return
-    
-    # Если это медиагруппа
-    if hasattr(message, 'media_group_id') and message.media_group_id:
-        handle_video_media_group(message)
-        return
-    
-    # Если это видео
-    if message.video:
-        try:
-            file_id = message.video.file_id
-            video_bytes = tg_file_bytes(file_id)
-            if not check_file_size(video_bytes):
-                bot.reply_to(message, "❌ Видео слишком большое. Максимальный размер 50MB.")
-                return
-            
-            session["video_bytes"] = video_bytes
-            session["is_video"] = True
-            session["original_caption"] = message.caption or ""
-            
-            # Извлекаем заголовок
-            if message.caption:
-                auto_title = extract_title_from_text(message.caption)
-                session["auto_title"] = auto_title
-                session["title"] = auto_title
-            
-            show_video_title_choice(message.chat.id, uid)
-        except Exception as e:
-            logger.error(f"Error processing video: {e}")
-            bot.reply_to(message, f"❌ Ошибка: {e}")
-        return
-    
-    # Если это фото
-    if message.photo:
-        try:
-            file_id = message.photo[-1].file_id
-            photo_bytes = tg_file_bytes(file_id)
-            if not check_file_size(photo_bytes):
-                bot.reply_to(message, "❌ Фото слишком большое. Максимальный размер 20MB.")
-                return
-            
-            session["photos"].append(photo_bytes)
-            session["is_slideshow"] = True
-            if message.caption and not session["original_caption"]:
-                session["original_caption"] = message.caption
-                auto_title = extract_title_from_text(message.caption)
-                session["auto_title"] = auto_title
-                session["title"] = auto_title
-            
-            count = len(session["photos"])
-            bot.reply_to(message, f"✅ Фото {count} добавлено!\nОтправьте еще фото или нажмите /done_video")
-        except Exception as e:
-            logger.error(f"Error processing photo: {e}")
-            bot.reply_to(message, f"❌ Ошибка: {e}")
-
-def handle_video_media_group(message):
-    """Обработка медиагруппы для видео"""
-    # Сохраняем в кэш
-    media_group_id = message.media_group_id
-    
-    if media_group_id not in pending_media_groups:
-        pending_media_groups[media_group_id] = {
-            "photos": [],
-            "video": None,
-            "caption": "",
-            "user_id": message.from_user.id,
-            "chat_id": message.chat.id,
-            "processed": False
-        }
-    
-    group = pending_media_groups[media_group_id]
-    if message.caption and not group["caption"]:
-        group["caption"] = message.caption
-    
-    if message.photo:
-        try:
-            file_id = message.photo[-1].file_id
-            photo_bytes = tg_file_bytes(file_id)
-            if check_file_size(photo_bytes):
-                group["photos"].append(photo_bytes)
-        except Exception as e:
-            logger.error(f"Error adding photo to group: {e}")
-    
-    if message.video:
-        try:
-            file_id = message.video.file_id
-            video_bytes = tg_file_bytes(file_id)
-            if check_file_size(video_bytes):
-                group["video"] = video_bytes
-        except Exception as e:
-            logger.error(f"Error adding video to group: {e}")
-    
-    # Запускаем обработку через 3 секунды
-    threading.Thread(target=process_video_media_group, args=(media_group_id,), daemon=True).start()
-
-def process_video_media_group(media_group_id: str):
-    """Обработка собранной медиагруппы"""
-    time.sleep(3)
-    
-    group = pending_media_groups.get(media_group_id)
-    if not group or group.get("processed"):
-        return
-    
-    group["processed"] = True
-    user_id = group["user_id"]
-    chat_id = group["chat_id"]
-    
-    session = init_video_session(user_id)
-    
-    if group.get("video"):
-        session["video_bytes"] = group["video"]
-        session["is_video"] = True
-        session["original_caption"] = group["caption"]
-        if group["caption"]:
-            auto_title = extract_title_from_text(group["caption"])
-            session["auto_title"] = auto_title
-            session["title"] = auto_title
-        
-        bot.send_message(chat_id, "✅ Видео получено!")
-        show_video_title_choice(chat_id, user_id)
-    
-    elif group.get("photos"):
-        session["photos"] = group["photos"]
-        session["is_slideshow"] = True
-        session["original_caption"] = group["caption"]
-        if group["caption"]:
-            auto_title = extract_title_from_text(group["caption"])
-            session["auto_title"] = auto_title
-            session["title"] = auto_title
-        
-        bot.send_message(chat_id, f"✅ Получено {len(group['photos'])} фото!")
-        show_video_title_choice(chat_id, user_id)
-    
-    # Удаляем из кэша
-    del pending_media_groups[media_group_id]
-
-def show_video_title_choice(chat_id: int, user_id: int):
-    """Показать выбор заголовка для видео"""
-    session = user_video_sessions[user_id]
-    auto_title = session.get("auto_title", "")
-    
-    if auto_title:
-        text = f"📹 <b>Шаг 1/4: Выбор заголовка</b>\n\n<b>Найденный заголовок:</b>\n{auto_title}\n\nВыберите действие:"
-    else:
-        text = "📹 <b>Шаг 1/4: Выбор заголовка</b>\n\nТекст не найден.\n\nВыберите действие:"
-    
-    send_message_with_retry(chat_id, text, parse_mode="HTML", reply_markup=video_title_kb())
-
-def show_video_audio_choice(chat_id: int, user_id: int):
-    """Показать выбор аудио для видео"""
-    session = user_video_sessions[user_id]
-    title = session.get("title", "")
-    no_text = session.get("no_text", False)
-    
-    title_display = "Без текста" if no_text else (title or "Без заголовка")
-    
-    text = f"✅ Заголовок: <b>{title_display}</b>\n\n📹 <b>Шаг 2/4: Выбор аудио</b>\n\nВыберите вариант:"
-    send_message_with_retry(chat_id, text, parse_mode="HTML", reply_markup=video_audio_kb())
-
-def show_video_format_choice(chat_id: int, user_id: int):
-    """Показать выбор формата для видео"""
-    text = "📹 <b>Шаг 3/4: Выбор формата</b>\n\nВыберите формат видео:"
-    send_message_with_retry(chat_id, text, parse_mode="HTML", reply_markup=video_format_kb())
-
-def show_video_mode_choice(chat_id: int, user_id: int):
-    """Показать выбор режима обработки видео"""
-    session = user_video_sessions[user_id]
-    format_name = session.get("format", "4x5")
-    format_display = "4:5" if format_name == "4x5" else "9:16"
-    
-    if session.get("is_slideshow"):
-        # Для слайд-шоу показываем выбор времени слайда
-        text = f"📹 <b>Выбор времени слайда</b>\n\n📱 Формат: {format_display}\n\nВыберите время показа каждого слайда:"
-        send_message_with_retry(chat_id, text, parse_mode="HTML", reply_markup=video_slideshow_duration_kb())
-    else:
-        text = f"📹 <b>Шаг 4/4: Выбор режима обработки</b>\n\n📱 Формат: {format_display}\n\n• 🎬 Заголовок на всё видео\n• 📌 Заголовок только в начале (5 секунд)\n\nВыберите режим:"
-        send_message_with_retry(chat_id, text, parse_mode="HTML", reply_markup=video_mode_kb())
-
-def process_video_final(user_id: int, chat_id: int):
-    """Финальная обработка видео"""
-    session = user_video_sessions[user_id]
-    
-    title = session.get("title", "")
-    no_text = session.get("no_text", False)
-    audio_bytes = session.get("audio_bytes")
-    audio_selected = session.get("audio_selected", "")
-    keep_original_audio = session.get("keep_original_audio", True)
-    format_name = session.get("format", "4x5")
-    mode = session.get("mode", "full")
-    only_first_seconds = 0 if mode == "full" else 5
-    duration_per_photo = session.get("slideshow_duration", 3.0)
-    
-    status_msg = bot.send_message(chat_id, "⏳ <b>Обрабатываю видео...</b>\n⏳ Это займет 20-60 секунд", parse_mode="HTML")
-    
-    try:
-        if session.get("is_video") and session.get("video_bytes"):
-            # Обработка видео
-            result = process_video_fast(
-                session["video_bytes"],
-                title,
-                only_first_seconds,
-                audio_bytes,
-                keep_original_audio,
-                format_name,
-                no_text
-            )
-            
-            if result and len(result.getvalue()) > 0:
-                caption = session.get("original_caption", "")
-                if no_text:
-                    caption += "\n📌 Без текста"
-                elif title:
-                    caption = f"<b>{title}</b>" if not caption else caption
-                if audio_selected:
-                    caption += f"\n🎵 Аудио: {audio_selected}"
-                
-                format_config = VIDEO_FORMATS.get(format_name, VIDEO_FORMATS["4x5"])
-                send_video_with_retry(
-                    chat_id,
-                    BytesIO(result.getvalue()),
-                    caption=caption,
-                    parse_mode="HTML",
-                    width=format_config["width"],
-                    height=format_config["height"]
-                )
-                bot.edit_message_text("✅ Видео готово!", chat_id, status_msg.message_id)
-            else:
-                bot.edit_message_text("❌ Ошибка обработки видео", chat_id, status_msg.message_id)
-        
-        elif session.get("is_slideshow") and session.get("photos"):
-            # Создание слайд-шоу
-            result = create_slideshow_video(
-                session["photos"],
-                title,
-                audio_bytes,
-                only_first_seconds,
-                duration_per_photo,
-                format_name,
-                no_text
-            )
-            
-            if result and len(result.getvalue()) > 0:
-                caption = session.get("original_caption", "")
-                if no_text:
-                    caption += "\n📌 Без текста"
-                elif title:
-                    caption = f"<b>{title}</b>" if not caption else caption
-                if audio_selected:
-                    caption += f"\n🎵 Аудио: {audio_selected}"
-                caption += f"\n⏱️ Время слайда: {duration_per_photo}с"
-                
-                format_config = VIDEO_FORMATS.get(format_name, VIDEO_FORMATS["4x5"])
-                send_video_with_retry(
-                    chat_id,
-                    BytesIO(result.getvalue()),
-                    caption=caption,
-                    parse_mode="HTML",
-                    width=format_config["width"],
-                    height=format_config["height"]
-                )
-                bot.edit_message_text("✅ Слайд-шоу готово!", chat_id, status_msg.message_id)
-            else:
-                bot.edit_message_text("❌ Ошибка создания слайд-шоу", chat_id, status_msg.message_id)
-        else:
-            bot.edit_message_text("❌ Нет медиа для обработки", chat_id, status_msg.message_id)
-    
-    except Exception as e:
-        logger.error(f"Error processing video: {e}")
-        traceback.print_exc()
-        bot.edit_message_text(f"❌ Ошибка: {e}", chat_id, status_msg.message_id)
-    
-    # Очищаем сессию
-    session["step"] = "idle"
-
-
-# =========================
-# CALLBACK ОБРАБОТЧИКИ ВИДЕО
-# =========================
-
-def handle_video_callback(call):
-    """Обработчик callback'ов для видео"""
-    uid = call.from_user.id
-    data = call.data
-    chat_id = call.message.chat.id
-    
-    if data == "video:cancel":
-        if uid in user_video_sessions:
-            user_video_sessions[uid] = {"step": "idle"}
-        bot.answer_callback_query(call.id, "Отменено")
-        bot.delete_message(chat_id, call.message.message_id)
-        send_message_with_retry(chat_id, "❌ Отменено", reply_markup=main_menu_kb())
-        return
-    
-    if uid not in user_video_sessions:
-        bot.answer_callback_query(call.id, "❌ Сессия не найдена")
-        return
-    
-    session = user_video_sessions[uid]
-    
-    # Обработка выбора заголовка
-    if data == "video:title_keep":
-        if session.get("auto_title"):
-            session["title"] = session["auto_title"]
-            session["no_text"] = False
-            bot.answer_callback_query(call.id, f"✅ Заголовок: {session['title'][:50]}...")
-            bot.delete_message(chat_id, call.message.message_id)
-            show_video_audio_choice(chat_id, uid)
-        else:
-            bot.answer_callback_query(call.id, "❌ Нет заголовка")
-    
-    elif data == "video:title_custom":
-        bot.answer_callback_query(call.id, "✏️ Введите заголовок")
-        bot.delete_message(chat_id, call.message.message_id)
-        session["step"] = "waiting_title"
-        send_message_with_retry(chat_id, "✏️ Отправьте текст для заголовка:", parse_mode="HTML")
-    
-    elif data == "video:title_ai":
-        if not DEEPSEEK_API_KEY:
-            bot.answer_callback_query(call.id, "❌ API ключ DeepSeek не настроен")
-            return
-        
-        auto_title = session.get("auto_title", "")
-        if not auto_title:
-            bot.answer_callback_query(call.id, "❌ Нет заголовка для улучшения")
-            return
-        
-        bot.answer_callback_query(call.id, "🤖 Улучшаю заголовок...")
-        bot.edit_message_text("🤖 <b>Улучшаю заголовок через ИИ...</b>\n⏳ Это займет несколько секунд", chat_id, call.message.message_id, parse_mode="HTML")
-        
-        # Запускаем асинхронную обработку в отдельном потоке
-        def process_ai():
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                async def improve():
-                    return await improve_title_with_ai(auto_title)
-                
-                improved = loop.run_until_complete(improve())
-                loop.close()
-                return improved
-            except Exception as e:
-                logger.error(f"AI error: {e}")
-                return None
-        
-        def ai_callback(improved):
-            if improved and improved != auto_title:
-                session["title"] = improved
-                session["no_text"] = False
-                bot.edit_message_text(
-                    f"🤖 <b>ИИ предложил:</b>\n\n{improved}\n\n✅ Заголовок сохранен!",
-                    chat_id,
-                    call.message.message_id,
-                    parse_mode="HTML"
-                )
-                show_video_audio_choice(chat_id, uid)
-            else:
-                bot.edit_message_text(
-                    f"❌ Не удалось улучшить заголовок.\nИспользую оригинал:\n\n{auto_title}",
-                    chat_id,
-                    call.message.message_id,
-                    parse_mode="HTML"
-                )
-                session["title"] = auto_title
-                session["no_text"] = False
-                show_video_audio_choice(chat_id, uid)
-        
-        threading.Thread(target=lambda: ai_callback(process_ai()), daemon=True).start()
-    
-    elif data == "video:title_no_text":
-        session["title"] = ""
-        session["no_text"] = True
-        bot.answer_callback_query(call.id, "⏭️ Без текста")
-        bot.delete_message(chat_id, call.message.message_id)
-        show_video_audio_choice(chat_id, uid)
-    
-    # Обработка выбора аудио
-    elif data == "video:audio_original":
-        session["audio_bytes"] = None
-        session["audio_selected"] = "оригинальный звук"
-        session["keep_original_audio"] = True
-        bot.answer_callback_query(call.id, "🎵 Оригинальный звук")
-        bot.delete_message(chat_id, call.message.message_id)
-        show_video_format_choice(chat_id, uid)
-    
-    elif data == "video:audio_silent":
-        session["audio_bytes"] = None
-        session["audio_selected"] = "без звука"
-        session["keep_original_audio"] = False
-        bot.answer_callback_query(call.id, "🔇 Без звука")
-        bot.delete_message(chat_id, call.message.message_id)
-        show_video_format_choice(chat_id, uid)
-    
-    elif data in ["video:audio_важная", "video:audio_обычная"]:
-        audio_type = "важная" if data == "video:audio_важная" else "обычная"
-        audio_name = "Важное" if audio_type == "важная" else "Обычное"
-        bot.answer_callback_query(call.id, f"⏳ Скачиваю {audio_name}...")
-        bot.edit_message_text(f"⏳ Скачиваю аудио '{audio_name}'...", chat_id, call.message.message_id)
-        
-        def download_audio():
-            return download_audio_from_github(audio_type)
-        
-        def audio_callback(audio_bytes):
-            if audio_bytes:
-                session["audio_bytes"] = audio_bytes
-                session["audio_selected"] = audio_name
-                session["keep_original_audio"] = False
-                bot.edit_message_text(f"✅ Аудио '{audio_name}' загружено!", chat_id, call.message.message_id)
-                show_video_format_choice(chat_id, uid)
-            else:
-                bot.edit_message_text(f"❌ Не удалось загрузить аудио '{audio_name}'", chat_id, call.message.message_id)
-                show_video_audio_choice(chat_id, uid)
-        
-        threading.Thread(target=lambda: audio_callback(download_audio()), daemon=True).start()
-    
-    # Обработка выбора формата
-    elif data == "video:format_4x5":
-        session["format"] = "4x5"
-        bot.answer_callback_query(call.id, "📱 Формат 4:5")
-        bot.delete_message(chat_id, call.message.message_id)
-        show_video_mode_choice(chat_id, uid)
-    
-    elif data == "video:format_9x16":
-        session["format"] = "9x16"
-        bot.answer_callback_query(call.id, "📱 Формат 9:16")
-        bot.delete_message(chat_id, call.message.message_id)
-        show_video_mode_choice(chat_id, uid)
-    
-    # Обработка выбора времени слайда
-    # ВАЖНО: раньше здесь снова вызывался show_video_mode_choice(), а эта
-    # функция для is_slideshow=True опять показывала клавиатуру выбора
-    # времени слайда — получалась бесконечная петля, и бот "не отвечал"
-    # (реальная обработка видео так никогда и не запускалась). Теперь
-    # после выбора времени слайда сразу запускаем финальную обработку.
-    elif data == "video:slideshow_3":
-        session["slideshow_duration"] = 3.0
-        bot.answer_callback_query(call.id, "⏱️ 3 секунды")
-        bot.delete_message(chat_id, call.message.message_id)
-        process_video_final(uid, chat_id)
-    
-    elif data == "video:slideshow_5":
-        session["slideshow_duration"] = 5.0
-        bot.answer_callback_query(call.id, "⏱️ 5 секунд")
-        bot.delete_message(chat_id, call.message.message_id)
-        process_video_final(uid, chat_id)
-    
-    # Обработка выбора режима
-    elif data == "video:mode_full":
-        session["mode"] = "full"
-        bot.answer_callback_query(call.id, "🎬 На всё видео")
-        bot.delete_message(chat_id, call.message.message_id)
-        process_video_final(uid, chat_id)
-    
-    elif data == "video:mode_5sec":
-        session["mode"] = "5sec"
-        bot.answer_callback_query(call.id, "📌 Только начало")
-        bot.delete_message(chat_id, call.message.message_id)
-        process_video_final(uid, chat_id)
-
-async def improve_title_with_ai(title: str) -> Optional[str]:
-    """Улучшение заголовка через DeepSeek AI"""
-    if not DEEPSEEK_API_KEY:
-        return None
-    
-    try:
-        prompt = f"""Переделай этот заголовок в новостной, но более интересный и кликбейтный формат. 
-Сделай его более ярким, интригующим, добавь эмоциональную окраску. 
-Сохрани смысл, но сделай его более привлекательным для читателей.
-
-Оригинальный заголовок: {title}
-
-Ответь только новым заголовком, без пояснений и кавычек."""
-
-        headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        data = {
-            "model": "deepseek-chat",
-            "messages": [
-                {"role": "system", "content": "Ты профессиональный копирайтер и редактор новостей."},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.8,
-            "max_tokens": 100
-        }
-        
-        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=30)
-        
-        if response.status_code == 200:
-            result = response.json()
-            improved_title = result['choices'][0]['message']['content'].strip()
-            improved_title = improved_title.strip('"\'')
-            return improved_title
-        else:
-            logger.error(f"❌ Ошибка DeepSeek API: {response.status_code}")
-            return None
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка при работе с DeepSeek: {e}")
-        return None
 
 
 # =========================
@@ -3802,56 +2859,6 @@ def on_repost_action(c):
             bot.answer_callback_query(c.id, "✏️ Введите заголовок")
             send_message_with_retry(c.message.chat.id, "✏️ Отправь <b>ЗАГОЛОВОК</b> для поста:", parse_mode="HTML")
     
-    elif action == "make_video":
-        bot.answer_callback_query(c.id, "🎬 Переход к созданию видео")
-        
-        # Сохраняем текущие данные в сессию видео
-        if st.get("photo_bytes"):
-            init_video_session(uid)
-            user_video_sessions[uid]["photos"] = [st["photo_bytes"]]
-            user_video_sessions[uid]["is_slideshow"] = True
-            user_video_sessions[uid]["original_caption"] = st.get("original_text", "")
-            if st.get("title"):
-                user_video_sessions[uid]["title"] = st["title"]
-                user_video_sessions[uid]["auto_title"] = st["title"]
-            
-            bot.delete_message(c.message.chat.id, c.message.message_id)
-            show_video_title_choice(c.message.chat.id, uid)
-        
-        elif st.get("video_file_id"):
-            try:
-                video_bytes = tg_file_bytes(st["video_file_id"])
-                init_video_session(uid)
-                user_video_sessions[uid]["video_bytes"] = video_bytes
-                user_video_sessions[uid]["is_video"] = True
-                user_video_sessions[uid]["original_caption"] = st.get("original_text", "")
-                if st.get("title"):
-                    user_video_sessions[uid]["title"] = st["title"]
-                    user_video_sessions[uid]["auto_title"] = st["title"]
-                
-                bot.delete_message(c.message.chat.id, c.message.message_id)
-                show_video_title_choice(c.message.chat.id, uid)
-            except Exception as e:
-                logger.error(f"Error getting video: {e}")
-                bot.answer_callback_query(c.id, f"❌ Ошибка: {e}")
-                send_message_with_retry(c.message.chat.id, f"❌ Не удалось загрузить видео: {e}")
-        
-        elif st.get("album_photos"):
-            init_video_session(uid)
-            user_video_sessions[uid]["photos"] = st["album_photos"]
-            user_video_sessions[uid]["is_slideshow"] = True
-            user_video_sessions[uid]["original_caption"] = st.get("original_text", "")
-            if st.get("title"):
-                user_video_sessions[uid]["title"] = st["title"]
-                user_video_sessions[uid]["auto_title"] = st["title"]
-            
-            bot.delete_message(c.message.chat.id, c.message.message_id)
-            show_video_title_choice(c.message.chat.id, uid)
-        
-        else:
-            bot.answer_callback_query(c.id, "❌ Нет медиа для видео")
-            send_message_with_retry(c.message.chat.id, "❌ Нет фото или видео для создания видео.\nСначала отправьте медиа.")
-    
     elif action == "ai":
         bot.answer_callback_query(c.id, "🤖 Обрабатываю текст через ИИ...")
         processing_msg = bot.send_message(c.message.chat.id, "⏳ Обрабатываю текст в DeepSeek AI... (до 30 секунд)")
@@ -4144,12 +3151,16 @@ def on_tg_action(c):
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
+    # НОВЫЙ ОБРАБОТЧИК - Оформить пост для TG
     if action == "design":
         bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
         
+        # Используем ТЕКУЩИЙ текст из st["tg_post_text"] (текст от ИИ для TG)
         tg_text = st.get("tg_post_text", "")
         if tg_text:
+            # Извлекаем заголовок и тело из текста
             clean_text = remove_emojis(tg_text)
+            # Убираем эмодзи в начале
             clean_text = re.sub(r'^[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF]\s*', '', clean_text)
             title, body = split_title_and_body(clean_text)
             st["title"] = clean_title_for_card(title) if title else "Без заголовка"
@@ -4286,9 +3297,11 @@ def on_threads_action(c):
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
+    # НОВЫЙ ОБРАБОТЧИК - Оформить пост для Threads
     if action == "design":
         bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
         
+        # Используем ТЕКУЩИЙ текст из st["threads_post_text"] (текст от ИИ для Threads)
         threads_text = st.get("threads_post_text", "")
         if threads_text:
             clean_text = remove_emojis(threads_text)
@@ -4428,9 +3441,11 @@ def on_post_channel_select(c):
     _, post_type, channel_type = c.data.split(":", 2)
     st = user_state.get(uid) or {}
     
+    # НОВЫЙ ОБРАБОТЧИК - Оформить пост перед публикацией
     if channel_type == "design_before_publish":
         bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
         
+        # Используем ТЕКУЩИЙ текст из st["original_text"] (он уже обновлен после ИИ)
         current_text = st.get("original_text", "")
         if current_text:
             title, body = split_title_and_body(current_text)
@@ -4682,9 +3697,11 @@ def on_select_channel(c):
     channel_type = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
+    # НОВЫЙ ОБРАБОТЧИК - Оформить пост перед публикацией
     if channel_type == "design_before_publish":
         bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
         
+        # Используем ТЕКУЩИЙ текст из st["original_text"] (он уже обновлен после ИИ)
         current_text = st.get("original_text", "")
         if current_text:
             title, body = split_title_and_body(current_text)
@@ -5366,14 +4383,6 @@ def on_article_action(c):
 
 
 # =========================
-# ОБРАБОТЧИК ВИДЕО CALLBACK (НОВЫЙ)
-# =========================
-@bot.callback_query_handler(func=lambda c: c.data.startswith("video:"))
-def on_video_callback(c):
-    handle_video_callback(c)
-
-
-# =========================
 # ОБРАБОТЧИКИ СООБЩЕНИЙ
 # =========================
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
@@ -5651,20 +4660,6 @@ def on_text(message):
     text = message.text.strip() if message.text else ""
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
     
-    # Обработка команды /done_video
-    if text == "/done_video" or text == "/done_video@bot":
-        if uid in user_video_sessions and user_video_sessions[uid].get("step") == "waiting_media" and user_video_sessions[uid].get("photos"):
-            session = user_video_sessions[uid]
-            count = len(session.get("photos", []))
-            if count >= 1:
-                bot.reply_to(message, f"✅ Собрано {count} фото! Перехожу к выбору заголовка.")
-                show_video_title_choice(message.chat.id, uid)
-            else:
-                bot.reply_to(message, "❌ Нет фото. Отправьте хотя бы одно фото.")
-        else:
-            bot.reply_to(message, "❌ Нет активной сессии или нет фото.")
-        return
-    
     if text == BTN_POST:
         cmd_post(message)
         return
@@ -5679,22 +4674,6 @@ def on_text(message):
         return
     if text == BTN_AI_TEXT:
         cmd_ai_text(message)
-        return
-    if text == BTN_MAKE_VIDEO:
-        handle_start_video(message)
-        return
-    
-    # Проверка на ввод заголовка для видео
-    if uid in user_video_sessions and user_video_sessions[uid].get("step") == "waiting_title":
-        if text:
-            session = user_video_sessions[uid]
-            session["title"] = text
-            session["no_text"] = False
-            session["step"] = "idle"
-            bot.reply_to(message, f"✅ Заголовок сохранен:\n\n<b>{text}</b>", parse_mode="HTML")
-            show_video_audio_choice(message.chat.id, uid)
-        else:
-            bot.reply_to(message, "❌ Текст не может быть пустым")
         return
     
     tme_match = re.search(r'(?:https?://)?t\.me/([^/]+)/(\d+)', text)
@@ -6028,11 +5007,6 @@ def on_photo_or_document(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
     
-    # Проверяем, не идет ли сбор фото для видео
-    if uid in user_video_sessions and user_video_sessions[uid].get("step") == "waiting_media":
-        handle_video_media(message)
-        return
-    
     if message.forward_from_chat or message.forward_from:
         return
     
@@ -6259,19 +5233,15 @@ def cmd_start(message):
         f"• 📰 Извлечение статьи по ссылке (точное копирование)\n"
         f"• 📎 Репосты из каналов\n"
         f"• ✏️ Редактирование текста после ИИ\n"
-        f"• 📝 Оформление поста перед публикацией\n"
-        f"• 🎬 Создание видео из фото или обработка видео\n"
-        f"  - Слайд-шоу из 1-10 фото с музыкой\n"
-        f"  - Обработка видео с наложением заголовка\n"
-        f"  - Выбор формата: 4:5 или 9:16\n"
-        f"  - Выбор аудио: оригинал/важное/обычное/без звука\n"
-        f"  - Режим 'Без текста'\n\n"
+        f"• 📝 Оформление поста перед публикацией\n\n"
         f"<b>📌 Доступные каналы:</b> {channels_text}\n\n"
         f"<b>💡 Как это работает:</b>\n"
-        f"1️⃣ Нажми «Оформить пост» или «Сделать видео»\n"
-        f"2️⃣ Отправь фото/видео\n"
-        f"3️⃣ Следуй инструкциям\n"
-        f"4️⃣ Получи готовый результат!\n\n"
+        f"1️⃣ Нажми «Оформить пост»\n"
+        f"2️⃣ Отправь фото\n"
+        f"3️⃣ Введи ЗАГОЛОВОК (он будет на фото)\n"
+        f"4️⃣ Выбери шаблон\n"
+        f"5️⃣ Выбери расположение текста (сверху/снизу)\n"
+        f"6️⃣ Получи готовый пост!\n\n"
         f"Выбери действие 👇",
         parse_mode="HTML", reply_markup=main_menu_kb())
 
@@ -6327,29 +5297,7 @@ def cmd_ai_text(message):
 @bot.message_handler(commands=["stop"])
 def cmd_stop(message):
     clear_state(message.from_user.id)
-    if message.from_user.id in user_video_sessions:
-        user_video_sessions[message.from_user.id] = {"step": "idle"}
     send_message_with_retry(message.chat.id, "🛑 Бот сброшен в исходное состояние.", reply_markup=main_menu_kb())
-
-
-@bot.message_handler(commands=["make_video"])
-def cmd_make_video(message):
-    handle_start_video(message)
-
-
-@bot.message_handler(commands=["done_video"])
-def cmd_done_video(message):
-    uid = message.from_user.id
-    if uid in user_video_sessions and user_video_sessions[uid].get("step") == "waiting_media":
-        session = user_video_sessions[uid]
-        if session.get("photos"):
-            count = len(session["photos"])
-            bot.reply_to(message, f"✅ Собрано {count} фото! Перехожу к выбору заголовка.")
-            show_video_title_choice(message.chat.id, uid)
-        else:
-            bot.reply_to(message, "❌ Нет фото. Отправьте хотя бы одно фото.")
-    else:
-        bot.reply_to(message, "❌ Нет активной сессии или нет фото.")
 
 
 @bot.message_handler(func=lambda message: message.text == BTN_POST)
@@ -6375,11 +5323,6 @@ def handle_prices_button(message):
 @bot.message_handler(func=lambda message: message.text == BTN_AI_TEXT)
 def handle_ai_text_button(message):
     cmd_ai_text(message)
-
-
-@bot.message_handler(func=lambda message: message.text == BTN_MAKE_VIDEO)
-def handle_make_video_button(message):
-    handle_start_video(message)
 
 
 # =========================
