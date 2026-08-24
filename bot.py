@@ -6381,6 +6381,66 @@ def handle_ai_text_button(message):
 def handle_make_video_button(message):
     handle_start_video(message)
 
+# =========================
+# ДОБАВИТЬ НОВУЮ ФУНКЦИЮ ДЛЯ ОБРАБОТКИ МЕДИАГРУПП
+# =========================
+
+def process_album_for_slideshow(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
+    # ... весь код ...
+
+
+# =========================
+# ДОБАВИТЬ ОБРАБОТЧИК ДЛЯ АЛЬБОМОВ
+# =========================
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("album:"))
+def on_album_action(c):
+    # ... весь код ...
+
+
+# =========================
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ ОБРАБОТКИ АЛЬБОМОВ
+# =========================
+
+def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
+    # ... весь код ...
+
+
+# =========================
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ ОБРАБОТКИ РЕПОСТОВ
+# =========================
+
+@bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation"], 
+                     func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
+@bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation"], 
+                     func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
+def handle_forwarded_message(message):
+    # ... старый код ...
+
+
+# =========================
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ ОБРАБОТКИ ОБЫЧНЫХ ФОТО
+# =========================
+
+@bot.message_handler(content_types=["photo", "video", "document"])
+def on_photo_or_document(message):
+    # ... весь код ...
+
+
+# =========================
+# GRACEFUL SHUTDOWN
+# =========================
+def signal_handler(sig, frame):
+    logger.info("Shutting down gracefully...")
+    try:
+        bot.stop_polling()
+    except:
+        pass
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
 
 # =========================
 # GRACEFUL SHUTDOWN
