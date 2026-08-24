@@ -6382,12 +6382,95 @@ def handle_make_video_button(message):
     handle_start_video(message)
 
 # =========================
-# ДОБАВИТЬ НОВУЮ ФУНКЦИЮ ДЛЯ ОБРАБОТКИ МЕДИАГРУПП
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ ОБРАБОТКИ АЛЬБОМОВ
 # =========================
 
-def process_album_for_slideshow(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
-    # ... весь код ...
-
+def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
+    """Обработка альбома с возможностью создания слайд-шоу из всех фото"""
+    time.sleep(3)  # Увеличил время ожидания для полной загрузки
+    
+    if media_group_id not in user_album_cache:
+        return
+    
+    album_data = user_album_cache.pop(media_group_id)
+    st = user_state.get(uid) or {}
+    
+    caption = album_data.get("caption", "")
+    photos = album_data.get("photos", [])
+    videos = album_data.get("videos", [])
+    
+    # Если есть фото - сохраняем ВСЕ
+    if photos:
+        st["album_photos"] = photos.copy()
+        st["photo_bytes"] = photos[0]
+        st["saved_photo_bytes"] = photos[0]
+        st["album_photos_count"] = len(photos)
+        logger.info(f"📸 Сохранено {len(photos)} фото для пользователя {uid}")
+    
+    # Если есть видео - сохраняем
+    if videos:
+        st["video_info"] = videos[0]
+        st["video_file_id"] = videos[0].get('file_id')
+        st["album_videos"] = videos
+        logger.info(f"🎬 Сохранено {len(videos)} видео для пользователя {uid}, file_id: {st['video_file_id']}")
+    
+    # Сохраняем текст
+    if caption:
+        title, body = split_title_and_body(caption)
+        st["title"] = clean_title_for_card(title)
+        st["body_raw"] = body
+        st["original_text"] = caption
+        st["original_text_for_ai"] = caption
+        logger.info(f"📝 Текст сохранен: {title[:50]}...")
+    
+    st["card_bytes"] = None
+    st["step"] = "waiting_album_action"
+    user_state[uid] = st
+    
+    text_preview = caption[:200] if caption else "(без текста)"
+    photo_count = len(photos)
+    video_count = len(videos)
+    
+    media_status = []
+    if photo_count > 0:
+        media_status.append(f"📸 <b>Фото:</b> {photo_count} шт")
+    if video_count > 0:
+        total_size = sum(v.get('file_size', 0) for v in videos) / (1024 * 1024)
+        media_status.append(f"🎬 <b>Видео:</b> {video_count} шт ({total_size:.1f}MB)")
+    if not media_status:
+        media_status.append("⚠️ <b>Медиа:</b> не найдено")
+    
+    # Создаем клавиатуру с опциями для альбома
+    kb = InlineKeyboardMarkup(row_width=2)
+    
+    # Основные кнопки
+    kb.add(
+        InlineKeyboardButton("🎬 Сделать слайд-шоу", callback_data="album:slideshow"),
+        InlineKeyboardButton("📝 Оформить пост", callback_data="album:design")
+    )
+    kb.add(
+        InlineKeyboardButton("💧 Водяной знак", callback_data="album:watermark"),
+        InlineKeyboardButton("🤖 Текст в ИИ", callback_data="album:ai")
+    )
+    kb.add(
+        InlineKeyboardButton("📱 Пост для ТГ", callback_data="album:tg"),
+        InlineKeyboardButton("📱 Пост для Тредс", callback_data="album:threads")
+    )
+    
+    # Если есть видео - добавляем кнопку обработки видео
+    if videos:
+        kb.add(InlineKeyboardButton("🎬 Обработать видео", callback_data="album:make_video"))
+    
+    kb.add(InlineKeyboardButton("✏️ Редактировать текст", callback_data="album:edit"))
+    
+    send_message_with_retry(
+        chat_id,
+        f"📸 <b>Альбом обнаружен!</b>\n\n{', '.join(media_status)}\n"
+        f"📝 <b>Текст:</b> {text_preview}...\n\n"
+        f"<b>Что сделать с этим альбомом?</b>",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
 
 # =========================
 # ДОБАВИТЬ ОБРАБОТЧИК ДЛЯ АЛЬБОМОВ
