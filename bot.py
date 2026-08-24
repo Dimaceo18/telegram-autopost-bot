@@ -1036,11 +1036,24 @@ def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
 
 
 # =========================
-# CARD MAKING FUNCTIONS
+# HELPER FUNCTIONS - ДОБАВИТЬ НОВУЮ ФУНКЦИЮ
 # =========================
+
+def strip_html_tags(text: str) -> str:
+    """Удаляет HTML-теги из текста."""
+    if not text:
+        return text
+    return re.sub(r'<[^>]+>', '', text)
+
+
+# =========================
+# CARD MAKING FUNCTIONS - ЗАМЕНИТЬ ВЕСЬ ЭТОТ БЛОК
+# =========================
+
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
-    clean_title = clean_title_for_card(title_text)
+    clean_title = strip_html_tags(title_text)
+    clean_title = clean_title_for_card(clean_title)
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -1100,8 +1113,11 @@ def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_
 
 def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP, bold_phrase: str = "") -> BytesIO:
     ensure_fonts()
-    clean_title = clean_title_for_card(title_text)
-    clean_bold_phrase = clean_title_for_card(bold_phrase) if bold_phrase else ""
+    clean_title = strip_html_tags(title_text)
+    clean_title = clean_title_for_card(clean_title)
+    
+    clean_bold_phrase = strip_html_tags(bold_phrase) if bold_phrase else ""
+    clean_bold_phrase = clean_title_for_card(clean_bold_phrase) if clean_bold_phrase else ""
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -1175,7 +1191,8 @@ def make_card_mn2(photo_bytes: bytes, title_text: str, text_position: str = TEXT
 
 def make_card_mn_tg(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
-    clean_title = clean_title_for_card(title_text)
+    clean_title = strip_html_tags(title_text)
+    clean_title = clean_title_for_card(clean_title)
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -1202,7 +1219,8 @@ def make_card_mn_tg(photo_bytes: bytes, title_text: str, text_position: str = TE
 
 def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
     ensure_fonts()
-    clean_title = clean_title_for_card(title_text)
+    clean_title = strip_html_tags(title_text)
+    clean_title = clean_title_for_card(clean_title)
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -1246,7 +1264,8 @@ def make_card_chp(photo_bytes: bytes, title_text: str, text_position: str = TEXT
 
 def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
     ensure_fonts()
-    clean_title = clean_title_for_card(title_text)
+    clean_title = strip_html_tags(title_text)
+    clean_title = clean_title_for_card(clean_title)
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -1287,14 +1306,17 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
 def make_card_am2(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP,
                   date: str = "", place: str = "", rubric: str = "",
                   highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
-    clean_title = clean_title_for_card(title_text)
+    clean_title = strip_html_tags(title_text)
+    clean_title = clean_title_for_card(clean_title)
     return create_poster_am2(photo_bytes, clean_title, text_position, date, place, rubric,
                              highlight_word, highlight_color, is_yellow)
 
 def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> BytesIO:
     ensure_fonts()
-    clean_title = clean_title_for_card(title)
-    clean_body = clean_markdown(body_text)
+    clean_title = strip_html_tags(title)
+    clean_title = clean_title_for_card(clean_title)
+    clean_body = strip_html_tags(body_text)
+    clean_body = clean_markdown(clean_body)
     
     canvas = Image.new("RGB", (STORY_W, STORY_H), (0, 0, 0))
     draw = ImageDraw.Draw(canvas)
@@ -1338,8 +1360,11 @@ def make_card_fdr_story(photo_bytes: bytes, title: str, body_text: str) -> Bytes
 
 def make_card_fdr_post(photo_bytes: bytes, title_text: str, highlight_phrase: str) -> BytesIO:
     ensure_fonts()
-    clean_title = clean_title_for_card(title_text)
-    clean_highlight = clean_title_for_card(highlight_phrase) if highlight_phrase else ""
+    clean_title = strip_html_tags(title_text)
+    clean_title = clean_title_for_card(clean_title)
+    
+    clean_highlight = strip_html_tags(highlight_phrase) if highlight_phrase else ""
+    clean_highlight = clean_title_for_card(clean_highlight) if clean_highlight else ""
     
     img = Image.open(BytesIO(photo_bytes)).convert("RGB")
     img = crop_to_4x5(img)
@@ -1407,9 +1432,14 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
               text_position: str = TEXT_POSITION_TOP, 
               bold_phrase: str = "", date: str = "", place: str = "", rubric: str = "",
               highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
-    clean_title = clean_title_for_card(title_text)
-    clean_bold_phrase = clean_title_for_card(bold_phrase) if bold_phrase else ""
-    clean_highlight_phrase = clean_title_for_card(highlight_phrase) if highlight_phrase else ""
+    clean_title = strip_html_tags(title_text)
+    clean_title = clean_title_for_card(clean_title)
+    
+    clean_bold_phrase = strip_html_tags(bold_phrase) if bold_phrase else ""
+    clean_bold_phrase = clean_title_for_card(clean_bold_phrase) if clean_bold_phrase else ""
+    
+    clean_highlight_phrase = strip_html_tags(highlight_phrase) if highlight_phrase else ""
+    clean_highlight_phrase = clean_title_for_card(clean_highlight_phrase) if clean_highlight_phrase else ""
     
     if template == "CHP":
         return make_card_chp(photo_bytes, clean_title, text_position)
@@ -1427,6 +1457,96 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
     if template == "MN2":
         return make_card_mn2(photo_bytes, clean_title, text_position, clean_bold_phrase)
     return make_card_mn(photo_bytes, clean_title, text_position)
+
+
+# =========================
+# AM2 FUNCTIONS - ЗАМЕНИТЬ create_poster_am2
+# =========================
+
+def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
+                      date: str = "", place: str = "", rubric: str = "",
+                      highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
+    clean_title = strip_html_tags(title_text)
+    clean_title = clean_title_for_card(clean_title)
+    
+    if highlight_color is None:
+        highlight_color = HIGHLIGHT_COLORS["yellow"]
+        is_yellow = True
+    img = Image.open(BytesIO(image_bytes)).convert("RGB")
+    img = crop_to_4x5(img)
+    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+    if text_position == "top":
+        img = apply_gradient_direction(img, "top", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
+    else:
+        img = apply_gradient_direction(img, "bottom", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
+    draw = ImageDraw.Draw(img)
+    rubric_bottom = 0
+    if rubric:
+        rubric_bottom = draw_rubric_top_center_am2(draw, rubric, highlight_color, is_yellow)
+    margin_top = int(TARGET_H * MARGIN_TOP_PCT)
+    if rubric_bottom > 0:
+        margin_top = rubric_bottom + 40
+    else:
+        margin_top = 130
+    max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)
+    
+    text = (clean_title or "").strip().upper()
+    
+    title_max_h = int(TARGET_H * 0.23)
+    font, lines, heights, spacing, total_h = fit_text_block_center(
+        draw=draw, text=text, font_path=FONT_PATH, safe_w=max_text_width,
+        max_block_h=title_max_h, max_lines=6, start_size=int(TARGET_H * 0.11),
+        min_size=24, line_spacing_ratio=LINE_SPACING_RATIO
+    )
+    if is_yellow:
+        date_place_text_color = BLACK
+    else:
+        date_place_text_color = WHITE
+    if text_position == "top":
+        y = margin_top
+        for i, ln in enumerate(lines):
+            line_w = text_width(draw, ln, font)
+            x = (TARGET_W - line_w) // 2
+            draw_highlighted_text_am2(draw, ln, highlight_word, highlight_color, font, x, y)
+            y += heights[i] + spacing
+        if date or place:
+            date_place_y = TARGET_H - DATE_PLACE_BOTTOM_MARGIN
+            if date:
+                date_place_y = draw_rounded_rect_with_text_am2(
+                    draw, f"ДАТА: {date}", highlight_color, date_place_text_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y, DATE_PLACE_PADDING, DATE_PLACE_RADIUS
+                )
+            if place:
+                draw_rounded_rect_with_text_am2(
+                    draw, f"МЕСТО: {place}", highlight_color, date_place_text_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y, DATE_PLACE_PADDING, DATE_PLACE_RADIUS
+                )
+    else:
+        date_place_y = DATE_PLACE_TOP_MARGIN
+        if date or place:
+            if date:
+                date_place_y = draw_rounded_rect_with_text_am2(
+                    draw, f"ДАТА: {date}", highlight_color, date_place_text_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y, DATE_PLACE_PADDING, DATE_PLACE_RADIUS
+                )
+            if place:
+                draw_rounded_rect_with_text_am2(
+                    draw, f"МЕСТО: {place}", highlight_color, date_place_text_color,
+                    DATE_PLACE_LEFT_MARGIN, date_place_y, DATE_PLACE_PADDING, DATE_PLACE_RADIUS
+                )
+            y = date_place_y + 65
+        else:
+            y = margin_top
+        for i, ln in enumerate(lines):
+            line_w = text_width(draw, ln, font)
+            x = (TARGET_W - line_w) // 2
+            draw_highlighted_text_am2(draw, ln, highlight_word, highlight_color, font, x, y)
+            y += heights[i] + spacing
+    out = BytesIO()
+    img.save(out, format="JPEG", quality=95, subsampling=0)
+    out.seek(0)
+    return out
 
 
 # =========================
