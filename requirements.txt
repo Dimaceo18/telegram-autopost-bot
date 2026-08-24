@@ -4,3 +4,6 @@ httpx==0.25.1
 Pillow==10.1.0
 python-dotenv==1.0.0
 flask
+moviepy==1.0.3
+numpy==1.26.0
+ffmpeg-python==0.2.0
