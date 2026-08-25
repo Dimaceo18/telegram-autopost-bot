@@ -1429,7 +1429,8 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
         min_size=20, line_spacing_ratio=0.16
     )
     
-    line_height = font.size    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
+    line_height = font.size
+    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
     y = text_zone_top + max(0, (text_zone_h - total_text_height) // 2)
     for ln in lines:
