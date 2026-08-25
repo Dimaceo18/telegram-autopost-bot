@@ -9,9 +9,13 @@ import signal
 import sys
 import threading
 import asyncio
+import tempfile
+import shutil
+import traceback
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urljoin
+from collections import defaultdict
 
 import requests
 import httpx
@@ -24,6 +28,42 @@ from telebot.types import (
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+# Проверка moviepy для видео
+try:
+    from moviepy import VideoFileClip, ImageSequenceClip
+    from moviepy.video.fx import resize
+    from moviepy.video.compositing.concatenate import concatenate_videoclips
+    from moviepy.audio.io.AudioFileClip import AudioFileClip
+    from moviepy.audio.fx.all import audio_loop
+except ImportError:
+    try:
+        from moviepy.video.io.VideoFileClip import VideoFileClip
+        from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
+        from moviepy.video.compositing.concatenate import concatenate_videoclips
+        from moviepy.audio.io.AudioFileClip import AudioFileClip
+        from moviepy.audio.fx.all import audio_loop
+        try:
+            from moviepy.video.fx import resize
+        except:
+            resize = None
+    except:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy==1.0.3"])
+        from moviepy.video.io.VideoFileClip import VideoFileClip
+        from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
+        from moviepy.video.compositing.concatenate import concatenate_videoclips
+        from moviepy.audio.io.AudioFileClip import AudioFileClip
+        from moviepy.audio.fx.all import audio_loop
+        try:
+            from moviepy.video.fx import resize
+        except:
+            resize = None
+
+try:
+    import numpy as np
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy"])
+    import numpy as np
 
 
 # =========================
@@ -121,6 +161,18 @@ HIGHLIGHT_COLORS = {
     "blue": (80, 150, 255)
 }
 
+# Форматы видео
+VIDEO_FORMATS = {
+    "4x5": {"width": 720, "height": 900, "ratio": "4:5"},
+    "9x16": {"width": 720, "height": 1280, "ratio": "9:16"}
+}
+
+# URL для аудиофайлов на GitHub
+AUDIO_URLS = {
+    "важная": "https://raw.githubusercontent.com/Dimaceo18/testovaya/main/vajnoe.mp3",
+    "обычная": "https://raw.githubusercontent.com/Dimaceo18/testovaya/main/obychnaya.mp3"
+}
+
 
 # =========================
 # BOT
@@ -135,6 +187,7 @@ except:
 
 user_state: Dict[int, Dict] = {}
 user_album_cache: Dict[str, Dict] = {}
+pending_media_groups = defaultdict(lambda: {"photos": [], "video": None, "caption": "", "processed": False})
 
 
 # =========================
@@ -145,12 +198,13 @@ BTN_ENHANCE = "✨ Улучшить качество"
 BTN_WATERMARK = "💧 Водяные знаки"
 BTN_PRICES = "💰 Цены"
 BTN_AI_TEXT = "🤖 Текст в ИИ"
+BTN_MAKE_VIDEO = "🎬 Сделать видео"
 
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_AI_TEXT))
     kb.row(KeyboardButton(BTN_ENHANCE), KeyboardButton(BTN_WATERMARK))
-    kb.row(KeyboardButton(BTN_PRICES))
+    kb.row(KeyboardButton(BTN_PRICES), KeyboardButton(BTN_MAKE_VIDEO))
     return kb
 
 def repost_action_kb():
@@ -161,7 +215,8 @@ def repost_action_kb():
         InlineKeyboardButton("📱 Пост для ТГ (500 симв.)", callback_data="repost:tg"),
         InlineKeyboardButton("📱 Пост для Тредс (400 симв.)", callback_data="repost:threads"),
         InlineKeyboardButton("💧 Нанести водяной знак", callback_data="repost:watermark"),
-        InlineKeyboardButton("✏️ Редактировать текст", callback_data="repost:edit")
+        InlineKeyboardButton("✏️ Редактировать текст", callback_data="repost:edit"),
+        InlineKeyboardButton("🎬 Сделать видео из альбома", callback_data="repost:make_album_video")
     )
     return kb
 
@@ -309,6 +364,46 @@ def prices_menu_kb():
     kb.add(InlineKeyboardButton("❌ Закрыть", callback_data="prices:close"))
     return kb
 
+# Клавиатуры для создания видео из альбома
+def album_video_title_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("📝 Оставить заголовок", callback_data="album_video:title_keep"),
+        InlineKeyboardButton("✏️ Свой заголовок", callback_data="album_video:title_custom"),
+        InlineKeyboardButton("⏭️ Без текста", callback_data="album_video:title_no_text"),
+        InlineKeyboardButton("❌ Отмена", callback_data="album_video:cancel")
+    )
+    return kb
+
+def album_video_audio_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🎵 Оставить звук", callback_data="album_video:audio_original"),
+        InlineKeyboardButton("📢 Важное", callback_data="album_video:audio_важная"),
+        InlineKeyboardButton("🎵 Обычное", callback_data="album_video:audio_обычная"),
+        InlineKeyboardButton("🔇 Без звука", callback_data="album_video:audio_silent"),
+        InlineKeyboardButton("❌ Отмена", callback_data="album_video:cancel")
+    )
+    return kb
+
+def album_video_format_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("📱 4:5", callback_data="album_video:format_4x5"),
+        InlineKeyboardButton("📱 9:16", callback_data="album_video:format_9x16"),
+        InlineKeyboardButton("❌ Отмена", callback_data="album_video:cancel")
+    )
+    return kb
+
+def album_video_mode_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🎬 На всё видео", callback_data="album_video:mode_full"),
+        InlineKeyboardButton("📌 Только начало (5с)", callback_data="album_video:mode_5sec"),
+        InlineKeyboardButton("❌ Отмена", callback_data="album_video:cancel")
+    )
+    return kb
+
 
 # =========================
 # HELPER FUNCTIONS
@@ -366,6 +461,36 @@ def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_m
                     return None
     return None
 
+def send_video_with_retry(chat_id, video, caption=None, parse_mode=None, reply_markup=None, width=None, height=None, max_retries=3):
+    if caption and len(caption) > 950:
+        caption = caption[:947] + "..."
+    
+    for attempt in range(max_retries):
+        try:
+            return bot.send_video(
+                chat_id=chat_id,
+                video=video,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+                width=width,
+                height=height
+            )
+        except Exception as e:
+            logger.error(f"Send video attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 + attempt * 2)
+            else:
+                try:
+                    return bot.send_video(
+                        chat_id=chat_id,
+                        video=video,
+                        reply_markup=reply_markup
+                    )
+                except:
+                    return None
+    return None
+
 def send_media_group_with_retry(chat_id, media_list, max_retries=3):
     for attempt in range(max_retries):
         try:
@@ -413,6 +538,8 @@ def get_video_info(file_id: str, video_obj) -> Dict:
 def clear_state(user_id: int):
     if user_id in user_state:
         user_state[user_id] = {"step": "idle"}
+    if user_id in pending_media_groups:
+        pending_media_groups[user_id] = {"photos": [], "video": None, "caption": "", "processed": False}
 
 def ensure_fonts():
     fonts = [FONT_MN, FONT_MN_BOLD, FONT_CHP, FONT_AM, FONT_MONTSERRAT_BLACK, FONT_PATH, FONT_REGULAR]
@@ -575,6 +702,20 @@ def crop_to_square(img: Image.Image) -> Image.Image:
     left = (w - size) // 2
     top = (h - size) // 2
     return img.crop((left, top, left + size, top + size))
+
+def crop_to_ratio(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
+    w, h = img.size
+    target_ratio = target_w / target_h
+    cur_ratio = w / h
+    
+    if cur_ratio > target_ratio:
+        new_w = int(h * target_ratio)
+        left = (w - new_w) // 2
+        return img.crop((left, 0, left + new_w, h))
+    else:
+        new_h = int(w / target_ratio)
+        top = (h - new_h) // 2
+        return img.crop((0, top, w, top + new_h))
 
 
 # =========================
@@ -2699,6 +2840,423 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
 
 
 # =========================
+# ВИДЕО ИЗ АЛЬБОМА (НОВАЯ ФУНКЦИЯ)
+# =========================
+
+def process_album_to_video(uid: int, media_group_id: str, chat_id: int):
+    """Создание видео из всех фото альбома"""
+    time.sleep(2)
+    
+    if media_group_id not in user_album_cache:
+        bot.send_message(chat_id, "❌ Альбом не найден")
+        return
+    
+    album_data = user_album_cache.pop(media_group_id)
+    photos = album_data.get("photos", [])
+    caption = album_data.get("caption", "")
+    
+    if not photos:
+        bot.send_message(chat_id, "❌ В альбоме нет фото для видео")
+        return
+    
+    # Сохраняем все фото в сессию пользователя
+    st = user_state.get(uid) or {}
+    st["album_photos"] = photos.copy()
+    st["photo_bytes"] = photos[0]  # Первое фото для превью
+    st["original_caption"] = caption
+    if caption:
+        title = extract_title_from_text(caption)
+        st["title"] = title
+    st["step"] = "video_from_album"
+    user_state[uid] = st
+    
+    # Показываем выбор заголовка
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("📝 Оставить заголовок", callback_data="album_video:title_keep"),
+        InlineKeyboardButton("✏️ Свой заголовок", callback_data="album_video:title_custom"),
+        InlineKeyboardButton("⏭️ Без текста", callback_data="album_video:title_no_text"),
+        InlineKeyboardButton("❌ Отмена", callback_data="album_video:cancel")
+    )
+    
+    title_display = st.get("title", "Без заголовка")
+    bot.send_message(
+        chat_id,
+        f"🎬 <b>Создание видео из {len(photos)} фото</b>\n\n"
+        f"📌 <b>Заголовок:</b> {title_display}\n\n"
+        f"Выберите действие:",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+
+# =========================
+# ОБРАБОТЧИК ДЛЯ ВИДЕО ИЗ АЛЬБОМА
+# =========================
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("album_video:"))
+def on_album_video_callback(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1]
+    st = user_state.get(uid) or {}
+    
+    if action == "cancel":
+        clear_state(uid)
+        bot.answer_callback_query(c.id, "❌ Отменено")
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+        send_message_with_retry(c.message.chat.id, "❌ Отменено", reply_markup=main_menu_kb())
+        return
+    
+    if action == "title_keep":
+        if not st.get("title"):
+            st["title"] = extract_title_from_text(st.get("original_caption", "")) or "Без заголовка"
+        st["no_text"] = False
+        bot.answer_callback_query(c.id, f"✅ Заголовок: {st['title'][:30]}...")
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+        show_album_video_audio_choice(c.message.chat.id, uid)
+    
+    elif action == "title_custom":
+        bot.answer_callback_query(c.id, "✏️ Введите заголовок")
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+        st["step"] = "album_video_waiting_title"
+        user_state[uid] = st
+        send_message_with_retry(c.message.chat.id, "✏️ Отправьте текст для заголовка:")
+    
+    elif action == "title_no_text":
+        st["title"] = ""
+        st["no_text"] = True
+        bot.answer_callback_query(c.id, "⏭️ Без текста")
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+        show_album_video_audio_choice(c.message.chat.id, uid)
+
+
+def show_album_video_audio_choice(chat_id, uid):
+    """Показать выбор аудио для видео из альбома"""
+    st = user_state.get(uid) or {}
+    title = st.get("title", "")
+    no_text = st.get("no_text", False)
+    photos = st.get("album_photos", [])
+    
+    title_display = "Без текста" if no_text else (title or "Без заголовка")
+    
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🎵 Оставить звук", callback_data="album_video:audio_original"),
+        InlineKeyboardButton("📢 Важное", callback_data="album_video:audio_важная"),
+        InlineKeyboardButton("🎵 Обычное", callback_data="album_video:audio_обычная"),
+        InlineKeyboardButton("🔇 Без звука", callback_data="album_video:audio_silent"),
+        InlineKeyboardButton("❌ Отмена", callback_data="album_video:cancel")
+    )
+    
+    bot.send_message(
+        chat_id,
+        f"🎬 <b>Шаг 2/4: Выбор аудио</b>\n\n"
+        f"📸 Фото: {len(photos)} шт\n"
+        f"📌 Заголовок: {title_display}\n\n"
+        f"Выберите аудио:",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("album_video:audio_"))
+def on_album_video_audio(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1].replace("audio_", "")
+    st = user_state.get(uid) or {}
+    
+    if action == "original":
+        st["audio_bytes"] = None
+        st["audio_selected"] = "оригинальный звук"
+        st["keep_original_audio"] = True
+        bot.answer_callback_query(c.id, "🎵 Оригинальный звук")
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+        show_album_video_format_choice(c.message.chat.id, uid)
+    
+    elif action == "silent":
+        st["audio_bytes"] = None
+        st["audio_selected"] = "без звука"
+        st["keep_original_audio"] = False
+        bot.answer_callback_query(c.id, "🔇 Без звука")
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+        show_album_video_format_choice(c.message.chat.id, uid)
+    
+    elif action in ["важная", "обычная"]:
+        audio_name = "Важное" if action == "важная" else "Обычное"
+        bot.answer_callback_query(c.id, f"⏳ Скачиваю {audio_name}...")
+        bot.edit_message_text(f"⏳ Скачиваю аудио '{audio_name}'...", c.message.chat.id, c.message.message_id)
+        
+        audio_bytes = download_audio_from_github(action)
+        if audio_bytes:
+            st["audio_bytes"] = audio_bytes
+            st["audio_selected"] = audio_name
+            st["keep_original_audio"] = False
+            bot.edit_message_text(f"✅ Аудио '{audio_name}' загружено!", c.message.chat.id, c.message.message_id)
+            show_album_video_format_choice(c.message.chat.id, uid)
+        else:
+            bot.edit_message_text(f"❌ Не удалось загрузить аудио '{audio_name}'", c.message.chat.id, c.message.message_id)
+            show_album_video_audio_choice(c.message.chat.id, uid)
+
+
+def show_album_video_format_choice(chat_id, uid):
+    """Показать выбор формата для видео из альбома"""
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("📱 4:5", callback_data="album_video:format_4x5"),
+        InlineKeyboardButton("📱 9:16", callback_data="album_video:format_9x16"),
+        InlineKeyboardButton("❌ Отмена", callback_data="album_video:cancel")
+    )
+    
+    bot.send_message(
+        chat_id,
+        "📹 <b>Шаг 3/4: Выбор формата</b>\n\nВыберите формат видео:",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("album_video:format_"))
+def on_album_video_format(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1].replace("format_", "")
+    st = user_state.get(uid) or {}
+    
+    if action == "4x5":
+        st["format"] = "4x5"
+        bot.answer_callback_query(c.id, "📱 Формат 4:5")
+    elif action == "9x16":
+        st["format"] = "9x16"
+        bot.answer_callback_query(c.id, "📱 Формат 9:16")
+    else:
+        return
+    
+    bot.delete_message(c.message.chat.id, c.message.message_id)
+    show_album_video_mode_choice(c.message.chat.id, uid)
+
+
+def show_album_video_mode_choice(chat_id, uid):
+    """Показать выбор режима для видео из альбома"""
+    st = user_state.get(uid) or {}
+    photos = st.get("album_photos", [])
+    
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🎬 На всё видео", callback_data="album_video:mode_full"),
+        InlineKeyboardButton("📌 Только начало (5с)", callback_data="album_video:mode_5sec"),
+        InlineKeyboardButton("❌ Отмена", callback_data="album_video:cancel")
+    )
+    
+    bot.send_message(
+        chat_id,
+        f"📹 <b>Шаг 4/4: Выбор режима</b>\n\n"
+        f"📸 Фото: {len(photos)} шт\n\n"
+        f"• 🎬 Заголовок на всё видео\n"
+        f"• 📌 Заголовок только в начале (5 секунд)\n\n"
+        f"Выберите режим:",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("album_video:mode_"))
+def on_album_video_mode(c):
+    uid = c.from_user.id
+    action = c.data.split(":")[1].replace("mode_", "")
+    st = user_state.get(uid) or {}
+    
+    if action == "full":
+        only_first_seconds = 0
+        mode_text = "всё видео"
+    elif action == "5sec":
+        only_first_seconds = 5
+        mode_text = "первые 5 секунд"
+    else:
+        return
+    
+    bot.answer_callback_query(c.id, f"✅ Режим: {mode_text}")
+    bot.delete_message(c.message.chat.id, c.message.message_id)
+    
+    # Запускаем создание видео
+    create_video_from_album(uid, c.message.chat.id, only_first_seconds)
+
+
+def create_video_from_album(uid, chat_id, only_first_seconds=0):
+    """Создание видео из всех фото альбома"""
+    st = user_state.get(uid) or {}
+    photos = st.get("album_photos", [])
+    title = st.get("title", "")
+    no_text = st.get("no_text", False)
+    audio_bytes = st.get("audio_bytes")
+    audio_selected = st.get("audio_selected", "")
+    keep_original_audio = st.get("keep_original_audio", True)
+    format_name = st.get("format", "4x5")
+    duration_per_photo = 3.0  # Время показа каждого слайда
+    
+    if not photos:
+        bot.send_message(chat_id, "❌ Нет фото для создания видео")
+        return
+    
+    status_msg = bot.send_message(chat_id, f"⏳ <b>Создаю видео из {len(photos)} фото...</b>\n⏳ Это займет 20-60 секунд", parse_mode="HTML")
+    
+    try:
+        import tempfile
+        import shutil
+        
+        temp_dir = tempfile.mkdtemp()
+        
+        format_config = VIDEO_FORMATS.get(format_name, VIDEO_FORMATS["4x5"])
+        target_w = format_config["width"]
+        target_h = format_config["height"]
+        
+        photo_paths = []
+        
+        for i, photo_bytes in enumerate(photos):
+            img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+            img = crop_to_ratio(img, target_w, target_h)
+            img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+            img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
+            
+            # Определяем, нужно ли наносить текст на этот слайд
+            apply_text = (not no_text) and (only_first_seconds == 0 or i == 0)
+            
+            if apply_text:
+                img = apply_bottom_gradient(img, height_pct=CHP_GRADIENT_PCT, max_alpha=220)
+                draw = ImageDraw.Draw(img)
+                margin_x = int(img.width * 0.06)
+                margin_bottom = int(img.height * 0.08)
+                safe_w = img.width - 2 * margin_x
+                title_max_h = int(img.height * MN_TITLE_ZONE_PCT)
+                
+                clean_title = clean_title_for_card(title)
+                text = (clean_title or "Без заголовка").strip().upper()
+                
+                font, lines, heights, spacing, total_h = fit_text_block(
+                    draw=draw, text=text, font_path=FONT_CHP, safe_w=safe_w,
+                    max_block_h=title_max_h, max_lines=6, start_size=int(img.height * 0.11),
+                    min_size=16, line_spacing_ratio=0.22
+                )
+                
+                line_height = font.size
+                total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
+                y = img.height - margin_bottom - total_text_height
+                
+                for ln in lines:
+                    draw.text((margin_x, y), ln, font=font, fill="white")
+                    y += line_height + 2
+            else:
+                img = apply_bottom_gradient_soft(img, height_pct=0.05, max_alpha=30)
+            
+            path = os.path.join(temp_dir, f"photo_{i}.png")
+            img.save(path)
+            photo_paths.append(path)
+        
+        # Создаем клипы для каждого фото
+        clips = []
+        for path in photo_paths:
+            clip = ImageSequenceClip([path], durations=[duration_per_photo])
+            try:
+                if resize:
+                    def make_zoom(t):
+                        progress = t / duration_per_photo
+                        return 1.0 + 0.1 * (progress * progress * (3 - 2 * progress))
+                    clip = clip.fx(resize, make_zoom)
+            except:
+                pass
+            clips.append(clip)
+        
+        final_clip = concatenate_videoclips(clips)
+        
+        # Добавляем аудио если есть
+        if audio_bytes:
+            try:
+                audio_path = os.path.join(temp_dir, "audio.mp3")
+                with open(audio_path, 'wb') as f:
+                    f.write(audio_bytes)
+                
+                audio_clip = AudioFileClip(audio_path)
+                if audio_clip.duration > final_clip.duration:
+                    audio_clip = audio_clip.subclip(0, final_clip.duration)
+                else:
+                    audio_clip = audio_loop(audio_clip, duration=final_clip.duration)
+                
+                final_clip = final_clip.set_audio(audio_clip)
+            except:
+                pass
+        
+        output_path = os.path.join(temp_dir, "slideshow.mp4")
+        final_clip.write_videofile(
+            output_path,
+            fps=24,
+            codec='libx264',
+            audio_codec='aac',
+            threads=4,
+            preset='medium',
+            logger=None
+        )
+        
+        with open(output_path, 'rb') as f:
+            result_bytes = f.read()
+        
+        output = BytesIO()
+        output.write(result_bytes)
+        output.seek(0)
+        
+        # Отправляем видео
+        caption = st.get("original_caption", "")
+        if no_text:
+            caption += "\n📌 Без текста"
+        elif title:
+            caption = f"<b>{title}</b>" if not caption else caption
+        if audio_selected and audio_selected != "оригинальный звук":
+            caption += f"\n🎵 Аудио: {audio_selected}"
+        caption += f"\n📸 {len(photos)} фото"
+        caption += f"\n📱 Формат: {'4:5' if format_name == '4x5' else '9:16'}"
+        
+        send_video_with_retry(
+            chat_id,
+            BytesIO(output.getvalue()),
+            caption=caption,
+            parse_mode="HTML",
+            width=target_w,
+            height=target_h
+        )
+        
+        bot.edit_message_text("✅ Видео из альбома готово!", chat_id, status_msg.message_id)
+        
+        # Очищаем
+        shutil.rmtree(temp_dir)
+        clear_state(uid)
+        
+    except Exception as e:
+        logger.error(f"Error creating video from album: {e}")
+        traceback.print_exc()
+        bot.edit_message_text(f"❌ Ошибка: {e}", chat_id, status_msg.message_id)
+
+
+# =========================
+# ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ СКАЧИВАНИЯ АУДИО
+# =========================
+
+def download_audio_from_github(audio_type: str) -> Optional[bytes]:
+    """Скачивание аудио с GitHub"""
+    try:
+        url = AUDIO_URLS.get(audio_type)
+        if not url:
+            return None
+        
+        logger.info(f"⬇️ Скачивание аудио {audio_type}...")
+        response = requests.get(url, timeout=30)
+        
+        if response.status_code == 200:
+            logger.info(f"✅ Аудио {audio_type} скачано! Размер: {len(response.content) / 1024:.1f} KB")
+            return response.content
+        return None
+    except Exception as e:
+        logger.error(f"❌ Ошибка скачивания аудио {audio_type}: {e}")
+        return None
+
+
+# =========================
 # CALLBACK ОБРАБОТЧИКИ
 # =========================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("prices:"))
@@ -2843,6 +3401,29 @@ def on_repost_action(c):
     uid = c.from_user.id
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
+    
+    if action == "make_album_video":
+        # Запуск создания видео из альбома
+        if st.get("album_photos") or st.get("media_group", {}).get("photos"):
+            photos = st.get("album_photos") or st.get("media_group", {}).get("photos")
+            if photos:
+                st["album_photos"] = photos
+                bot.answer_callback_query(c.id, f"🎬 Создаю видео из {len(photos)} фото...")
+                # Создаем новый альбом в кэше
+                album_id = f"direct_{uid}_{int(time.time())}"
+                user_album_cache[album_id] = {
+                    "photos": photos,
+                    "videos": [],
+                    "caption": st.get("original_text", ""),
+                    "user_id": uid,
+                    "chat_id": c.message.chat.id
+                }
+                process_album_to_video(uid, album_id, c.message.chat.id)
+            else:
+                bot.answer_callback_query(c.id, "❌ Нет фото для видео")
+        else:
+            bot.answer_callback_query(c.id, "❌ Нет фото для видео")
+        return
     
     if action == "design":
         if st.get("title"):
@@ -3038,6 +3619,10 @@ def on_repost_action(c):
             send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>", parse_mode="HTML", reply_markup=watermark_type_kb())
 
 
+# =========================
+# ОСТАЛЬНЫЕ CALLBACK ОБРАБОТЧИКИ
+# =========================
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("ai:"))
 def on_ai_action(c):
     uid = c.from_user.id
@@ -3151,16 +3736,13 @@ def on_tg_action(c):
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
-    # НОВЫЙ ОБРАБОТЧИК - Оформить пост для TG
+    # Оформить пост для TG
     if action == "design":
         bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
         
-        # Используем ТЕКУЩИЙ текст из st["tg_post_text"] (текст от ИИ для TG)
         tg_text = st.get("tg_post_text", "")
         if tg_text:
-            # Извлекаем заголовок и тело из текста
             clean_text = remove_emojis(tg_text)
-            # Убираем эмодзи в начале
             clean_text = re.sub(r'^[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF]\s*', '', clean_text)
             title, body = split_title_and_body(clean_text)
             st["title"] = clean_title_for_card(title) if title else "Без заголовка"
@@ -3168,7 +3750,6 @@ def on_tg_action(c):
             st["original_text"] = tg_text
             st["original_text_for_ai"] = tg_text
             st["card_bytes"] = None
-            logger.info(f"📝 Оформление TG поста с текстом от ИИ: {title[:50] if title else 'нет'}...")
         
         if st.get("photo_bytes") or st.get("saved_photo_bytes"):
             if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
@@ -3297,11 +3878,10 @@ def on_threads_action(c):
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
-    # НОВЫЙ ОБРАБОТЧИК - Оформить пост для Threads
+    # Оформить пост для Threads
     if action == "design":
         bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
         
-        # Используем ТЕКУЩИЙ текст из st["threads_post_text"] (текст от ИИ для Threads)
         threads_text = st.get("threads_post_text", "")
         if threads_text:
             clean_text = remove_emojis(threads_text)
@@ -3312,7 +3892,6 @@ def on_threads_action(c):
             st["original_text"] = threads_text
             st["original_text_for_ai"] = threads_text
             st["card_bytes"] = None
-            logger.info(f"📝 Оформление Threads поста с текстом от ИИ: {title[:50] if title else 'нет'}...")
         
         if st.get("photo_bytes") or st.get("saved_photo_bytes"):
             if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
@@ -3441,11 +4020,9 @@ def on_post_channel_select(c):
     _, post_type, channel_type = c.data.split(":", 2)
     st = user_state.get(uid) or {}
     
-    # НОВЫЙ ОБРАБОТЧИК - Оформить пост перед публикацией
     if channel_type == "design_before_publish":
         bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
         
-        # Используем ТЕКУЩИЙ текст из st["original_text"] (он уже обновлен после ИИ)
         current_text = st.get("original_text", "")
         if current_text:
             title, body = split_title_and_body(current_text)
@@ -3453,7 +4030,6 @@ def on_post_channel_select(c):
             st["body_raw"] = body
             st["original_text_for_ai"] = current_text
             st["card_bytes"] = None
-            logger.info(f"📝 Использую текст после ИИ: {title[:50]}...")
         
         if st.get("photo_bytes") or st.get("saved_photo_bytes"):
             if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
@@ -3570,7 +4146,6 @@ def on_post_channel_select(c):
         if st.get("card_bytes"):
             bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=post_text, parse_mode="HTML")
             bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с оформлением")
-            has_media = True
         
         elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
             media_group = st.get("media_group", {"photos": [], "videos": []})
@@ -3613,8 +4188,6 @@ def on_post_channel_select(c):
             if len(media_list) > 1:
                 try:
                     bot.send_media_group(target_channel, media_list)
-                    has_media = True
-                    logger.info(f"Published album with {len(media_list)} media items to {channel_name}")
                 except Exception as e:
                     logger.error(f"Error sending media group: {e}")
                     for media in media_list:
@@ -3625,7 +4198,6 @@ def on_post_channel_select(c):
                                 bot.send_video(target_channel, media.media, caption=media.caption if media == media_list[0] else None, parse_mode="HTML")
                         except Exception as e2:
                             logger.error(f"Error sending individual media: {e2}")
-                    has_media = True
             elif len(media_list) == 1:
                 media = media_list[0]
                 try:
@@ -3633,7 +4205,6 @@ def on_post_channel_select(c):
                         bot.send_photo(target_channel, media.media, caption=media.caption, parse_mode="HTML")
                     elif isinstance(media, InputMediaVideo):
                         bot.send_video(target_channel, media.media, caption=media.caption, parse_mode="HTML")
-                    has_media = True
                 except Exception as e:
                     logger.error(f"Error sending single media: {e}")
         
@@ -3646,7 +4217,6 @@ def on_post_channel_select(c):
                     photo_to_send = BytesIO(st["photo_bytes"])
                 
                 bot.send_photo(target_channel, photo_to_send, caption=post_text, parse_mode="HTML")
-                has_media = True
                 logger.info(f"Published photo to {channel_name}")
             except Exception as e:
                 logger.error(f"Error sending photo: {e}")
@@ -3654,7 +4224,6 @@ def on_post_channel_select(c):
         elif st.get("video_file_id"):
             try:
                 bot.send_video(target_channel, st["video_file_id"], caption=post_text, parse_mode="HTML")
-                has_media = True
                 logger.info(f"Published video to {channel_name}")
             except Exception as e:
                 logger.error(f"Error sending video: {e}")
@@ -3697,11 +4266,9 @@ def on_select_channel(c):
     channel_type = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
-    # НОВЫЙ ОБРАБОТЧИК - Оформить пост перед публикацией
     if channel_type == "design_before_publish":
         bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
         
-        # Используем ТЕКУЩИЙ текст из st["original_text"] (он уже обновлен после ИИ)
         current_text = st.get("original_text", "")
         if current_text:
             title, body = split_title_and_body(current_text)
@@ -3709,7 +4276,6 @@ def on_select_channel(c):
             st["body_raw"] = body
             st["original_text_for_ai"] = current_text
             st["card_bytes"] = None
-            logger.info(f"📝 Использую текст после ИИ: {title[:50]}...")
         
         if st.get("photo_bytes") or st.get("saved_photo_bytes"):
             if st.get("saved_photo_bytes") and not st.get("photo_bytes"):
