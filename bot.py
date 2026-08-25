@@ -1188,7 +1188,7 @@ def strip_html_tags(text: str) -> str:
 
 
 # =========================
-# CARD MAKING FUNCTIONS - ЗАМЕНИТЬ ВЕСЬ ЭТОТ БЛОК
+# CARD MAKING FUNCTIONS
 # =========================
 
 def make_card_mn(photo_bytes: bytes, title_text: str, text_position: str = TEXT_POSITION_TOP) -> BytesIO:
@@ -1429,8 +1429,7 @@ def make_card_am(photo_bytes: bytes, title_text: str) -> BytesIO:
         min_size=20, line_spacing_ratio=0.16
     )
     
-    line_height = font.size
-    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
+    line_height = font.size    total_text_height = len(lines) * line_height + (len(lines) - 1) * 2
     
     y = text_zone_top + max(0, (text_zone_h - total_text_height) // 2)
     for ln in lines:
@@ -1601,96 +1600,6 @@ def make_card(photo_bytes: bytes, title_text: str, template: str, body_text: str
 
 
 # =========================
-# AM2 FUNCTIONS - ЗАМЕНИТЬ create_poster_am2
-# =========================
-
-def create_poster_am2(image_bytes: bytes, title_text: str, text_position: str,
-                      date: str = "", place: str = "", rubric: str = "",
-                      highlight_word: str = "", highlight_color: tuple = None, is_yellow: bool = False) -> BytesIO:
-    clean_title = strip_html_tags(title_text)
-    clean_title = clean_title_for_card(clean_title)
-    
-    if highlight_color is None:
-        highlight_color = HIGHLIGHT_COLORS["yellow"]
-        is_yellow = True
-    img = Image.open(BytesIO(image_bytes)).convert("RGB")
-    img = crop_to_4x5(img)
-    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
-    img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
-    if text_position == "top":
-        img = apply_gradient_direction(img, "top", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
-    else:
-        img = apply_gradient_direction(img, "bottom", GRADIENT_HEIGHT_PCT, GRADIENT_MAX_ALPHA)
-    draw = ImageDraw.Draw(img)
-    rubric_bottom = 0
-    if rubric:
-        rubric_bottom = draw_rubric_top_center_am2(draw, rubric, highlight_color, is_yellow)
-    margin_top = int(TARGET_H * MARGIN_TOP_PCT)
-    if rubric_bottom > 0:
-        margin_top = rubric_bottom + 40
-    else:
-        margin_top = 130
-    max_text_width = int(TARGET_W * TEXT_MAX_WIDTH_PCT)
-    
-    text = (clean_title or "").strip().upper()
-    
-    title_max_h = int(TARGET_H * 0.23)
-    font, lines, heights, spacing, total_h = fit_text_block_center(
-        draw=draw, text=text, font_path=FONT_PATH, safe_w=max_text_width,
-        max_block_h=title_max_h, max_lines=6, start_size=int(TARGET_H * 0.11),
-        min_size=24, line_spacing_ratio=LINE_SPACING_RATIO
-    )
-    if is_yellow:
-        date_place_text_color = BLACK
-    else:
-        date_place_text_color = WHITE
-    if text_position == "top":
-        y = margin_top
-        for i, ln in enumerate(lines):
-            line_w = text_width(draw, ln, font)
-            x = (TARGET_W - line_w) // 2
-            draw_highlighted_text_am2(draw, ln, highlight_word, highlight_color, font, x, y)
-            y += heights[i] + spacing
-        if date or place:
-            date_place_y = TARGET_H - DATE_PLACE_BOTTOM_MARGIN
-            if date:
-                date_place_y = draw_rounded_rect_with_text_am2(
-                    draw, f"ДАТА: {date}", highlight_color, date_place_text_color,
-                    DATE_PLACE_LEFT_MARGIN, date_place_y, DATE_PLACE_PADDING, DATE_PLACE_RADIUS
-                )
-            if place:
-                draw_rounded_rect_with_text_am2(
-                    draw, f"МЕСТО: {place}", highlight_color, date_place_text_color,
-                    DATE_PLACE_LEFT_MARGIN, date_place_y, DATE_PLACE_PADDING, DATE_PLACE_RADIUS
-                )
-    else:
-        date_place_y = DATE_PLACE_TOP_MARGIN
-        if date or place:
-            if date:
-                date_place_y = draw_rounded_rect_with_text_am2(
-                    draw, f"ДАТА: {date}", highlight_color, date_place_text_color,
-                    DATE_PLACE_LEFT_MARGIN, date_place_y, DATE_PLACE_PADDING, DATE_PLACE_RADIUS
-                )
-            if place:
-                draw_rounded_rect_with_text_am2(
-                    draw, f"МЕСТО: {place}", highlight_color, date_place_text_color,
-                    DATE_PLACE_LEFT_MARGIN, date_place_y, DATE_PLACE_PADDING, DATE_PLACE_RADIUS
-                )
-            y = date_place_y + 65
-        else:
-            y = margin_top
-        for i, ln in enumerate(lines):
-            line_w = text_width(draw, ln, font)
-            x = (TARGET_W - line_w) // 2
-            draw_highlighted_text_am2(draw, ln, highlight_word, highlight_color, font, x, y)
-            y += heights[i] + spacing
-    out = BytesIO()
-    img.save(out, format="JPEG", quality=95, subsampling=0)
-    out.seek(0)
-    return out
-
-
-# =========================
 # IMAGE ENHANCEMENT
 # =========================
 def enhance_image_simple(image_bytes: bytes) -> BytesIO:
@@ -1844,6 +1753,27 @@ def apply_watermark_logo_mn(photo_bytes: bytes) -> BytesIO:
     except Exception as e:
         logger.error(f"Error applying logo watermark: {e}")
         raise
+
+
+# =========================
+# ФУНКЦИИ ДЛЯ ПРОВЕРКИ ТЕСТОВОГО КАНАЛА
+# =========================
+def is_test_channel(channel_type: str) -> bool:
+    """Проверяет, является ли канал тестовым"""
+    return channel_type == "test"
+
+def apply_test_watermark_if_needed(photo_bytes: bytes, channel_type: str) -> BytesIO:
+    """
+    Если канал тестовый, наносит логотип MN.
+    Иначе возвращает фото как есть.
+    """
+    if is_test_channel(channel_type):
+        try:
+            return apply_watermark_logo_mn(photo_bytes)
+        except Exception as e:
+            logger.error(f"Error applying test watermark: {e}")
+            return BytesIO(photo_bytes)
+    return BytesIO(photo_bytes)
 
 
 # =========================
@@ -2840,7 +2770,7 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
 
 
 # =========================
-# ВИДЕО ИЗ АЛЬБОМА (НОВАЯ ФУНКЦИЯ)
+# ВИДЕО ИЗ АЛЬБОМА
 # =========================
 
 def process_album_to_video(uid: int, media_group_id: str, chat_id: int):
@@ -2889,10 +2819,6 @@ def process_album_to_video(uid: int, media_group_id: str, chat_id: int):
         reply_markup=kb
     )
 
-
-# =========================
-# ОБРАБОТЧИК ДЛЯ ВИДЕО ИЗ АЛЬБОМА
-# =========================
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("album_video:"))
 def on_album_video_callback(c):
@@ -3619,10 +3545,6 @@ def on_repost_action(c):
             send_message_with_retry(c.message.chat.id, "💧 <b>Выбери тип водяного знака:</b>", parse_mode="HTML", reply_markup=watermark_type_kb())
 
 
-# =========================
-# ОСТАЛЬНЫЕ CALLBACK ОБРАБОТЧИКИ
-# =========================
-
 @bot.callback_query_handler(func=lambda c: c.data.startswith("ai:"))
 def on_ai_action(c):
     uid = c.from_user.id
@@ -4143,8 +4065,19 @@ def on_post_channel_select(c):
             bot.answer_callback_query(c.id, "❌ Нет текста для публикации")
             return
         
+        # ===== ОТПРАВКА В КАНАЛ С ПРОВЕРКОЙ НА ТЕСТОВЫЙ =====
         if st.get("card_bytes"):
-            bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=post_text, parse_mode="HTML")
+            # Для тестового канала наносим водяной знак на карточку
+            if is_test_channel(channel_type):
+                try:
+                    watermarked_card = apply_watermark_logo_mn(st["card_bytes"])
+                    bot.send_photo(target_channel, watermarked_card, caption=post_text, parse_mode="HTML")
+                    logger.info(f"Published card with logo watermark to test channel")
+                except Exception as e:
+                    logger.error(f"Error applying logo to card: {e}")
+                    bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=post_text, parse_mode="HTML")
+            else:
+                bot.send_photo(target_channel, BytesIO(st["card_bytes"]), caption=post_text, parse_mode="HTML")
             bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с оформлением")
         
         elif st.get("media_group", {}).get("photos") or st.get("media_group", {}).get("videos"):
@@ -4154,7 +4087,12 @@ def on_post_channel_select(c):
             
             for photo in media_group.get("photos", []):
                 try:
-                    if channel_type == "probnym":
+                    # Для тестового канала наносим водяной знак на каждое фото
+                    if is_test_channel(channel_type):
+                        watermarked = apply_watermark_logo_mn(photo)
+                        photo_bytes_io = watermarked
+                        logger.info(f"Applied logo watermark for test channel media group")
+                    elif channel_type == "probnym":
                         watermarked = apply_watermark_probnym(photo)
                         photo_bytes_io = watermarked
                     else:
@@ -4210,7 +4148,12 @@ def on_post_channel_select(c):
         
         elif st.get("photo_bytes"):
             try:
-                if channel_type == "probnym":
+                # Для тестового канала наносим водяной знак на фото
+                if is_test_channel(channel_type):
+                    watermarked_photo = apply_watermark_logo_mn(st["photo_bytes"])
+                    photo_to_send = watermarked_photo
+                    logger.info(f"Applied logo watermark for test channel")
+                elif channel_type == "probnym":
                     watermarked_photo = apply_watermark_probnym(st["photo_bytes"])
                     photo_to_send = watermarked_photo
                 else:
@@ -4363,22 +4306,63 @@ def on_select_channel(c):
         else:
             caption_text = html.escape(full_text)
         
+        # ===== ОТПРАВКА В КАНАЛ С ПРОВЕРКОЙ НА ТЕСТОВЫЙ =====
         if st.get("card_bytes"):
-            send_photo_with_retry(
-                target_channel,
-                BytesIO(st["card_bytes"]),
-                caption=caption_text,
-                parse_mode="HTML"
-            )
+            # Для тестового канала наносим водяной знак на карточку
+            if is_test_channel(channel_type):
+                try:
+                    watermarked_card = apply_watermark_logo_mn(st["card_bytes"])
+                    send_photo_with_retry(
+                        target_channel,
+                        watermarked_card,
+                        caption=caption_text,
+                        parse_mode="HTML"
+                    )
+                    logger.info(f"Published card with logo watermark to test channel (select_channel)")
+                except Exception as e:
+                    logger.error(f"Error applying logo to card in select_channel: {e}")
+                    send_photo_with_retry(
+                        target_channel,
+                        BytesIO(st["card_bytes"]),
+                        caption=caption_text,
+                        parse_mode="HTML"
+                    )
+            else:
+                send_photo_with_retry(
+                    target_channel,
+                    BytesIO(st["card_bytes"]),
+                    caption=caption_text,
+                    parse_mode="HTML"
+                )
             bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с оформлением")
         
         elif st.get("photo_bytes"):
-            send_photo_with_retry(
-                target_channel,
-                BytesIO(st["photo_bytes"]),
-                caption=caption_text,
-                parse_mode="HTML"
-            )
+            # Для тестового канала наносим водяной знак на фото
+            if is_test_channel(channel_type):
+                try:
+                    watermarked_photo = apply_watermark_logo_mn(st["photo_bytes"])
+                    send_photo_with_retry(
+                        target_channel,
+                        watermarked_photo,
+                        caption=caption_text,
+                        parse_mode="HTML"
+                    )
+                    logger.info(f"Published photo with logo watermark to test channel (select_channel)")
+                except Exception as e:
+                    logger.error(f"Error applying logo to photo in select_channel: {e}")
+                    send_photo_with_retry(
+                        target_channel,
+                        BytesIO(st["photo_bytes"]),
+                        caption=caption_text,
+                        parse_mode="HTML"
+                    )
+            else:
+                send_photo_with_retry(
+                    target_channel,
+                    BytesIO(st["photo_bytes"]),
+                    caption=caption_text,
+                    parse_mode="HTML"
+                )
             bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с фото")
         
         else:
