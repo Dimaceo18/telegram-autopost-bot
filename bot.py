@@ -12,6 +12,7 @@ import asyncio
 import tempfile
 import shutil
 import traceback
+import subprocess
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urljoin
@@ -1188,6 +1189,39 @@ def strip_html_tags(text: str) -> str:
 
 
 # =========================
+# ФУНКЦИИ ДЛЯ ПРОВЕРКИ ТЕСТОВОГО КАНАЛА
+# =========================
+def is_test_channel(channel_type: str) -> bool:
+    """Проверяет, является ли канал тестовым"""
+    return channel_type == "test"
+
+def is_test_channel_by_name(channel_name: str) -> bool:
+    """Проверяет, является ли канал тестовым по имени"""
+    test_names = ["test", "тестовый", "ТЕСТОВЫЙ"]
+    return any(name in channel_name.lower() for name in test_names)
+
+def apply_test_watermark_if_needed(photo_bytes: bytes, channel_type: str = None, channel_name: str = None) -> BytesIO:
+    """
+    Если канал тестовый, наносит логотип MN.
+    Иначе возвращает фото как есть.
+    """
+    is_test = False
+    if channel_type:
+        is_test = is_test_channel(channel_type)
+    elif channel_name:
+        is_test = is_test_channel_by_name(channel_name)
+    
+    if is_test:
+        try:
+            logger.info(f"Applying logo watermark for test channel")
+            return apply_watermark_logo_mn(photo_bytes)
+        except Exception as e:
+            logger.error(f"Error applying test watermark: {e}")
+            return BytesIO(photo_bytes)
+    return BytesIO(photo_bytes)
+
+
+# =========================
 # CARD MAKING FUNCTIONS
 # =========================
 
@@ -1754,27 +1788,6 @@ def apply_watermark_logo_mn(photo_bytes: bytes) -> BytesIO:
     except Exception as e:
         logger.error(f"Error applying logo watermark: {e}")
         raise
-
-
-# =========================
-# ФУНКЦИИ ДЛЯ ПРОВЕРКИ ТЕСТОВОГО КАНАЛА
-# =========================
-def is_test_channel(channel_type: str) -> bool:
-    """Проверяет, является ли канал тестовым"""
-    return channel_type == "test"
-
-def apply_test_watermark_if_needed(photo_bytes: bytes, channel_type: str) -> BytesIO:
-    """
-    Если канал тестовый, наносит логотип MN.
-    Иначе возвращает фото как есть.
-    """
-    if is_test_channel(channel_type):
-        try:
-            return apply_watermark_logo_mn(photo_bytes)
-        except Exception as e:
-            logger.error(f"Error applying test watermark: {e}")
-            return BytesIO(photo_bytes)
-    return BytesIO(photo_bytes)
 
 
 # =========================
@@ -2790,10 +2803,9 @@ def process_album_to_video(uid: int, media_group_id: str, chat_id: int):
         bot.send_message(chat_id, "❌ В альбоме нет фото для видео")
         return
     
-    # Сохраняем все фото в сессию пользователя
     st = user_state.get(uid) or {}
     st["album_photos"] = photos.copy()
-    st["photo_bytes"] = photos[0]  # Первое фото для превью
+    st["photo_bytes"] = photos[0]
     st["original_caption"] = caption
     if caption:
         title = extract_title_from_text(caption)
@@ -2801,7 +2813,6 @@ def process_album_to_video(uid: int, media_group_id: str, chat_id: int):
     st["step"] = "video_from_album"
     user_state[uid] = st
     
-    # Показываем выбор заголовка
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📝 Оставить заголовок", callback_data="album_video:title_keep"),
@@ -2858,7 +2869,6 @@ def on_album_video_callback(c):
 
 
 def show_album_video_audio_choice(chat_id, uid):
-    """Показать выбор аудио для видео из альбома"""
     st = user_state.get(uid) or {}
     title = st.get("title", "")
     no_text = st.get("no_text", False)
@@ -2926,7 +2936,6 @@ def on_album_video_audio(c):
 
 
 def show_album_video_format_choice(chat_id, uid):
-    """Показать выбор формата для видео из альбома"""
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📱 4:5", callback_data="album_video:format_4x5"),
@@ -2962,7 +2971,6 @@ def on_album_video_format(c):
 
 
 def show_album_video_mode_choice(chat_id, uid):
-    """Показать выбор режима для видео из альбома"""
     st = user_state.get(uid) or {}
     photos = st.get("album_photos", [])
     
@@ -3003,12 +3011,10 @@ def on_album_video_mode(c):
     bot.answer_callback_query(c.id, f"✅ Режим: {mode_text}")
     bot.delete_message(c.message.chat.id, c.message.message_id)
     
-    # Запускаем создание видео
     create_video_from_album(uid, c.message.chat.id, only_first_seconds)
 
 
 def create_video_from_album(uid, chat_id, only_first_seconds=0):
-    """Создание видео из всех фото альбома"""
     st = user_state.get(uid) or {}
     photos = st.get("album_photos", [])
     title = st.get("title", "")
@@ -3017,7 +3023,7 @@ def create_video_from_album(uid, chat_id, only_first_seconds=0):
     audio_selected = st.get("audio_selected", "")
     keep_original_audio = st.get("keep_original_audio", True)
     format_name = st.get("format", "4x5")
-    duration_per_photo = 3.0  # Время показа каждого слайда
+    duration_per_photo = 3.0
     
     if not photos:
         bot.send_message(chat_id, "❌ Нет фото для создания видео")
@@ -3043,7 +3049,6 @@ def create_video_from_album(uid, chat_id, only_first_seconds=0):
             img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
             img = ImageEnhance.Brightness(img).enhance(BRIGHTNESS_FACTOR)
             
-            # Определяем, нужно ли наносить текст на этот слайд
             apply_text = (not no_text) and (only_first_seconds == 0 or i == 0)
             
             if apply_text:
@@ -3077,7 +3082,6 @@ def create_video_from_album(uid, chat_id, only_first_seconds=0):
             img.save(path)
             photo_paths.append(path)
         
-        # Создаем клипы для каждого фото
         clips = []
         for path in photo_paths:
             clip = ImageSequenceClip([path], durations=[duration_per_photo])
@@ -3093,7 +3097,6 @@ def create_video_from_album(uid, chat_id, only_first_seconds=0):
         
         final_clip = concatenate_videoclips(clips)
         
-        # Добавляем аудио если есть
         if audio_bytes:
             try:
                 audio_path = os.path.join(temp_dir, "audio.mp3")
@@ -3128,7 +3131,6 @@ def create_video_from_album(uid, chat_id, only_first_seconds=0):
         output.write(result_bytes)
         output.seek(0)
         
-        # Отправляем видео
         caption = st.get("original_caption", "")
         if no_text:
             caption += "\n📌 Без текста"
@@ -3150,7 +3152,6 @@ def create_video_from_album(uid, chat_id, only_first_seconds=0):
         
         bot.edit_message_text("✅ Видео из альбома готово!", chat_id, status_msg.message_id)
         
-        # Очищаем
         shutil.rmtree(temp_dir)
         clear_state(uid)
         
@@ -3165,7 +3166,6 @@ def create_video_from_album(uid, chat_id, only_first_seconds=0):
 # =========================
 
 def download_audio_from_github(audio_type: str) -> Optional[bytes]:
-    """Скачивание аудио с GitHub"""
     try:
         url = AUDIO_URLS.get(audio_type)
         if not url:
@@ -3181,6 +3181,27 @@ def download_audio_from_github(audio_type: str) -> Optional[bytes]:
     except Exception as e:
         logger.error(f"❌ Ошибка скачивания аудио {audio_type}: {e}")
         return None
+
+
+# =========================
+# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ПУБЛИКАЦИИ С ВОДЯНЫМ ЗНАКОМ
+# =========================
+
+def send_to_channel_with_watermark(channel, photo_data, caption="", parse_mode="HTML", channel_type=None, channel_name=None):
+    """
+    Отправляет фото в канал с автоматическим нанесением водяного знака
+    для тестового канала.
+    """
+    if is_test_channel(channel_type) or is_test_channel_by_name(channel_name or ""):
+        try:
+            watermarked = apply_watermark_logo_mn(photo_data)
+            logger.info(f"Applied logo watermark for test channel: {channel}")
+            return bot.send_photo(channel, watermarked, caption=caption, parse_mode=parse_mode)
+        except Exception as e:
+            logger.error(f"Error applying watermark in send_to_channel_with_watermark: {e}")
+            return bot.send_photo(channel, BytesIO(photo_data), caption=caption, parse_mode=parse_mode)
+    else:
+        return bot.send_photo(channel, BytesIO(photo_data), caption=caption, parse_mode=parse_mode)
 
 
 # =========================
@@ -3323,6 +3344,10 @@ def build_caption_html(title: str, body: str, max_length: int = 950) -> str:
     return caption
 
 
+# =========================
+# ОСНОВНЫЕ CALLBACK ОБРАБОТЧИКИ
+# =========================
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("repost:"))
 def on_repost_action(c):
     uid = c.from_user.id
@@ -3330,13 +3355,11 @@ def on_repost_action(c):
     st = user_state.get(uid) or {}
     
     if action == "make_album_video":
-        # Запуск создания видео из альбома
         if st.get("album_photos") or st.get("media_group", {}).get("photos"):
             photos = st.get("album_photos") or st.get("media_group", {}).get("photos")
             if photos:
                 st["album_photos"] = photos
                 bot.answer_callback_query(c.id, f"🎬 Создаю видео из {len(photos)} фото...")
-                # Создаем новый альбом в кэше
                 album_id = f"direct_{uid}_{int(time.time())}"
                 user_album_cache[album_id] = {
                     "photos": photos,
@@ -3653,13 +3676,16 @@ def on_ai_action(c):
         send_message_with_retry(c.message.chat.id, "❌ Отменено", reply_markup=main_menu_kb())
 
 
+# =========================
+# ОБРАБОТЧИКИ ДЛЯ TG И THREADS
+# =========================
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tg:"))
 def on_tg_action(c):
     uid = c.from_user.id
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
-    # Оформить пост для TG
     if action == "design":
         bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
         
@@ -3801,7 +3827,6 @@ def on_threads_action(c):
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
-    # Оформить пост для Threads
     if action == "design":
         bot.answer_callback_query(c.id, "📝 Переход к оформлению поста")
         
@@ -3937,6 +3962,10 @@ def on_threads_action(c):
         send_message_with_retry(c.message.chat.id, "Выбери действие 👇", reply_markup=main_menu_kb())
 
 
+# =========================
+# ПУБЛИКАЦИЯ В КАНАЛ
+# =========================
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("post_channel:"))
 def on_post_channel_select(c):
     uid = c.from_user.id
@@ -4066,10 +4095,11 @@ def on_post_channel_select(c):
             bot.answer_callback_query(c.id, "❌ Нет текста для публикации")
             return
         
-        # ===== ОТПРАВКА В КАНАЛ С ПРОВЕРКОЙ НА ТЕСТОВЫЙ =====
+        # ===== ПУБЛИКАЦИЯ С ПРОВЕРКОЙ НА ТЕСТОВЫЙ КАНАЛ =====
+        is_test = is_test_channel(channel_type)
+        
         if st.get("card_bytes"):
-            # Для тестового канала наносим водяной знак на карточку
-            if is_test_channel(channel_type):
+            if is_test:
                 try:
                     watermarked_card = apply_watermark_logo_mn(st["card_bytes"])
                     bot.send_photo(target_channel, watermarked_card, caption=post_text, parse_mode="HTML")
@@ -4088,8 +4118,7 @@ def on_post_channel_select(c):
             
             for photo in media_group.get("photos", []):
                 try:
-                    # Для тестового канала наносим водяной знак на каждое фото
-                    if is_test_channel(channel_type):
+                    if is_test:
                         watermarked = apply_watermark_logo_mn(photo)
                         photo_bytes_io = watermarked
                         logger.info(f"Applied logo watermark for test channel media group")
@@ -4149,8 +4178,7 @@ def on_post_channel_select(c):
         
         elif st.get("photo_bytes"):
             try:
-                # Для тестового канала наносим водяной знак на фото
-                if is_test_channel(channel_type):
+                if is_test:
                     watermarked_photo = apply_watermark_logo_mn(st["photo_bytes"])
                     photo_to_send = watermarked_photo
                     logger.info(f"Applied logo watermark for test channel")
@@ -4307,10 +4335,11 @@ def on_select_channel(c):
         else:
             caption_text = html.escape(full_text)
         
-        # ===== ОТПРАВКА В КАНАЛ С ПРОВЕРКОЙ НА ТЕСТОВЫЙ =====
+        # ===== ПУБЛИКАЦИЯ С ПРОВЕРКОЙ НА ТЕСТОВЫЙ КАНАЛ =====
+        is_test = is_test_channel(channel_type)
+        
         if st.get("card_bytes"):
-            # Для тестового канала наносим водяной знак на карточку
-            if is_test_channel(channel_type):
+            if is_test:
                 try:
                     watermarked_card = apply_watermark_logo_mn(st["card_bytes"])
                     send_photo_with_retry(
@@ -4338,8 +4367,7 @@ def on_select_channel(c):
             bot.answer_callback_query(c.id, f"✅ Опубликовано в {channel_name} с оформлением")
         
         elif st.get("photo_bytes"):
-            # Для тестового канала наносим водяной знак на фото
-            if is_test_channel(channel_type):
+            if is_test:
                 try:
                     watermarked_photo = apply_watermark_logo_mn(st["photo_bytes"])
                     send_photo_with_retry(
