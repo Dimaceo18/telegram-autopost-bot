@@ -589,23 +589,20 @@ def clean_title_for_card(title: str) -> str:
     return clean
 
 def split_title_and_body(text: str) -> Tuple[str, str]:
+    """Выделяет заголовок целиком, не обрывая его на первой точке.
+
+    Заголовок отделяется от текста новости переводом строки (или пустой
+    строкой). Несколько предложений в первой строке сохраняются полностью.
+    Если разделителя нет, весь переданный текст считается заголовком.
+    """
     if not text:
         return "", ""
-    text = text.strip()
-    
-    if '\n' in text:
-        lines = text.split('\n')
-        title = lines[0].strip()
-        body = '\n'.join(lines[1:]).strip()
-        return title, body
-    
-    if len(text) > 100 and '. ' in text:
-        parts = text.split('. ', 1)
-        title = (parts[0] + '.').strip()
-        body = parts[1].strip() if len(parts) > 1 else ""
-        return title, body
-    
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if "\n" in text:
+        title, body = text.split("\n", 1)
+        return title.strip(), body.strip()
     return text, ""
+
 
 def remove_emojis(text: str) -> str:
     emoji_pattern = re.compile(
@@ -651,9 +648,6 @@ def extract_title_from_text(text: str) -> str:
     clean_text = emoji_pattern.sub('', text).strip()
     
     title, body = split_title_and_body(clean_text)
-    
-    if len(title) > 150:
-        title = title[:147] + "..."
     
     return title
 
