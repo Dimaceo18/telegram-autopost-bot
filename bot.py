@@ -83,7 +83,7 @@ logger = logging.getLogger(__name__)
 # =========================
 TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 DEEPSEEK_API_KEY = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
-OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or os.getenv("CHATGPT_API_KEY") or "").strip()
+OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 OPENAI_TTS_VOICE = (os.getenv("OPENAI_TTS_VOICE") or "onyx").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
@@ -204,6 +204,7 @@ BTN_PRICES = "💰 Цены"
 BTN_AI_TEXT = "🤖 Текст в ИИ"
 BTN_MAKE_VIDEO = "🎬 Сделать видео"
 BTN_SLIDESHOW = "🖼 Сделать слайд-шоу"
+BTN_SLIDESHOW_TTS = "🎙 Слайд-шоу с озвучкой ИИ"
 
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -211,6 +212,7 @@ def main_menu_kb():
     kb.row(KeyboardButton(BTN_ENHANCE), KeyboardButton(BTN_WATERMARK))
     kb.row(KeyboardButton(BTN_PRICES), KeyboardButton(BTN_MAKE_VIDEO))
     kb.row(KeyboardButton(BTN_SLIDESHOW))
+    kb.row(KeyboardButton(BTN_SLIDESHOW_TTS))
     return kb
 
 def repost_action_kb():
@@ -224,7 +226,6 @@ def repost_action_kb():
         InlineKeyboardButton("✏️ Редактировать текст", callback_data="repost:edit"),
         InlineKeyboardButton("🎬 Сделать видео из альбома", callback_data="repost:make_album_video"),
         InlineKeyboardButton("🖼 Сделать слайд-шоу", callback_data="repost:slideshow"),
-        InlineKeyboardButton("🎙 Слайд-шоу с озвучкой ИИ", callback_data="repost:slideshow_tts"),
         InlineKeyboardButton("✂️ Обрезать", callback_data="repost:crop")
     )
     return kb
@@ -3880,7 +3881,7 @@ def _slideshow_video_preview(video_info):
             return f.read()
 
 
-def _start_slideshow(chat_id, uid):
+def _start_slideshow(chat_id, uid, video_tts_direct=False):
     st = user_state.get(uid) or {}
     batch = st.get("media_group") or {}
     photos = list(batch.get("photos") or [])
@@ -3899,13 +3900,20 @@ def _start_slideshow(chat_id, uid):
     st["slideshow_videos"] = videos
     st["slideshow_title"] = title
     st["slideshow_body"] = body
+    st["slideshow_tts_direct"] = bool(video_tts_direct)
     st["step"] = "slideshow_mode"
     user_state[uid] = st
     if not body.strip():
         st["step"] = "slideshow_wait_text"
         send_message_with_retry(chat_id, "📝 Отправьте полный текст статьи (заголовок первой строкой, далее текст).")
     else:
-        send_message_with_retry(chat_id, "🖼 Выберите тип слайд-шоу:", reply_markup=slideshow_mode_kb())
+        if video_tts_direct:
+            st["slideshow_mode"] = "video"
+            st["step"] = "slideshow_format"
+            count = _slideshow_page_count(len(photos) + len(videos))
+            send_message_with_retry(chat_id, f"🎙 Озвучка OpenAI выбрана. Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
+        else:
+            send_message_with_retry(chat_id, "🖼 Выберите тип слайд-шоу:", reply_markup=slideshow_mode_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("slideshow:"))
 def on_slideshow_callback(c):
@@ -3932,9 +3940,11 @@ def on_slideshow_callback(c):
             send_message_with_retry(chat_id, "⚠️ Сначала выберите тип слайд-шоу.")
             return
         st["slideshow_format"] = choice
-        if st.get("slideshow_mode") == "video":
+        if st.get("slideshow_mode") == "video" and st.get("slideshow_tts_direct"):
+            audio_type = "openai_tts"
+        elif st.get("slideshow_mode") == "video":
             st["step"] = "slideshow_audio"
-            send_message_with_retry(chat_id, "🎙 Выберите озвучку или музыку для видео:", reply_markup=slideshow_audio_kb())
+            send_message_with_retry(chat_id, "🎵 Выберите музыку для видео:", reply_markup=slideshow_audio_kb())
             return
         audio_type = "silent"
     elif choice.startswith("audio_"):
@@ -4124,19 +4134,6 @@ def on_repost_action(c):
     if action == "slideshow":
         bot.answer_callback_query(c.id)
         _start_slideshow(c.message.chat.id, uid)
-        return
-
-    if action == "slideshow_tts":
-        bot.answer_callback_query(c.id)
-        _start_slideshow(c.message.chat.id, uid)
-        current = user_state.get(uid) or {}
-        if current.get("step") == "slideshow_mode":
-            current["slideshow_mode"] = "video"
-            current["step"] = "slideshow_format"
-            count = _slideshow_page_count(len(current.get("slideshow_photos") or []) + len(current.get("slideshow_videos") or []))
-            send_message_with_retry(c.message.chat.id, f"🎙 Выберите формат видео с озвучкой для {count} слайдов:", reply_markup=slideshow_format_kb())
-        elif current.get("step") == "slideshow_wait_text":
-            current["slideshow_audio_preselect"] = "openai_tts"
         return
 
     if action == "make_album_video":
@@ -6153,18 +6150,21 @@ def on_text(message):
     if text == BTN_SLIDESHOW:
         _start_slideshow(message.chat.id, uid)
         return
+    if text == BTN_SLIDESHOW_TTS:
+        _start_slideshow(message.chat.id, uid, video_tts_direct=True)
+        return
     if st.get("step") == "slideshow_wait_text":
         title, body = split_title_and_body(text)
         st["slideshow_title"] = title
         st["slideshow_body"] = body
-        if st.pop("slideshow_audio_preselect", None) == "openai_tts":
+        st["step"] = "slideshow_mode"
+        user_state[uid] = st
+        if st.get("slideshow_tts_direct"):
             st["slideshow_mode"] = "video"
             st["step"] = "slideshow_format"
-            user_state[uid] = st
-            bot.reply_to(message, "🎙 Выберите формат видео с озвучкой:", reply_markup=slideshow_format_kb())
+            count = _slideshow_page_count(len(st.get("slideshow_photos") or []) + len(st.get("slideshow_videos") or []))
+            bot.reply_to(message, f"🎙 Озвучка OpenAI выбрана. Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
         else:
-            st["step"] = "slideshow_mode"
-            user_state[uid] = st
             bot.reply_to(message, "🖼 Выберите тип слайд-шоу:", reply_markup=slideshow_mode_kb())
         return
     if text == BTN_MAKE_VIDEO:
