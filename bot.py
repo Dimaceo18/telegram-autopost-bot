@@ -2724,18 +2724,76 @@ def run_http_server():
 # =========================
 # ОБРАБОТЧИК АЛЬБОМОВ
 # =========================
+_album_lock = threading.RLock()
+_album_timers = {}
+ALBUM_QUIET_SECONDS = 5.0
+
+def _receive_album_item(message, uid, is_repost=False):
+    """Collect an album safely: concurrent Telegram handlers cannot pop each other's data."""
+    key = f"{message.chat.id}:{uid}:{message.media_group_id}"
+    file_id = message.photo[-1].file_id if message.photo else None
+    media_type = "photo" if file_id else "video"
+    item = None
+    failure = False
+    try:
+        if media_type == "photo":
+            # Retry transient Telegram file errors instead of silently dropping a photo.
+            for attempt in range(3):
+                try:
+                    item = tg_file_bytes(file_id)
+                    if not check_file_size(item):
+                        raise ValueError("Фотография превышает ограничение размера")
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    time.sleep(0.7 * (attempt + 1))
+        elif message.video:
+            item = get_video_info(message.video.file_id, message.video)
+    except Exception:
+        failure = True
+        logger.exception("ALBUM: media download failed id=%s msg=%s", key, message.message_id)
+    with _album_lock:
+        album = user_album_cache.setdefault(key, {"photos": [], "videos": [], "caption": "",
+                                                     "chat_id": message.chat.id, "received": 0, "failures": 0})
+        album["received"] += 1
+        if message.caption and not album["caption"]:
+            album["caption"] = message.caption
+        if failure:
+            album["failures"] += 1
+        elif item is not None:
+            album["photos" if media_type == "photo" else "videos"].append((message.message_id, item))
+        timer = _album_timers.pop(key, None)
+        if timer is not None:
+            timer.cancel()
+        timer = threading.Timer(ALBUM_QUIET_SECONDS, process_album_with_media,
+                                args=(uid, key, message.chat.id, is_repost))
+        timer.daemon = True
+        _album_timers[key] = timer
+        timer.start()
+        logger.info("ALBUM: collected id=%s messages=%s photos=%s videos=%s", key,
+                    album["received"], len(album["photos"]), len(album["videos"]))
+
 def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
-    time.sleep(3)
-    if media_group_id not in user_album_cache:
+    # One collector per album, finalized only after a quiet period.
+    with _album_lock:
+        album_data = user_album_cache.pop(media_group_id, None)
+        _album_timers.pop(media_group_id, None)
+    if album_data is None:
         return
-    
-    album_data = user_album_cache.pop(media_group_id)
+    album_data["photos"] = [data for _, data in sorted(album_data.get("photos", []))]
+    album_data["videos"] = [data for _, data in sorted(album_data.get("videos", []))]
+    logger.info("ALBUM: finalized id=%s received=%s photos=%s videos=%s failures=%s", media_group_id,
+                album_data.get("received", 0), len(album_data["photos"]),
+                len(album_data["videos"]), album_data.get("failures", 0))
     st = user_state.get(uid) or {}
     
     caption = album_data.get("caption", "")
     photos = album_data.get("photos", [])
     videos = album_data.get("videos", [])
     
+    if album_data.get("failures"):
+        send_message_with_retry(chat_id, f"⚠️ Не удалось загрузить {album_data['failures']} файлов альбома. Попробуйте переслать альбом ещё раз, если фотографий меньше ожидаемого.")
     if caption:
         title, body = split_title_and_body(caption)
         st["title"] = clean_title_for_card(title)
@@ -3542,7 +3600,11 @@ def _slide_paginate(title, body, fmt, page_count=5):
                     target = prefix[-1] / page_count
                     penalty = ((words - target) / max(target, 1)) ** 2
                     if end == start:
-                        penalty += 3.0
+                        # Empty pages are allowed ONLY after all text has been placed.
+                        # Otherwise DP can put blank slides at the beginning.
+                        if start < n:
+                            continue
+                        penalty = 0.0
                     score = cost + penalty
                     if end not in nxt or score < nxt[end][0]:
                         nxt[end] = (score, bounds + [(start, end)])
@@ -3569,7 +3631,16 @@ def make_news_slideshow(photos, title, body, fmt):
         source = photos[i % len(photos)] if len(photos) > 1 else photos[0]
         with Image.open(BytesIO(source)) as source_img:
             image = crop_to_ratio(source_img.convert("RGB"), w, h).resize((w, h), Image.Resampling.LANCZOS)
-        # Strong neutral darkening gives white text reliable contrast on varied photos.
+        # When the article is short, remaining slides are clean original photos:
+        # no darkening, no title, no label, no footer, no page counter.
+        if not page.strip():
+            out = BytesIO()
+            image.save(out, format="JPEG", quality=94, optimize=True)
+            out.seek(0)
+            out.name = f"news_slide_{i+1}.jpg"
+            results.append(out)
+            continue
+        # Darken only slides that actually contain text.
         image = Image.blend(image, Image.new("RGB", (w, h), (7, 12, 20)), .74)
         draw = ImageDraw.Draw(image)
         draw.rounded_rectangle((margin, 56, margin + 188, 107), radius=12, fill=(245, 210, 70))
@@ -3723,11 +3794,17 @@ def on_slideshow_callback(c):
             return
     else:
         return
+    if st.get("step") == "slideshow_processing":
+        return
     st["step"] = "slideshow_processing"
     fmt = st["slideshow_format"]
     mode = st.get("slideshow_mode", "photo")
     count = _slideshow_page_count(len(st.get("slideshow_photos") or []))
-    send_message_with_retry(chat_id, f"⏳ Создаю {count} слайдов с полным текстом статьи...")
+    send_message_with_retry(chat_id, f"⏳ Принято {len(st.get('slideshow_photos') or [])} фото. Создаю {count} слайдов...")
+    threading.Thread(target=_slideshow_worker, args=(chat_id, uid, st, fmt, mode, count, audio_type), daemon=True).start()
+    return
+
+def _slideshow_worker(chat_id, uid, st, fmt, mode, count, audio_type):
     logger.info("SLIDESHOW: start user=%s count=%s format=%s mode=%s", uid, count, fmt, mode)
     try:
         slides = make_news_slideshow(st["slideshow_photos"], st["slideshow_title"], st["slideshow_body"], fmt)
@@ -5652,32 +5729,8 @@ def handle_forwarded_message(message):
     elif message.text:
         original_text = message.text
     
-    if hasattr(message, 'media_group_id') and message.media_group_id:
-        media_group_id = message.media_group_id
-        
-        if media_group_id not in user_album_cache:
-            user_album_cache[media_group_id] = {
-                "photos": [], "videos": [], "caption": original_text,
-                "start_time": time.time(), "message_id": message.message_id, "chat_id": message.chat.id
-            }
-        
-        if message.photo:
-            try:
-                file_id = message.photo[-1].file_id
-                photo_bytes = tg_file_bytes(file_id)
-                if check_file_size(photo_bytes):
-                    user_album_cache[media_group_id]["photos"].append(photo_bytes)
-            except Exception as e:
-                logger.error(f"Error extracting photo from album: {e}")
-        
-        if message.video:
-            try:
-                video_info = get_video_info(message.video.file_id, message.video)
-                user_album_cache[media_group_id]["videos"].append(video_info)
-            except Exception as e:
-                logger.error(f"Error extracting video from album: {e}")
-        
-        threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, True), daemon=True).start()
+    if getattr(message, "media_group_id", None):
+        _receive_album_item(message, uid, is_repost=True)
         return
     
     source_info = ""
@@ -6287,30 +6340,8 @@ def on_photo_or_document(message):
     if message.forward_from_chat or message.forward_from:
         return
     
-    if hasattr(message, 'media_group_id') and message.media_group_id:
-        media_group_id = message.media_group_id
-        if media_group_id not in user_album_cache:
-            user_album_cache[media_group_id] = {
-                "photos": [], "videos": [], "caption": message.caption or "",
-                "start_time": time.time(), "message_id": message.message_id, "chat_id": message.chat.id
-            }
-        if message.photo:
-            try:
-                file_id = message.photo[-1].file_id
-                photo_bytes = tg_file_bytes(file_id)
-                if check_file_size(photo_bytes):
-                    user_album_cache[media_group_id]["photos"].append(photo_bytes)
-            except Exception as e:
-                logger.error(f"Error extracting photo from album: {e}")
-        if message.video:
-            try:
-                video_info = get_video_info(message.video.file_id, message.video)
-                user_album_cache[media_group_id]["videos"].append(video_info)
-            except Exception as e:
-                logger.error(f"Error extracting video from album: {e}")
-        if message.caption and not user_album_cache[media_group_id]["caption"]:
-            user_album_cache[media_group_id]["caption"] = message.caption
-        threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, False), daemon=True).start()
+    if getattr(message, "media_group_id", None):
+        _receive_album_item(message, uid, is_repost=False)
         return
     
     if st.get("step") == "direct_video_wait" and message.photo:
