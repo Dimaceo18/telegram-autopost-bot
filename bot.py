@@ -220,7 +220,8 @@ def repost_action_kb():
         InlineKeyboardButton("💧 Нанести водяной знак", callback_data="repost:watermark"),
         InlineKeyboardButton("✏️ Редактировать текст", callback_data="repost:edit"),
         InlineKeyboardButton("🎬 Сделать видео из альбома", callback_data="repost:make_album_video"),
-        InlineKeyboardButton("🖼 Сделать слайд-шоу", callback_data="repost:slideshow")
+        InlineKeyboardButton("🖼 Сделать слайд-шоу", callback_data="repost:slideshow"),
+        InlineKeyboardButton("✂️ Обрезать", callback_data="repost:crop")
     )
     return kb
 
@@ -3356,7 +3357,7 @@ def build_caption_html(title: str, body: str, max_length: int = 950) -> str:
 # =========================
 # КАРУСЕЛЬ НОВОСТИ: 5 СЛАЙДОВ
 # =========================
-SLIDE_FORMATS = {"4x5": (1080, 1350), "square": (1080, 1080)}
+SLIDE_FORMATS = {"4x5": (1080, 1350), "9x16": (1080, 1920), "square": (1080, 1080)}
 
 def slideshow_mode_kb():
     kb = InlineKeyboardMarkup(row_width=1)
@@ -3368,6 +3369,7 @@ def slideshow_mode_kb():
 def slideshow_format_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(InlineKeyboardButton("📱 4:5", callback_data="slideshow:4x5"),
+           InlineKeyboardButton("📱 9:16", callback_data="slideshow:9x16"),
            InlineKeyboardButton("⬜ Квадрат 1:1", callback_data="slideshow:square"),
            InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
     return kb
@@ -3424,7 +3426,7 @@ def _slide_lines_height(lines, font_size, gap_ratio=0.34):
 
 def _slide_page_layout(title, chunks, fmt, body_size, title_size):
     w, h = SLIDE_FORMATS[fmt]
-    margin = 86 if fmt == "4x5" else 76
+    margin = 76 if fmt == "square" else 86
     max_w = w - margin * 2
     dummy = ImageDraw.Draw(Image.new("RGB", (4, 4)))
     body_font = _slide_font(body_size)
@@ -3495,7 +3497,7 @@ def _slide_paginate(title, body, fmt):
     if not sentences:
         raise ValueError("В посте отсутствует текст статьи. Добавьте текст после заголовка.")
     w, h = SLIDE_FORMATS[fmt]
-    margin = 86 if fmt == "4x5" else 76
+    margin = 76 if fmt == "square" else 86
     max_w = w - 2 * margin
     draw = ImageDraw.Draw(Image.new("RGB", (4, 4)))
     # A page boundary is permitted only between complete sentences.
@@ -3555,7 +3557,7 @@ def make_news_slideshow(photos, title, body, fmt):
         raise ValueError("Не найден заголовок поста.")
     pages, body_size, title_size = _slide_paginate(title, body, fmt)
     w, h = SLIDE_FORMATS[fmt]
-    margin = 86 if fmt == "4x5" else 76
+    margin = 76 if fmt == "square" else 86
     results = []
     for i, page in enumerate(pages):
         source = photos[i % len(photos)] if len(photos) > 1 else photos[0]
@@ -3729,12 +3731,127 @@ def on_slideshow_callback(c):
 # ОСНОВНЫЕ CALLBACK ОБРАБОТЧИКИ
 # =========================
 
+# =========================
+# ОБРЕЗКА МЕДИА ПО ФОРМАТУ
+# =========================
+CROP_FORMATS = {"4x5": (720, 900), "9x16": (720, 1280), "square": (720, 720)}
+
+def crop_format_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    for label, key in (("📱 4:5", "4x5"), ("📱 9:16", "9x16"), ("⬜ Квадрат 1:1", "square")):
+        kb.add(InlineKeyboardButton(label, callback_data=f"crop:{key}"))
+    kb.add(InlineKeyboardButton("❌ Отмена", callback_data="crop:cancel"))
+    return kb
+
+def _start_crop(chat_id, uid):
+    st = user_state.get(uid) or {}
+    photos = st.get("album_photos") or st.get("media_group", {}).get("photos") or []
+    if not photos and st.get("photo_bytes"):
+        photos = [st["photo_bytes"]]
+    videos = st.get("album_videos") or st.get("media_group", {}).get("videos") or []
+    if not videos and st.get("video_info"):
+        videos = [st["video_info"]]
+    if not photos and not videos:
+        send_message_with_retry(chat_id, "❌ Сначала отправьте пост с фото или видео.")
+        return
+    st["crop_photos"] = list(photos)
+    st["crop_videos"] = list(videos)
+    st["step"] = "crop_format"
+    user_state[uid] = st
+    send_message_with_retry(chat_id, f"✂️ Найдено фото: {len(photos)}, видео: {len(videos)}. Выберите формат обрезки:", reply_markup=crop_format_kb())
+
+def _crop_photo_bytes(data, w, h):
+    with Image.open(BytesIO(data)) as im:
+        im = crop_to_ratio(im.convert("RGB"), w, h).resize((w, h), Image.Resampling.LANCZOS)
+        out = BytesIO()
+        im.save(out, format="JPEG", quality=92)
+        out.seek(0)
+        out.name = "cropped.jpg"
+        return out
+
+def _crop_video_bytes(data, w, h):
+    with tempfile.TemporaryDirectory(prefix="crop_media_") as tmp:
+        source = os.path.join(tmp, "input.mp4")
+        target = os.path.join(tmp, "cropped.mp4")
+        with open(source, "wb") as f:
+            f.write(data)
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
+               "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", target]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError((exc.stderr or "FFmpeg error")[-500:]) from exc
+        with open(target, "rb") as f:
+            out = BytesIO(f.read())
+        out.name = "cropped.mp4"
+        return out
+
+def _run_crop(uid, chat_id, fmt):
+    st = user_state.get(uid) or {}
+    w, h = CROP_FORMATS[fmt]
+    photos = st.get("crop_photos", [])
+    videos = st.get("crop_videos", [])
+    success, failures = 0, []
+    # Each media is sent separately to support mixed albums and Telegram size limits.
+    for i, photo in enumerate(photos, 1):
+        try:
+            result = _crop_photo_bytes(photo, w, h)
+            if not send_photo_with_retry(chat_id, result, caption=f"✂️ Фото {i} · {fmt}"):
+                raise RuntimeError("Telegram не принял фото")
+            success += 1
+        except Exception as exc:
+            logger.exception("Crop photo failed")
+            failures.append(f"Фото {i}: {exc}")
+    for i, info in enumerate(videos, 1):
+        try:
+            file_id = info.get("file_id") if isinstance(info, dict) else info
+            if not file_id:
+                raise ValueError("Нет file_id")
+            data = tg_file_bytes(file_id)
+            result = _crop_video_bytes(data, w, h)
+            if len(result.getvalue()) > MAX_FILE_SIZE:
+                raise ValueError("Готовый MP4 превышает лимит отправки 50 МБ")
+            if not send_video_with_retry(chat_id, result, caption=f"✂️ Видео {i} · {fmt}", width=w, height=h):
+                raise RuntimeError("Telegram не принял видео")
+            success += 1
+        except Exception as exc:
+            logger.exception("Crop video failed")
+            failures.append(f"Видео {i}: {exc}")
+    st["step"] = "idle"
+    message = f"✅ Готово: {success} медиа в формате {fmt}." if success else "❌ Не удалось обрезать медиа."
+    if failures:
+        message += "\n" + "\n".join(failures[:5])
+    send_message_with_retry(chat_id, message, reply_markup=main_menu_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("crop:"))
+def on_crop_callback(c):
+    bot.answer_callback_query(c.id)
+    uid = c.from_user.id
+    choice = c.data.split(":", 1)[1]
+    if choice == "cancel":
+        (user_state.get(uid) or {}).update(step="idle")
+        send_message_with_retry(c.message.chat.id, "✂️ Обрезка отменена.")
+        return
+    if choice not in CROP_FORMATS or (user_state.get(uid) or {}).get("step") != "crop_format":
+        send_message_with_retry(c.message.chat.id, "⚠️ Сначала отправьте пост и выберите «Обрезать».")
+        return
+    user_state[uid]["step"] = "crop_processing"
+    send_message_with_retry(c.message.chat.id, "⏳ Обрезаю все фото и видео, подождите...")
+    threading.Thread(target=_run_crop, args=(uid, c.message.chat.id, choice), daemon=True).start()
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("repost:"))
 def on_repost_action(c):
     uid = c.from_user.id
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
+    if action == "crop":
+        bot.answer_callback_query(c.id)
+        _start_crop(c.message.chat.id, uid)
+        return
+
     if action == "slideshow":
         bot.answer_callback_query(c.id)
         _start_slideshow(c.message.chat.id, uid)
