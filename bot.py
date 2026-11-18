@@ -3640,12 +3640,8 @@ def make_news_slideshow(photos, title, body, fmt):
         # Darken only slides that actually contain text.
         image = Image.blend(image, Image.new("RGB", (w, h), (7, 12, 20)), .74)
         draw = ImageDraw.Draw(image)
-        draw.rounded_rectangle((margin, 56, margin + 188, 107), radius=12, fill=(245, 210, 70))
-        label_font = _slide_font(25, True)
-        draw.text((margin + 18, 65), "НОВОСТИ", font=label_font, fill=(12, 16, 22))
-        draw.line((margin, h - 115, w - margin, h - 115), fill=(220, 220, 220), width=2)
+        # Слайд-шоу без верхней плашки «НОВОСТИ» и нижнего брендинга.
         footer_font = _slide_font(26, True)
-        draw.text((margin, h - 91), "MINSK NEWS", font=footer_font, fill=(240, 240, 240))
         count_text = f"{i+1:02d} / {page_count:02d}"
         bb = draw.textbbox((0, 0), count_text, font=footer_font)
         draw.text((w - margin - (bb[2]-bb[0]), h - 91), count_text, font=footer_font, fill=(240, 240, 240))
