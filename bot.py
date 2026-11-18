@@ -2787,6 +2787,12 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
                 album_data.get("received", 0), len(album_data["photos"]),
                 len(album_data["videos"]), album_data.get("failures", 0))
     st = user_state.get(uid) or {}
+    # A new album is a NEW media batch: never inherit photos/videos/text
+    # from an earlier post, including when the current album contains video only.
+    for stale in ("album_photos", "album_videos", "photo_bytes", "saved_photo_bytes",
+                  "video_info", "video_file_id", "slideshow_photos", "slideshow_videos",
+                  "title", "body_raw", "original_text", "original_text_for_ai"):
+        st.pop(stale, None)
     
     caption = album_data.get("caption", "")
     photos = album_data.get("photos", [])
@@ -3559,6 +3565,14 @@ def _slide_paginate(title, body, fmt, page_count=5):
     sentences = _slide_sentences(body)
     if not sentences:
         raise ValueError("В посте отсутствует текст статьи. Добавьте текст после заголовка.")
+    # For a single picture, the article must occupy ALL five slides, in order.
+    # If fewer than five complete sentences exist, divide longer sentences into
+    # contiguous word groups rather than leaving intermediate pages empty.
+    if page_count == 5 and len(sentences) < 5:
+        words = _slide_join_units(sentences).split()
+        if len(words) >= 5:
+            sentences = [" ".join(words[(i * len(words)) // 5:((i + 1) * len(words)) // 5])
+                         for i in range(5)]
     w, h = SLIDE_FORMATS[fmt]
     margin = 76 if fmt == "square" else 86
     max_w = w - 2 * margin
@@ -3600,11 +3614,14 @@ def _slide_paginate(title, body, fmt, page_count=5):
                     target = prefix[-1] / page_count
                     penalty = ((words - target) / max(target, 1)) ** 2
                     if end == start:
-                        # Empty pages are allowed ONLY after all text has been placed.
-                        # Otherwise DP can put blank slides at the beginning.
+                        # Single-photo slideshows use all five pages, without gaps.
+                        if page_count == 5 and n >= 5:
+                            continue
                         if start < n:
                             continue
                         penalty = 0.0
+                    if page_count == 5 and n >= 5 and n - end < page_count - page - 1:
+                        continue
                     score = cost + penalty
                     if end not in nxt or score < nxt[end][0]:
                         nxt[end] = (score, bounds + [(start, end)])
@@ -3733,19 +3750,42 @@ def make_news_slideshow_video(slides, audio_type="silent", seconds_per_slide=4):
         video.name = "news_slideshow.mp4"
         return video
 
+def _slideshow_video_preview(video_info):
+    """Extract a current video's first frame for slideshow image slides."""
+    file_id = video_info.get("file_id")
+    if not file_id:
+        raise ValueError("Не найден идентификатор видео")
+    with tempfile.TemporaryDirectory(prefix="slideshow_frame_") as tmp:
+        source = os.path.join(tmp, "input_video")
+        frame = os.path.join(tmp, "frame.jpg")
+        with open(source, "wb") as f:
+            f.write(tg_file_bytes(file_id))
+        proc = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                               "-ss", "0.5", "-i", source, "-frames:v", "1", frame],
+                              capture_output=True, timeout=90)
+        if proc.returncode != 0 or not os.path.exists(frame):
+            raise RuntimeError("Не удалось получить кадр из видео: " + proc.stderr.decode(errors="replace")[-250:])
+        with open(frame, "rb") as f:
+            return f.read()
+
+
 def _start_slideshow(chat_id, uid):
     st = user_state.get(uid) or {}
-    photos = st.get("album_photos") or st.get("media_group", {}).get("photos") or []
-    if not photos and st.get("photo_bytes"):
-        photos = [st["photo_bytes"]]
-    if not photos:
-        send_message_with_retry(chat_id, "❌ Сначала отправьте пост с фотографией или фотоальбом.")
+    batch = st.get("media_group") or {}
+    photos = list(batch.get("photos") or [])
+    videos = list(batch.get("videos") or [])
+    # Standalone forwarded media is also stored in media_group. No fallback
+    # to album_photos or saved_photo_bytes, which may belong to an old post.
+    if not photos and not videos:
+        send_message_with_retry(chat_id, "❌ Сначала отправьте НОВЫЙ пост с фото или видео, затем выберите «Слайд-шоу».")
         return
     title = st.get("title") or ""
     body = st.get("body_raw") or ""
     if not body and st.get("original_text"):
         title, body = split_title_and_body(st["original_text"])
-    st["slideshow_photos"] = photos[:]
+    # Snapshot the new batch so later messages cannot mutate this slideshow.
+    st["slideshow_photos"] = photos
+    st["slideshow_videos"] = videos
     st["slideshow_title"] = title
     st["slideshow_body"] = body
     st["step"] = "slideshow_mode"
@@ -3773,7 +3813,7 @@ def on_slideshow_callback(c):
             return
         st["slideshow_mode"] = "video" if choice == "mode_video" else "photo"
         st["step"] = "slideshow_format"
-        count = _slideshow_page_count(len(st.get("slideshow_photos") or []))
+        count = _slideshow_page_count((len(st.get("slideshow_photos") or []) + len(st.get("slideshow_videos") or [])))
         send_message_with_retry(chat_id, f"📐 Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
         return
     if choice in SLIDE_FORMATS:
@@ -3799,7 +3839,7 @@ def on_slideshow_callback(c):
     st["step"] = "slideshow_processing"
     fmt = st["slideshow_format"]
     mode = st.get("slideshow_mode", "photo")
-    count = _slideshow_page_count(len(st.get("slideshow_photos") or []))
+    count = _slideshow_page_count((len(st.get("slideshow_photos") or []) + len(st.get("slideshow_videos") or [])))
     send_message_with_retry(chat_id, f"⏳ Принято {len(st.get('slideshow_photos') or [])} фото. Создаю {count} слайдов...")
     threading.Thread(target=_slideshow_worker, args=(chat_id, uid, st, fmt, mode, count, audio_type), daemon=True).start()
     return
@@ -3807,7 +3847,10 @@ def on_slideshow_callback(c):
 def _slideshow_worker(chat_id, uid, st, fmt, mode, count, audio_type):
     logger.info("SLIDESHOW: start user=%s count=%s format=%s mode=%s", uid, count, fmt, mode)
     try:
-        slides = make_news_slideshow(st["slideshow_photos"], st["slideshow_title"], st["slideshow_body"], fmt)
+        current_photos = list(st.get("slideshow_photos") or [])
+        for video_info in st.get("slideshow_videos") or []:
+            current_photos.append(_slideshow_video_preview(video_info))
+        slides = make_news_slideshow(current_photos, st["slideshow_title"], st["slideshow_body"], fmt)
         logger.info("SLIDESHOW: images rendered: %d", len(slides))
         if mode == "video":
             send_message_with_retry(chat_id, "🎞 Слайды готовы. Кодирую MP4, это может занять 1–3 минуты...")
@@ -3828,6 +3871,9 @@ def _slideshow_worker(chat_id, uid, st, fmt, mode, count, audio_type):
             bot.send_media_group(chat_id, media)
             send_message_with_retry(chat_id, f"✅ Готово! Все {len(slides)} слайдов отправлены как фотографии в одном альбоме.", reply_markup=main_menu_kb())
         st["step"] = "idle"
+        # Do not allow replaying old media after a completed slideshow.
+        for stale in ("slideshow_photos", "slideshow_videos"):
+            st.pop(stale, None)
     except Exception as exc:
         logger.exception("Slideshow generation failed user=%s", uid)
         st["step"] = "slideshow_format"
@@ -5758,6 +5804,11 @@ def handle_forwarded_message(message):
     
     st["original_url"] = source_url
     st["step"] = "waiting_repost_action"
+    for stale in ("album_photos", "album_videos", "slideshow_photos", "slideshow_videos",
+                  "saved_photo_bytes", "body_raw", "title"):
+        st.pop(stale, None)
+    if original_text:
+        st["title"], st["body_raw"] = split_title_and_body(original_text)
     st["photo_bytes"] = None
     st["video_info"] = None
     st["video_file_id"] = None
@@ -6482,6 +6533,11 @@ def on_photo_or_document(message):
     
     try:
         if message.photo:
+            # Each standalone photo starts a fresh media batch.
+            for stale in ("album_photos", "album_videos", "slideshow_photos", "slideshow_videos",
+                          "video_info", "video_file_id", "title", "body_raw", "original_text"):
+                st.pop(stale, None)
+            st["media_group"] = {"photos": [], "videos": []}
             file_id = message.photo[-1].file_id
             photo_bytes = tg_file_bytes(file_id)
             if not check_file_size(photo_bytes):
@@ -6501,6 +6557,10 @@ def on_photo_or_document(message):
                 st["body_raw"] = body
         
         if message.video:
+            for stale in ("album_photos", "album_videos", "slideshow_photos", "slideshow_videos",
+                          "photo_bytes", "saved_photo_bytes", "title", "body_raw", "original_text"):
+                st.pop(stale, None)
+            st["media_group"] = {"photos": [], "videos": []}
             video_info = get_video_info(message.video.file_id, message.video)
             st["video_info"] = video_info
             st["video_file_id"] = message.video.file_id
