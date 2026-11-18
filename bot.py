@@ -463,33 +463,32 @@ def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_m
     return None
 
 def send_video_with_retry(chat_id, video, caption=None, parse_mode=None, reply_markup=None, width=None, height=None, max_retries=3):
+    """Send an MP4 as a playable Telegram video; retry safely with a fresh stream."""
     if caption and len(caption) > 950:
         caption = caption[:947] + "..."
-    
+    if hasattr(video, "getvalue"):
+        video_bytes = video.getvalue()
+    elif isinstance(video, (bytes, bytearray)):
+        video_bytes = bytes(video)
+    else:
+        video_bytes = None
     for attempt in range(max_retries):
         try:
+            if video_bytes is not None:
+                payload = BytesIO(video_bytes)
+                payload.name = "ready_video.mp4"
+            else:
+                video.seek(0)
+                payload = video
             return bot.send_video(
-                chat_id=chat_id,
-                video=video,
-                caption=caption,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup,
-                width=width,
-                height=height
+                chat_id, payload, caption=caption, parse_mode=parse_mode,
+                reply_markup=reply_markup, width=width, height=height,
+                supports_streaming=True, timeout=120
             )
         except Exception as e:
-            logger.error(f"Send video attempt {attempt + 1} failed: {e}")
+            logger.exception("Send MP4 attempt %s failed: %s", attempt + 1, e)
             if attempt < max_retries - 1:
                 time.sleep(2 + attempt * 2)
-            else:
-                try:
-                    return bot.send_video(
-                        chat_id=chat_id,
-                        video=video,
-                        reply_markup=reply_markup
-                    )
-                except:
-                    return None
     return None
 
 def send_media_group_with_retry(chat_id, media_list, max_retries=3):
@@ -3115,6 +3114,7 @@ def create_video_from_album(uid, chat_id, only_first_seconds=0):
             audio_codec='aac',
             threads=4,
             preset='medium',
+            ffmpeg_params=['-pix_fmt', 'yuv420p', '-movflags', '+faststart'],
             logger=None
         )
         
@@ -3135,16 +3135,17 @@ def create_video_from_album(uid, chat_id, only_first_seconds=0):
         caption += f"\n📸 {len(photos)} фото"
         caption += f"\n📱 Формат: {'4:5' if format_name == '4x5' else '9:16'}"
         
-        send_video_with_retry(
+        sent = send_video_with_retry(
             chat_id,
             BytesIO(output.getvalue()),
-            caption=caption,
+            caption=html.escape(caption),
             parse_mode="HTML",
             width=target_w,
             height=target_h
         )
-        
-        bot.edit_message_text("✅ Видео из альбома готово!", chat_id, status_msg.message_id)
+        if sent is None:
+            raise RuntimeError("Telegram не принял MP4. Проверьте размер файла и логи отправки.")
+        bot.edit_message_text("✅ MP4-видео отправлено в чат!", chat_id, status_msg.message_id)
         
         shutil.rmtree(temp_dir)
         clear_state(uid)
