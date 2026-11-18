@@ -200,12 +200,14 @@ BTN_WATERMARK = "💧 Водяные знаки"
 BTN_PRICES = "💰 Цены"
 BTN_AI_TEXT = "🤖 Текст в ИИ"
 BTN_MAKE_VIDEO = "🎬 Сделать видео"
+BTN_SLIDESHOW = "🖼 Сделать слайд-шоу"
 
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_AI_TEXT))
     kb.row(KeyboardButton(BTN_ENHANCE), KeyboardButton(BTN_WATERMARK))
     kb.row(KeyboardButton(BTN_PRICES), KeyboardButton(BTN_MAKE_VIDEO))
+    kb.row(KeyboardButton(BTN_SLIDESHOW))
     return kb
 
 def repost_action_kb():
@@ -217,7 +219,8 @@ def repost_action_kb():
         InlineKeyboardButton("📱 Пост для Тредс (400 симв.)", callback_data="repost:threads"),
         InlineKeyboardButton("💧 Нанести водяной знак", callback_data="repost:watermark"),
         InlineKeyboardButton("✏️ Редактировать текст", callback_data="repost:edit"),
-        InlineKeyboardButton("🎬 Сделать видео из альбома", callback_data="repost:make_album_video")
+        InlineKeyboardButton("🎬 Сделать видео из альбома", callback_data="repost:make_album_video"),
+        InlineKeyboardButton("🖼 Сделать слайд-шоу", callback_data="repost:slideshow")
     )
     return kb
 
@@ -3340,6 +3343,223 @@ def build_caption_html(title: str, body: str, max_length: int = 950) -> str:
 
 
 # =========================
+# КАРУСЕЛЬ НОВОСТИ: 5 СЛАЙДОВ
+# =========================
+SLIDE_FORMATS = {"4x5": (1080, 1350), "square": (1080, 1080)}
+
+def slideshow_format_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("📱 4:5", callback_data="slideshow:4x5"),
+           InlineKeyboardButton("⬜ Квадрат 1:1", callback_data="slideshow:square"),
+           InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
+def _slide_font(size, bold=False):
+    candidates = (["Montserrat-Black.ttf", "Inter-ExtraBold.ttf"] if bold else
+                  ["Inter-Regular.ttf", "Montserrat-Regular.ttf", "DejaVuSans.ttf"])
+    for name in candidates:
+        try:
+            return ImageFont.truetype(name, size)
+        except (OSError, ValueError):
+            continue
+    return ImageFont.load_default()
+
+def _slide_wrap(draw, text, font, width):
+    lines = []
+    for paragraph in text.split("\n"):
+        if not paragraph.strip():
+            lines.append("")
+            continue
+        current = ""
+        for word in paragraph.split():
+            candidate = (current + " " + word).strip()
+            if draw.textbbox((0, 0), candidate, font=font)[2] <= width:
+                current = candidate
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+                # Rare unbroken words: wrap character-by-character.
+                if draw.textbbox((0, 0), current, font=font)[2] > width:
+                    chunk = ""
+                    for ch in current:
+                        if chunk and draw.textbbox((0, 0), chunk + ch, font=font)[2] > width:
+                            lines.append(chunk)
+                            chunk = ch
+                        else:
+                            chunk += ch
+                    current = chunk
+        if current:
+            lines.append(current)
+    return lines
+
+def _slide_lines_height(lines, font_size, gap_ratio=0.34):
+    return len(lines) * (font_size + round(font_size * gap_ratio))
+
+def _slide_page_layout(title, chunks, fmt, body_size, title_size):
+    w, h = SLIDE_FORMATS[fmt]
+    margin = 86 if fmt == "4x5" else 76
+    max_w = w - margin * 2
+    dummy = ImageDraw.Draw(Image.new("RGB", (4, 4)))
+    body_font = _slide_font(body_size)
+    title_font = _slide_font(title_size, True)
+    title_lines = _slide_wrap(dummy, title.upper(), title_font, max_w)
+    # Title is prominent on first page; reserve sufficient space for it.
+    title_h = _slide_lines_height(title_lines, title_size, .20)
+    if title_h > h * .40:
+        return None
+    max_body_h = h - (margin + 100) - 112
+    if title:
+        max_body_h -= title_h + 32
+    lines = [_slide_wrap(dummy, chunk, body_font, max_w) for chunk in chunks]
+    return lines, title_lines, title_h, max_body_h
+
+def _slide_paginate(title, body, fmt):
+    words = body.split()
+    if not words:
+        raise ValueError("В посте отсутствует текст статьи. Добавьте текст после заголовка.")
+    w, h = SLIDE_FORMATS[fmt]
+    margin = 86 if fmt == "4x5" else 76
+    max_w = w - 2 * margin
+    draw = ImageDraw.Draw(Image.new("RGB", (4, 4)))
+    # Try readable body sizes first; never silently drop or truncate words.
+    for body_size in range(43, 15, -1):
+        title_size = min(78, max(45, round(body_size * 1.7)))
+        title_font = _slide_font(title_size, True)
+        title_lines = _slide_wrap(draw, title.upper(), title_font, max_w)
+        title_h = _slide_lines_height(title_lines, title_size, .20)
+        if title_h > h * .40:
+            continue
+        body_font = _slide_font(body_size)
+        available = [h - 115 - (156 + title_h + 32)] + [h - 115 - (156 + 56)] * 4
+        pages = [[] for _ in range(5)]
+        cursor = 0
+        for page_idx in range(5):
+            # Distribute text across all five slides, with measured height limits.
+            remaining = len(words) - cursor
+            slots = 5 - page_idx
+            target = (remaining + slots - 1) // slots
+            best = 0
+            for n in range(1, remaining + 1):
+                chunk = " ".join(words[cursor:cursor+n])
+                lines = _slide_wrap(draw, chunk, body_font, max_w)
+                if _slide_lines_height(lines, body_size) > available[page_idx]:
+                    break
+                best = n
+                if n >= target and page_idx < 4:
+                    break
+            if best == 0 and remaining:
+                break
+            pages[page_idx] = words[cursor:cursor+best]
+            cursor += best
+        if cursor == len(words):
+            # Empty pages only when the source contains fewer than five words.
+            return [" ".join(x) for x in pages], body_size, title_size
+    raise ValueError("Статья слишком длинная для 5 слайдов с читаемым шрифтом. Сократите текст.")
+
+def make_news_slideshow(photos, title, body, fmt):
+    if not photos:
+        raise ValueError("Для слайд-шоу нужна хотя бы одна фотография.")
+    if not title.strip():
+        raise ValueError("Не найден заголовок поста.")
+    pages, body_size, title_size = _slide_paginate(title, body, fmt)
+    w, h = SLIDE_FORMATS[fmt]
+    margin = 86 if fmt == "4x5" else 76
+    results = []
+    for i, page in enumerate(pages):
+        source = photos[i % len(photos)] if len(photos) > 1 else photos[0]
+        with Image.open(BytesIO(source)) as source_img:
+            image = crop_to_ratio(source_img.convert("RGB"), w, h).resize((w, h), Image.Resampling.LANCZOS)
+        # Strong neutral darkening gives white text reliable contrast on varied photos.
+        image = Image.blend(image, Image.new("RGB", (w, h), (7, 12, 20)), .74)
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((margin, 56, margin + 188, 107), radius=12, fill=(245, 210, 70))
+        label_font = _slide_font(25, True)
+        draw.text((margin + 18, 65), "НОВОСТИ", font=label_font, fill=(12, 16, 22))
+        draw.line((margin, h - 115, w - margin, h - 115), fill=(220, 220, 220), width=2)
+        footer_font = _slide_font(26, True)
+        draw.text((margin, h - 91), "MINSK NEWS", font=footer_font, fill=(240, 240, 240))
+        count_text = f"{i+1:02d} / 05"
+        bb = draw.textbbox((0, 0), count_text, font=footer_font)
+        draw.text((w - margin - (bb[2]-bb[0]), h - 91), count_text, font=footer_font, fill=(240, 240, 240))
+        y = 156
+        if i == 0:
+            tf = _slide_font(title_size, True)
+            for line in _slide_wrap(draw, title.upper(), tf, w - margin * 2):
+                draw.text((margin, y), line, font=tf, fill=(255, 255, 255))
+                y += title_size + round(title_size * .20)
+            y += 32
+        else:
+            sf = _slide_font(26, True)
+            draw.text((margin, y), "ПРОДОЛЖЕНИЕ", font=sf, fill=(245, 210, 70))
+            y += 56
+        bf = _slide_font(body_size)
+        for line in _slide_wrap(draw, page, bf, w - margin * 2):
+            if line:
+                draw.text((margin, y), line, font=bf, fill=(255, 255, 255))
+            y += body_size + round(body_size * .34)
+        if y > h - 115:
+            raise ValueError("Текст не помещается в границы слайда.")
+        out = BytesIO()
+        image.save(out, format="JPEG", quality=91, optimize=True)
+        out.seek(0)
+        out.name = f"news_slide_{i+1}.jpg"
+        results.append(out)
+    return results
+
+def _start_slideshow(chat_id, uid):
+    st = user_state.get(uid) or {}
+    photos = st.get("album_photos") or st.get("media_group", {}).get("photos") or []
+    if not photos and st.get("photo_bytes"):
+        photos = [st["photo_bytes"]]
+    if not photos:
+        send_message_with_retry(chat_id, "❌ Сначала отправьте пост с фотографией или фотоальбом.")
+        return
+    title = st.get("title") or ""
+    body = st.get("body_raw") or ""
+    if not body and st.get("original_text"):
+        title, body = split_title_and_body(st["original_text"])
+    st["slideshow_photos"] = photos[:]
+    st["slideshow_title"] = title
+    st["slideshow_body"] = body
+    st["step"] = "slideshow_format"
+    user_state[uid] = st
+    if not body.strip():
+        st["step"] = "slideshow_wait_text"
+        send_message_with_retry(chat_id, "📝 Отправьте полный текст статьи (заголовок первой строкой, далее текст).")
+    else:
+        send_message_with_retry(chat_id, "🖼 Выберите размер пяти слайдов:", reply_markup=slideshow_format_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("slideshow:"))
+def on_slideshow_callback(c):
+    uid = c.from_user.id
+    choice = c.data.split(":", 1)[1]
+    bot.answer_callback_query(c.id)
+    if choice == "cancel":
+        clear_state(uid)
+        send_message_with_retry(c.message.chat.id, "❌ Создание слайд-шоу отменено.")
+        return
+    if choice not in SLIDE_FORMATS:
+        return
+    st = user_state.get(uid) or {}
+    if st.get("step") != "slideshow_format":
+        send_message_with_retry(c.message.chat.id, "⚠️ Сначала отправьте пост и выберите создание слайд-шоу.")
+        return
+    st["step"] = "slideshow_processing"
+    user_state[uid] = st
+    send_message_with_retry(c.message.chat.id, "⏳ Создаю 5 слайдов с полным текстом статьи...")
+    try:
+        slides = make_news_slideshow(st["slideshow_photos"], st["slideshow_title"], st["slideshow_body"], choice)
+        media = [InputMediaPhoto(media=slide) for slide in slides]
+        bot.send_media_group(c.message.chat.id, media)
+        send_message_with_retry(c.message.chat.id, "✅ Готово! Все 5 слайдов отправлены как фотографии в одном альбоме.", reply_markup=main_menu_kb())
+        st["step"] = "idle"
+    except Exception as exc:
+        logger.exception("Slideshow generation failed")
+        st["step"] = "slideshow_format"
+        send_message_with_retry(c.message.chat.id, f"❌ Не удалось создать слайд-шоу: {exc}", reply_markup=slideshow_format_kb())
+
+# =========================
 # ОСНОВНЫЕ CALLBACK ОБРАБОТЧИКИ
 # =========================
 
@@ -3349,6 +3569,11 @@ def on_repost_action(c):
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
+    if action == "slideshow":
+        bot.answer_callback_query(c.id)
+        _start_slideshow(c.message.chat.id, uid)
+        return
+
     if action == "make_album_video":
         if st.get("album_photos") or st.get("media_group", {}).get("photos"):
             photos = st.get("album_photos") or st.get("media_group", {}).get("photos")
@@ -5379,6 +5604,17 @@ def on_text(message):
     text = message.text.strip() if message.text else ""
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
     
+    if text == BTN_SLIDESHOW:
+        _start_slideshow(message.chat.id, uid)
+        return
+    if st.get("step") == "slideshow_wait_text":
+        title, body = split_title_and_body(text)
+        st["slideshow_title"] = title
+        st["slideshow_body"] = body
+        st["step"] = "slideshow_format"
+        user_state[uid] = st
+        bot.reply_to(message, "🖼 Выберите размер пяти слайдов:", reply_markup=slideshow_format_kb())
+        return
     if text == BTN_MAKE_VIDEO:
         user_state[uid] = {"step": "direct_video_wait", "template": "MN"}
         bot.reply_to(message, "🎬 Пришлите видео (можно с подписью). Затем выберем заголовок, звук, формат и длительность наложения.")
