@@ -2723,7 +2723,7 @@ def run_http_server():
 # ОБРАБОТЧИК АЛЬБОМОВ
 # =========================
 def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
-    time.sleep(2)
+    time.sleep(3)
     if media_group_id not in user_album_cache:
         return
     
@@ -2759,9 +2759,20 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
         st["video_file_id"] = videos[0].get('file_id')
     
     st["card_bytes"] = None
+    direct_album_video = st.get("step") == "direct_video_wait"
     st["step"] = "waiting_repost_action"
     user_state[uid] = st
-    
+    if direct_album_video and photos:
+        st["original_caption"] = caption
+        st["album_photos"] = photos
+        st["title"] = extract_title_from_text(caption) if caption else ""
+        st["step"] = "video_from_album"
+        user_state[uid] = st
+        send_message_with_retry(chat_id,
+            f"🎬 Получено {len(photos)} фото. Создадим из них один MP4-ролик.\n\nВыберите заголовок:",
+            reply_markup=album_video_title_kb())
+        return
+
     text_preview = caption[:200] if caption else "(без текста)"
     photo_count = len(photos)
     video_count = len(videos)
@@ -3141,7 +3152,7 @@ def create_video_from_album(uid, chat_id, only_first_seconds=0):
         sent = send_video_with_retry(
             chat_id,
             BytesIO(output.getvalue()),
-            caption=html.escape(caption),
+            caption=html.escape(re.sub(r"</?b>", "", caption)),
             parse_mode="HTML",
             width=target_w,
             height=target_h
@@ -3347,10 +3358,25 @@ def build_caption_html(title: str, body: str, max_length: int = 950) -> str:
 # =========================
 SLIDE_FORMATS = {"4x5": (1080, 1350), "square": (1080, 1080)}
 
+def slideshow_mode_kb():
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("🖼 Фото слайд-шоу", callback_data="slideshow:mode_photo"),
+           InlineKeyboardButton("🎬 Видео слайд-шоу (MP4)", callback_data="slideshow:mode_video"),
+           InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
 def slideshow_format_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(InlineKeyboardButton("📱 4:5", callback_data="slideshow:4x5"),
            InlineKeyboardButton("⬜ Квадрат 1:1", callback_data="slideshow:square"),
+           InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
+def slideshow_audio_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("🔇 Без звука", callback_data="slideshow:audio_silent"),
+           InlineKeyboardButton("📢 Важное", callback_data="slideshow:audio_важная"),
+           InlineKeyboardButton("🎵 Обычное", callback_data="slideshow:audio_обычная"),
            InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
     return kb
 
@@ -3427,23 +3453,42 @@ def _slide_remove_trailing_source(body):
 
 
 def _slide_sentences(body):
-    """Split at sentence boundaries without splitting common abbreviations."""
+    """Keep explicit line breaks (especially lists), split prose only at sentences."""
     body = _slide_remove_trailing_source(body)
     if not body:
         return []
-    # Protect decimal points and common Russian abbreviations.
     token = "\uE000"
-    protected = re.sub(r"(?<=\d)\.(?=\d)", token, body)
+    units = []
     abbreviations = ("т.д.", "т.п.", "т.е.", "т.к.", "и т.д.", "и т.п.",
                      "г.", "ул.", "д.", "стр.", "им.", "руб.", "млн.", "млрд.",
                      "тыс.", "ок.", "рис.", "см.")
-    for abbr in sorted(abbreviations, key=len, reverse=True):
-        protected = re.sub(re.escape(abbr), lambda m: m.group().replace(".", token), protected, flags=re.I)
-    # A sentence ends only before a whitespace followed by the next sentence.
-    pieces = re.split(r"(?<=[.!?…])(?:[\"»”’)]*)\s+(?=[\"«„“(]*[А-ЯЁA-Z0-9])", protected)
-    # Restore abbreviation periods and preserve all source words.
-    return [x.replace(token, ".").strip() for x in pieces if x.strip()]
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if units and not units[-1].endswith("\n"):
+                units[-1] += "\n"
+            continue
+        protected = re.sub(r"(?<=\d)\.(?=\d)", token, line)
+        for abbr in sorted(abbreviations, key=len, reverse=True):
+            protected = re.sub(re.escape(abbr), lambda m: m.group().replace(".", token), protected, flags=re.I)
+        pieces = re.split(r'(?<=[.!?…])\s+(?=["«„“(]*[А-ЯЁA-Z0-9])', protected)
+        pieces = [x.replace(token, ".").strip() for x in pieces if x.strip()]
+        if pieces:
+            # Each original source line stays a separate visual line.
+            # The final sentence in a line carries the newline to the next unit.
+            pieces[-1] += "\n"
+            units.extend(pieces)
+    if units:
+        units[-1] = units[-1].rstrip("\n")
+    return units
 
+def _slide_join_units(units):
+    result = ""
+    for unit in units:
+        if result and not result.endswith("\n"):
+            result += " "
+        result += unit
+    return result.strip()
 
 def _slide_paginate(title, body, fmt):
     sentences = _slide_sentences(body)
@@ -3473,7 +3518,7 @@ def _slide_paginate(title, body, fmt):
         def fits(start, end, page):
             key = (start, end)
             if key not in cache:
-                chunk = " ".join(sentences[start:end])
+                chunk = _slide_join_units(sentences[start:end])
                 lines = _slide_wrap(draw, chunk, body_font, max_w)
                 cache[key] = _slide_lines_height(lines, body_size)
             return cache[key] <= available[page]
@@ -3499,7 +3544,7 @@ def _slide_paginate(title, body, fmt):
                 break
         if n in states:
             bounds = states[n][1]
-            pages = [" ".join(sentences[start:end]) for start, end in bounds]
+            pages = [_slide_join_units(sentences[start:end]) for start, end in bounds]
             return pages, body_size, title_size
     raise ValueError("Статья слишком длинная для 5 слайдов без разрыва предложений. Сократите текст или используйте более короткие предложения.")
 
@@ -3553,6 +3598,50 @@ def make_news_slideshow(photos, title, body, fmt):
         results.append(out)
     return results
 
+def make_news_slideshow_video(slides, audio_type="silent", seconds_per_slide=4):
+    """Encode the exact same designed JPEG slides as a Telegram-friendly MP4."""
+    import tempfile
+    import subprocess
+    with tempfile.TemporaryDirectory(prefix="news_slides_") as tmp:
+        for i, slide in enumerate(slides):
+            with open(os.path.join(tmp, f"slide_{i:02d}.jpg"), "wb") as out:
+                out.write(slide.getvalue())
+        concat_file = os.path.join(tmp, "slides.txt")
+        with open(concat_file, "w", encoding="utf-8") as out:
+            for i in range(len(slides)):
+                out.write(f"file 'slide_{i:02d}.jpg'\n")
+                out.write(f"duration {seconds_per_slide}\n")
+            out.write(f"file 'slide_{len(slides)-1:02d}.jpg'\n")
+        command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                   "-safe", "0", "-f", "concat", "-i", concat_file]
+        if audio_type != "silent":
+            data = download_audio_from_github(audio_type)
+            if not data:
+                raise ValueError("Не удалось загрузить выбранную музыку.")
+            audio_path = os.path.join(tmp, "music.mp3")
+            with open(audio_path, "wb") as out:
+                out.write(data)
+            command += ["-stream_loop", "-1", "-i", audio_path]
+        command += ["-t", str(len(slides) * seconds_per_slide), "-r", "24",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+                    "-pix_fmt", "yuv420p"]
+        if audio_type != "silent":
+            command += ["-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-b:a", "128k"]
+        else:
+            command += ["-an"]
+        output_path = os.path.join(tmp, "news_slideshow.mp4")
+        command += ["-movflags", "+faststart", output_path]
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True, timeout=240)
+        except FileNotFoundError as exc:
+            raise RuntimeError("На сервере не установлен FFmpeg.") from exc
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError("FFmpeg: " + (exc.stderr or "Ошибка кодирования")[-700:]) from exc
+        with open(output_path, "rb") as out:
+            video = BytesIO(out.read())
+        video.name = "news_slideshow.mp4"
+        return video
+
 def _start_slideshow(chat_id, uid):
     st = user_state.get(uid) or {}
     photos = st.get("album_photos") or st.get("media_group", {}).get("photos") or []
@@ -3568,42 +3657,73 @@ def _start_slideshow(chat_id, uid):
     st["slideshow_photos"] = photos[:]
     st["slideshow_title"] = title
     st["slideshow_body"] = body
-    st["step"] = "slideshow_format"
+    st["step"] = "slideshow_mode"
     user_state[uid] = st
     if not body.strip():
         st["step"] = "slideshow_wait_text"
         send_message_with_retry(chat_id, "📝 Отправьте полный текст статьи (заголовок первой строкой, далее текст).")
     else:
-        send_message_with_retry(chat_id, "🖼 Выберите размер пяти слайдов:", reply_markup=slideshow_format_kb())
+        send_message_with_retry(chat_id, "🖼 Выберите тип слайд-шоу:", reply_markup=slideshow_mode_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("slideshow:"))
 def on_slideshow_callback(c):
     uid = c.from_user.id
     choice = c.data.split(":", 1)[1]
     bot.answer_callback_query(c.id)
+    chat_id = c.message.chat.id
     if choice == "cancel":
         clear_state(uid)
-        send_message_with_retry(c.message.chat.id, "❌ Создание слайд-шоу отменено.")
-        return
-    if choice not in SLIDE_FORMATS:
+        send_message_with_retry(chat_id, "❌ Создание слайд-шоу отменено.")
         return
     st = user_state.get(uid) or {}
-    if st.get("step") != "slideshow_format":
-        send_message_with_retry(c.message.chat.id, "⚠️ Сначала отправьте пост и выберите создание слайд-шоу.")
+    if choice in ("mode_photo", "mode_video"):
+        if st.get("step") != "slideshow_mode":
+            send_message_with_retry(chat_id, "⚠️ Сначала отправьте пост и выберите создание слайд-шоу.")
+            return
+        st["slideshow_mode"] = "video" if choice == "mode_video" else "photo"
+        st["step"] = "slideshow_format"
+        send_message_with_retry(chat_id, "📐 Выберите размер пяти слайдов:", reply_markup=slideshow_format_kb())
+        return
+    if choice in SLIDE_FORMATS:
+        if st.get("step") != "slideshow_format":
+            send_message_with_retry(chat_id, "⚠️ Сначала выберите тип слайд-шоу.")
+            return
+        st["slideshow_format"] = choice
+        if st.get("slideshow_mode") == "video":
+            st["step"] = "slideshow_audio"
+            send_message_with_retry(chat_id, "🎵 Выберите музыку для видео:", reply_markup=slideshow_audio_kb())
+            return
+        audio_type = "silent"
+    elif choice.startswith("audio_"):
+        if st.get("step") != "slideshow_audio":
+            return
+        audio_type = choice[len("audio_"):]
+        if audio_type not in ("silent", "важная", "обычная"):
+            return
+    else:
         return
     st["step"] = "slideshow_processing"
-    user_state[uid] = st
-    send_message_with_retry(c.message.chat.id, "⏳ Создаю 5 слайдов с полным текстом статьи...")
+    fmt = st["slideshow_format"]
+    mode = st.get("slideshow_mode", "photo")
+    send_message_with_retry(chat_id, "⏳ Создаю 5 слайдов с полным текстом статьи...")
     try:
-        slides = make_news_slideshow(st["slideshow_photos"], st["slideshow_title"], st["slideshow_body"], choice)
-        media = [InputMediaPhoto(media=slide) for slide in slides]
-        bot.send_media_group(c.message.chat.id, media)
-        send_message_with_retry(c.message.chat.id, "✅ Готово! Все 5 слайдов отправлены как фотографии в одном альбоме.", reply_markup=main_menu_kb())
+        slides = make_news_slideshow(st["slideshow_photos"], st["slideshow_title"], st["slideshow_body"], fmt)
+        if mode == "video":
+            video = make_news_slideshow_video(slides, audio_type)
+            w, h = SLIDE_FORMATS[fmt]
+            sent = send_video_with_retry(chat_id, video, caption="🎬 Новостное слайд-шоу · 5 слайдов", width=w, height=h)
+            if sent is None:
+                raise RuntimeError("Telegram не принял готовое MP4-видео. Проверьте размер файла и логи Render.")
+            send_message_with_retry(chat_id, "✅ Готово! MP4-видео отправлено.", reply_markup=main_menu_kb())
+        else:
+            media = [InputMediaPhoto(media=slide) for slide in slides]
+            bot.send_media_group(chat_id, media)
+            send_message_with_retry(chat_id, "✅ Готово! Все 5 слайдов отправлены как фотографии в одном альбоме.", reply_markup=main_menu_kb())
         st["step"] = "idle"
     except Exception as exc:
         logger.exception("Slideshow generation failed")
         st["step"] = "slideshow_format"
-        send_message_with_retry(c.message.chat.id, f"❌ Не удалось создать слайд-шоу: {exc}", reply_markup=slideshow_format_kb())
+        send_message_with_retry(chat_id, f"❌ Не удалось создать слайд-шоу: {exc}", reply_markup=slideshow_format_kb())
 
 # =========================
 # ОСНОВНЫЕ CALLBACK ОБРАБОТЧИКИ
@@ -5657,13 +5777,13 @@ def on_text(message):
         title, body = split_title_and_body(text)
         st["slideshow_title"] = title
         st["slideshow_body"] = body
-        st["step"] = "slideshow_format"
+        st["step"] = "slideshow_mode"
         user_state[uid] = st
-        bot.reply_to(message, "🖼 Выберите размер пяти слайдов:", reply_markup=slideshow_format_kb())
+        bot.reply_to(message, "🖼 Выберите тип слайд-шоу:", reply_markup=slideshow_mode_kb())
         return
     if text == BTN_MAKE_VIDEO:
         user_state[uid] = {"step": "direct_video_wait", "template": "MN"}
-        bot.reply_to(message, "🎬 Пришлите видео (можно с подписью). Затем выберем заголовок, звук, формат и длительность наложения.")
+        bot.reply_to(message, "🎬 Пришлите видео, одно фото или пост с несколькими фото. Из фотографий соберу MP4-слайд-шоу, затем предложу заголовок, звук и формат.")
         return
     if st.get("step") == "direct_video_title_input":
         st["direct_video_title"] = text
@@ -6047,6 +6167,21 @@ def on_photo_or_document(message):
         threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, False), daemon=True).start()
         return
     
+    if st.get("step") == "direct_video_wait" and message.photo:
+        try:
+            photo = tg_file_bytes(message.photo[-1].file_id)
+            st["album_photos"] = [photo]
+            st["photo_bytes"] = photo
+            st["original_caption"] = message.caption or ""
+            st["title"] = extract_title_from_text(message.caption or "")
+            st["step"] = "video_from_album"
+            user_state[uid] = st
+            bot.reply_to(message, "🎬 Создадим MP4 из фотографии. Выберите заголовок:", reply_markup=album_video_title_kb())
+        except Exception as exc:
+            logger.exception("Failed to load photo for video")
+            bot.reply_to(message, f"❌ Не удалось загрузить фото: {exc}")
+        return
+
     if st.get("step") == "waiting_enhance_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
