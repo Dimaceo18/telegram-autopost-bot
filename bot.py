@@ -83,6 +83,8 @@ logger = logging.getLogger(__name__)
 # =========================
 TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 DEEPSEEK_API_KEY = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
+OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
+OPENAI_TTS_VOICE = (os.getenv("OPENAI_TTS_VOICE") or "onyx").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
 CHANNEL_MN = (os.getenv("CHANNEL_MN") or "").strip()
@@ -3444,6 +3446,7 @@ def slideshow_audio_kb():
     kb.add(InlineKeyboardButton("🔇 Без звука", callback_data="slideshow:audio_silent"),
            InlineKeyboardButton("📢 Важное", callback_data="slideshow:audio_важная"),
            InlineKeyboardButton("🎵 Обычное", callback_data="slideshow:audio_обычная"),
+           InlineKeyboardButton("🎙 Озвучка ИИ (OpenAI)", callback_data="slideshow:audio_openai_tts"),
            InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
     return kb
 
@@ -3672,6 +3675,131 @@ def make_news_slideshow(photos, title, body, fmt):
 
 _slideshow_encoding_lock = threading.Lock()
 
+def _openai_tts_speech(text, output_path):
+    """Generate Russian narration for one slide using OpenAI Speech API."""
+    if not OPENAI_API_KEY:
+        raise RuntimeError("Для озвучки добавьте OPENAI_API_KEY в Environment на Render.")
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Нельзя озвучить пустой текст.")
+    # One slide at a time, so the narration and picture stay synchronized.
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/audio/speech",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "gpt-4o-mini-tts", "voice": OPENAI_TTS_VOICE,
+                  "input": text[:4000], "response_format": "mp3",
+                  "instructions": "Говори на русском языке. Спокойная, выразительная, профессиональная дикторская подача новостей. Чёткая артикуляция, естественный темп, без театральности."},
+            timeout=(15, 120), stream=True,
+        )
+        if not response.ok:
+            try:
+                detail = response.json().get("error", {}).get("message", "")
+            except (ValueError, AttributeError):
+                detail = ""
+            raise RuntimeError(f"OpenAI TTS: HTTP {response.status_code}. {detail[:250]}")
+        with open(output_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=65536):
+                if chunk:
+                    f.write(chunk)
+        if os.path.getsize(output_path) < 1000:
+            raise RuntimeError("OpenAI TTS вернул пустую аудиозапись.")
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Не удалось получить озвучку OpenAI: {exc}") from exc
+
+
+def _slideshow_audio_duration(path):
+    """Duration in seconds as reported by ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            check=True, capture_output=True, text=True, timeout=20)
+        duration = float(result.stdout.strip())
+        if not (0 < duration < 3600):
+            raise ValueError("Invalid duration")
+        return duration
+    except (FileNotFoundError, subprocess.CalledProcessError, ValueError) as exc:
+        raise RuntimeError("Не удалось определить длительность озвучки (нужен ffprobe).") from exc
+
+
+def make_news_slideshow_tts_video(slides, title, body, fmt):
+    """Narrate each populated slide, use its actual audio length as display duration.
+
+    Empty slides are retained for 5 seconds without narration. Each populated slide
+    gets its own voice segment and a short natural pause at the end.
+    """
+    import math
+    if not slides:
+        raise ValueError("Нет слайдов для видео.")
+    page_texts, _, _ = _slide_paginate(title, body, fmt, len(slides))
+    # First slide displays both the title and its first paragraph.
+    narrations = [((title.strip() + ". " if i == 0 else "") + page.strip()).strip()
+                  if page.strip() else "" for i, page in enumerate(page_texts)]
+    with tempfile.TemporaryDirectory(prefix="news_tts_slides_") as tmp:
+        segments = []
+        durations = []
+        for i, (slide, narration) in enumerate(zip(slides, narrations)):
+            slide_path = os.path.join(tmp, f"slide_{i:02d}.jpg")
+            with open(slide_path, "wb") as f:
+                f.write(slide.getvalue())
+            if narration:
+                audio_path = os.path.join(tmp, f"voice_{i:02d}.mp3")
+                logger.info("SLIDESHOW TTS: synthesizing slide %d/%d (%d chars)", i + 1, len(slides), len(narration))
+                _openai_tts_speech(narration, audio_path)
+                voice_duration = _slideshow_audio_duration(audio_path)
+                duration = max(2.0, voice_duration + 0.45)
+            else:
+                audio_path = None
+                duration = 5.0
+            durations.append(duration)
+            segment_path = os.path.join(tmp, f"segment_{i:02d}.mp4")
+            # Render one slide at a time. Single-thread 720px encoding is Render-friendly.
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                   "-loop", "1", "-framerate", "12", "-i", slide_path]
+            if audio_path:
+                cmd += ["-i", audio_path]
+            else:
+                cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+            cmd += ["-t", f"{duration:.3f}",
+                    "-vf", "scale=720:-2:flags=fast_bilinear,setsar=1,format=yuv420p",
+                    "-r", "12", "-threads", "1", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-crf", "27", "-x264-params", "threads=1:lookahead-threads=1",
+                    "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "96k",
+                    "-af", "apad", "-movflags", "+faststart", segment_path]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180)
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError("FFmpeg (озвученный слайд): " + (exc.stderr or "")[-500:]) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("FFmpeg слишком долго кодирует озвученный слайд.") from exc
+            segments.append(segment_path)
+        concat_path = os.path.join(tmp, "segments.txt")
+        with open(concat_path, "w", encoding="utf-8") as f:
+            for segment in segments:
+                f.write("file '" + os.path.basename(segment) + "'\n")
+        output_path = os.path.join(tmp, "news_slideshow_tts.mp4")
+        # Concat with stream copy: no costly second full-video encode.
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+               "-f", "concat", "-safe", "0", "-i", concat_path,
+               "-c", "copy", "-movflags", "+faststart", output_path]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=90)
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError("FFmpeg (объединение слайдов): " + (exc.stderr or "")[-500:]) from exc
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 1024:
+            raise RuntimeError("FFmpeg не создал итоговое видео.")
+        size = os.path.getsize(output_path)
+        if size > 49 * 1024 * 1024:
+            raise RuntimeError("Озвученное видео больше 49 МБ. Уменьшите объём текста.")
+        logger.info("SLIDESHOW TTS: MP4 ready, slides=%d, duration=%.1fs, size=%.1fMB",
+                    len(slides), sum(durations), size / (1024 * 1024))
+        with open(output_path, "rb") as f:
+            video = BytesIO(f.read())
+        video.name = "news_slideshow_tts.mp4"
+        return video, sum(durations)
+
+
 def make_news_slideshow_video(slides, audio_type="silent", seconds_per_slide=5):
     """Encode the exact same designed JPEG slides as a Telegram-friendly MP4."""
     import tempfile
@@ -3812,7 +3940,7 @@ def on_slideshow_callback(c):
         if st.get("step") != "slideshow_audio":
             return
         audio_type = choice[len("audio_"):]
-        if audio_type not in ("silent", "важная", "обычная"):
+        if audio_type not in ("silent", "важная", "обычная", "openai_tts"):
             return
     else:
         return
@@ -3835,17 +3963,22 @@ def _slideshow_worker(chat_id, uid, st, fmt, mode, count, audio_type):
         slides = make_news_slideshow(current_photos, st["slideshow_title"], st["slideshow_body"], fmt)
         logger.info("SLIDESHOW: images rendered: %d", len(slides))
         if mode == "video":
-            send_message_with_retry(chat_id, "🎞 Слайды готовы. Кодирую MP4, это может занять 1–3 минуты...")
+            send_message_with_retry(chat_id, "🎙 Слайды готовы. Создаю озвучку OpenAI и собираю MP4, это может занять несколько минут..." if audio_type == "openai_tts" else "🎞 Слайды готовы. Кодирую MP4, это может занять 1–3 минуты...")
             if not _slideshow_encoding_lock.acquire(blocking=False):
                 raise RuntimeError("Другое слайд-шоу уже кодируется. Повторите запрос после завершения.")
             try:
-                video = make_news_slideshow_video(slides, audio_type, seconds_per_slide=5)
+                if audio_type == "openai_tts":
+                    video, video_duration = make_news_slideshow_tts_video(
+                        slides, st["slideshow_title"], st["slideshow_body"], fmt)
+                else:
+                    video = make_news_slideshow_video(slides, audio_type, seconds_per_slide=5)
+                    video_duration = len(slides) * 5
             finally:
                 _slideshow_encoding_lock.release()
             logger.info("SLIDESHOW: uploading MP4 to Telegram")
             w, h = SLIDE_FORMATS[fmt]
             w, h = 720, round(h * 720 / w)
-            sent = send_video_with_retry(chat_id, video, caption=f"🎬 Новостное слайд-шоу · {len(slides)} слайдов по 5 секунд", width=w, height=h)
+            sent = send_video_with_retry(chat_id, video, caption=(f"🎙 Новостное слайд-шоу с озвучкой · {len(slides)} слайдов · {round(video_duration)} сек." if audio_type == "openai_tts" else f"🎬 Новостное слайд-шоу · {len(slides)} слайдов по 5 секунд"), width=w, height=h)
             if sent is None:
                 raise RuntimeError("Telegram не принял готовое MP4-видео. Проверьте размер файла и логи Render.")
             send_message_with_retry(chat_id, "✅ Готово! MP4-видео отправлено.", reply_markup=main_menu_kb())
