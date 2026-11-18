@@ -3492,7 +3492,11 @@ def _slide_join_units(units):
         result += unit
     return result.strip()
 
-def _slide_paginate(title, body, fmt):
+def _slideshow_page_count(photo_count):
+    """1-5 photos: 5 slides; 6-10 photos: 10 slides. Exactly 5 -> 5."""
+    return 10 if photo_count >= 6 else 5
+
+def _slide_paginate(title, body, fmt, page_count=5):
     sentences = _slide_sentences(body)
     if not sentences:
         raise ValueError("В посте отсутствует текст статьи. Добавьте текст после заголовка.")
@@ -3501,7 +3505,7 @@ def _slide_paginate(title, body, fmt):
     max_w = w - 2 * margin
     draw = ImageDraw.Draw(Image.new("RGB", (4, 4)))
     # A page boundary is permitted only between complete sentences.
-    # Find the largest readable font that fits all sentences on five pages.
+    # Find the largest readable font that fits complete sentences on the requested number of pages.
     for body_size in range(43, 15, -1):
         title_size = min(78, max(45, round(body_size * 1.7)))
         title_font = _slide_font(title_size, True)
@@ -3510,7 +3514,7 @@ def _slide_paginate(title, body, fmt):
         if title_h > h * .40:
             continue
         body_font = _slide_font(body_size)
-        available = [h - 115 - (156 + title_h + 32)] + [h - 115 - (156 + 56)] * 4
+        available = [h - 115 - (156 + title_h + 32)] + [h - 115 - (156 + 56)] * (page_count - 1)
         # Use DP to balance page fill while respecting full sentences.
         n = len(sentences)
         prefix = [0]
@@ -3526,7 +3530,7 @@ def _slide_paginate(title, body, fmt):
             return cache[key] <= available[page]
         # Page 0 may have a smaller capacity due to the headline.
         states = {0: (0.0, [])}
-        for page in range(5):
+        for page in range(page_count):
             nxt = {}
             for start, (cost, bounds) in states.items():
                 for end in range(start, n + 1):
@@ -3534,7 +3538,7 @@ def _slide_paginate(title, body, fmt):
                         break
                     # Encourage spreading text across five slides without splitting sentences.
                     words = prefix[end] - prefix[start]
-                    target = prefix[-1] / 5
+                    target = prefix[-1] / page_count
                     penalty = ((words - target) / max(target, 1)) ** 2
                     if end == start:
                         penalty += 3.0
@@ -3548,14 +3552,15 @@ def _slide_paginate(title, body, fmt):
             bounds = states[n][1]
             pages = [_slide_join_units(sentences[start:end]) for start, end in bounds]
             return pages, body_size, title_size
-    raise ValueError("Статья слишком длинная для 5 слайдов без разрыва предложений. Сократите текст или используйте более короткие предложения.")
+    raise ValueError(f"Статья слишком длинная для {page_count} слайдов без разрыва предложений. Сократите текст или используйте более короткие предложения.")
 
 def make_news_slideshow(photos, title, body, fmt):
     if not photos:
         raise ValueError("Для слайд-шоу нужна хотя бы одна фотография.")
     if not title.strip():
         raise ValueError("Не найден заголовок поста.")
-    pages, body_size, title_size = _slide_paginate(title, body, fmt)
+    page_count = _slideshow_page_count(len(photos))
+    pages, body_size, title_size = _slide_paginate(title, body, fmt, page_count)
     w, h = SLIDE_FORMATS[fmt]
     margin = 76 if fmt == "square" else 86
     results = []
@@ -3572,7 +3577,7 @@ def make_news_slideshow(photos, title, body, fmt):
         draw.line((margin, h - 115, w - margin, h - 115), fill=(220, 220, 220), width=2)
         footer_font = _slide_font(26, True)
         draw.text((margin, h - 91), "MINSK NEWS", font=footer_font, fill=(240, 240, 240))
-        count_text = f"{i+1:02d} / 05"
+        count_text = f"{i+1:02d} / {page_count:02d}"
         bb = draw.textbbox((0, 0), count_text, font=footer_font)
         draw.text((w - margin - (bb[2]-bb[0]), h - 91), count_text, font=footer_font, fill=(240, 240, 240))
         y = 156
@@ -3684,7 +3689,8 @@ def on_slideshow_callback(c):
             return
         st["slideshow_mode"] = "video" if choice == "mode_video" else "photo"
         st["step"] = "slideshow_format"
-        send_message_with_retry(chat_id, "📐 Выберите размер пяти слайдов:", reply_markup=slideshow_format_kb())
+        count = _slideshow_page_count(len(st.get("slideshow_photos") or []))
+        send_message_with_retry(chat_id, f"📐 Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
         return
     if choice in SLIDE_FORMATS:
         if st.get("step") != "slideshow_format":
@@ -3707,20 +3713,21 @@ def on_slideshow_callback(c):
     st["step"] = "slideshow_processing"
     fmt = st["slideshow_format"]
     mode = st.get("slideshow_mode", "photo")
-    send_message_with_retry(chat_id, "⏳ Создаю 5 слайдов с полным текстом статьи...")
+    count = _slideshow_page_count(len(st.get("slideshow_photos") or []))
+    send_message_with_retry(chat_id, f"⏳ Создаю {count} слайдов с полным текстом статьи...")
     try:
         slides = make_news_slideshow(st["slideshow_photos"], st["slideshow_title"], st["slideshow_body"], fmt)
         if mode == "video":
             video = make_news_slideshow_video(slides, audio_type)
             w, h = SLIDE_FORMATS[fmt]
-            sent = send_video_with_retry(chat_id, video, caption="🎬 Новостное слайд-шоу · 5 слайдов", width=w, height=h)
+            sent = send_video_with_retry(chat_id, video, caption=f"🎬 Новостное слайд-шоу · {len(slides)} слайдов", width=w, height=h)
             if sent is None:
                 raise RuntimeError("Telegram не принял готовое MP4-видео. Проверьте размер файла и логи Render.")
             send_message_with_retry(chat_id, "✅ Готово! MP4-видео отправлено.", reply_markup=main_menu_kb())
         else:
             media = [InputMediaPhoto(media=slide) for slide in slides]
             bot.send_media_group(chat_id, media)
-            send_message_with_retry(chat_id, "✅ Готово! Все 5 слайдов отправлены как фотографии в одном альбоме.", reply_markup=main_menu_kb())
+            send_message_with_retry(chat_id, f"✅ Готово! Все {len(slides)} слайдов отправлены как фотографии в одном альбоме.", reply_markup=main_menu_kb())
         st["step"] = "idle"
     except Exception as exc:
         logger.exception("Slideshow generation failed")
