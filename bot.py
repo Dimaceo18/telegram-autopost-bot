@@ -4956,6 +4956,151 @@ def on_article_action(c):
 
 
 # =========================
+# ВИДЕО ИЗ ОТДЕЛЬНОГО РОЛИКА
+# =========================
+def direct_video_title_kb(has_title):
+    kb = InlineKeyboardMarkup(row_width=2)
+    if has_title:
+        kb.add(InlineKeyboardButton("📝 Из подписи", callback_data="dv:title_keep"))
+    kb.add(InlineKeyboardButton("✏️ Свой", callback_data="dv:title_custom"),
+           InlineKeyboardButton("⏭ Без текста", callback_data="dv:title_none"),
+           InlineKeyboardButton("❌ Отмена", callback_data="dv:cancel"))
+    return kb
+
+def direct_video_audio_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("🎵 Оригинал", callback_data="dv:audio_original"),
+           InlineKeyboardButton("📢 Важное", callback_data="dv:audio_важная"),
+           InlineKeyboardButton("🎵 Обычное", callback_data="dv:audio_обычная"),
+           InlineKeyboardButton("🔇 Без звука", callback_data="dv:audio_silent"))
+    return kb
+
+def direct_video_format_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("📱 4:5", callback_data="dv:format_4x5"),
+           InlineKeyboardButton("📱 9:16", callback_data="dv:format_9x16"))
+    return kb
+
+def direct_video_mode_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("🎬 На всё видео", callback_data="dv:mode_full"),
+           InlineKeyboardButton("📌 Первые 5 секунд", callback_data="dv:mode_5sec"))
+    return kb
+
+def render_direct_video(uid, chat_id):
+    st = user_state.get(uid, {})
+    import tempfile
+    from pathlib import Path
+    status = bot.send_message(chat_id, "⏳ Обрабатываю видео, подождите...")
+    try:
+        with tempfile.TemporaryDirectory(prefix="video_bot_") as folder:
+            folder = Path(folder)
+            src = folder / "input.mp4"
+            src.write_bytes(tg_file_bytes(st["direct_video_file_id"]))
+            dest = folder / "output.mp4"
+            fmt = VIDEO_FORMATS[st.get("direct_video_format", "4x5")]
+            w, h = fmt["width"], fmt["height"]
+            title = st.get("direct_video_title", "")
+            no_text = st.get("direct_video_no_text", False)
+            overlay = folder / "overlay.png"
+            if not no_text and title:
+                layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+                alpha = Image.new("L", (1, int(h * CHP_GRADIENT_PCT)))
+                for y in range(alpha.height):
+                    alpha.putpixel((0, y), int(220 * y / max(1, alpha.height - 1)))
+                alpha = alpha.resize((w, alpha.height))
+                black = Image.new("RGBA", (w, alpha.height), (0, 0, 0, 0))
+                black.putalpha(alpha)
+                layer.alpha_composite(black, (0, h - alpha.height))
+                draw = ImageDraw.Draw(layer)
+                clean = clean_title_for_card(title).upper()
+                font, lines, heights, spacing, total_h = fit_text_block(
+                    draw, clean, FONT_CHP, int(w * .88), int(h * MN_TITLE_ZONE_PCT),
+                    max_lines=6, start_size=int(h * .11), min_size=16, line_spacing_ratio=.22)
+                line_h = font.size
+                y = h - int(h * .08) - len(lines)*line_h - max(0,len(lines)-1)*2
+                for line in lines:
+                    draw.text((int(w * .06), y), line, font=font, fill="white")
+                    y += line_h + 2
+                layer.save(overlay)
+            vf = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,eq=brightness=-0.035"
+            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src)]
+            if overlay.exists():
+                cmd += ["-loop", "1", "-i", str(overlay)]
+            audio_type = st.get("direct_video_audio", "original")
+            audio_path = folder / "music.mp3"
+            if audio_type in ("важная", "обычная"):
+                response = requests.get(AUDIO_URLS[audio_type], timeout=30)
+                response.raise_for_status()
+                audio_path.write_bytes(response.content)
+                cmd += ["-stream_loop", "-1", "-i", str(audio_path)]
+            if overlay.exists():
+                duration = st.get("direct_video_mode", "full")
+                enabled = "" if duration == "full" else ":enable='lt(t,5)'"
+                cmd += ["-filter_complex", f"[0:v]{vf}[base];[base][1:v]overlay=0:0:shortest=1{enabled}[v]", "-map", "[v]"]
+            else:
+                cmd += ["-vf", vf, "-map", "0:v:0"]
+            if audio_type in ("важная", "обычная"):
+                audio_idx = 2 if overlay.exists() else 1
+                cmd += ["-map", f"{audio_idx}:a:0", "-shortest"]
+            elif audio_type == "original":
+                cmd += ["-map", "0:a?", "-shortest"]
+            else:
+                cmd += ["-an"]
+            cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
+                    "-r", "25", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(dest)]
+            subprocess.run(cmd, check=True, capture_output=True, timeout=600)
+            if not dest.exists() or dest.stat().st_size == 0:
+                raise RuntimeError("FFmpeg не создал файл")
+            with dest.open("rb") as video:
+                bot.send_video(chat_id, video, caption=st.get("direct_video_caption", "")[:950],
+                               supports_streaming=True, width=w, height=h, timeout=180)
+        bot.edit_message_text("✅ Видео готово!", chat_id, status.message_id)
+        clear_state(uid)
+    except Exception as exc:
+        logger.exception("Direct video processing failed")
+        bot.edit_message_text(f"❌ Не удалось обработать видео: {str(exc)[:350]}", chat_id, status.message_id)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("dv:"))
+def on_direct_video_callback(c):
+    bot.answer_callback_query(c.id)
+    uid = c.from_user.id
+    st = user_state.get(uid, {})
+    if c.data == "dv:cancel":
+        clear_state(uid)
+        bot.send_message(c.message.chat.id, "❌ Отменено")
+        return
+    if not st.get("direct_video_file_id"):
+        bot.send_message(c.message.chat.id, "Сначала нажмите 🎬 Сделать видео и отправьте ролик.")
+        return
+    action, value = c.data[3:].split("_", 1) if "_" in c.data[3:] else (c.data[3:], "")
+    if action == "title":
+        if value == "custom":
+            st["step"] = "direct_video_title_input"
+            bot.send_message(c.message.chat.id, "✏️ Пришлите заголовок одним сообщением:")
+            return
+        if value == "none":
+            st["direct_video_title"] = ""
+            st["direct_video_no_text"] = True
+        else:
+            st["direct_video_no_text"] = False
+        st["step"] = "direct_video_audio"
+        bot.send_message(c.message.chat.id, "🎵 Выберите звук:", reply_markup=direct_video_audio_kb())
+    elif action == "audio":
+        st["direct_video_audio"] = value
+        st["step"] = "direct_video_format"
+        bot.send_message(c.message.chat.id, "📱 Выберите формат:", reply_markup=direct_video_format_kb())
+    elif action == "format":
+        st["direct_video_format"] = value
+        st["step"] = "direct_video_mode"
+        bot.send_message(c.message.chat.id, "🎬 Где показывать заголовок?", reply_markup=direct_video_mode_kb())
+    elif action == "mode":
+        st["direct_video_mode"] = value
+        st["step"] = "direct_video_processing"
+        threading.Thread(target=render_direct_video, args=(uid, c.message.chat.id), daemon=True).start()
+    user_state[uid] = st
+
+# =========================
 # ОБРАБОТЧИКИ СООБЩЕНИЙ
 # =========================
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
@@ -5233,6 +5378,16 @@ def on_text(message):
     text = message.text.strip() if message.text else ""
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
     
+    if text == BTN_MAKE_VIDEO:
+        user_state[uid] = {"step": "direct_video_wait", "template": "MN"}
+        bot.reply_to(message, "🎬 Пришлите видео (можно с подписью). Затем выберем заголовок, звук, формат и длительность наложения.")
+        return
+    if st.get("step") == "direct_video_title_input":
+        st["direct_video_title"] = text
+        st["step"] = "direct_video_audio"
+        user_state[uid] = st
+        bot.reply_to(message, "🎵 Выберите звук:", reply_markup=direct_video_audio_kb())
+        return
     if text == BTN_POST:
         cmd_post(message)
         return
@@ -5651,6 +5806,17 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
             return
     
+    if st.get("step") == "direct_video_wait" and message.video:
+        if getattr(message.video, "file_size", 0) > MAX_FILE_SIZE:
+            bot.reply_to(message, "❌ Видео превышает лимит 50 МБ.")
+            return
+        st.update(direct_video_file_id=message.video.file_id,
+                  direct_video_caption=message.caption or "",
+                  direct_video_title=extract_title_from_text(message.caption or ""),
+                  step="direct_video_title")
+        user_state[uid] = st
+        bot.reply_to(message, "📝 Выберите заголовок для видео:", reply_markup=direct_video_title_kb(bool(st["direct_video_title"])))
+        return
     step = st.get("step")
     
     if step == "waiting_photo_first" or step == "waiting_photo" or step == "waiting_photo_am2" or step == "waiting_photo_fdr_post" or step == "waiting_photo_fdr_story":
