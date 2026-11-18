@@ -3414,15 +3414,47 @@ def _slide_page_layout(title, chunks, fmt, body_size, title_size):
     lines = [_slide_wrap(dummy, chunk, body_font, max_w) for chunk in chunks]
     return lines, title_lines, title_h, max_body_h
 
+def _slide_remove_trailing_source(body):
+    """Remove only a trailing source attribution, preserving article text."""
+    body = (body or "").strip()
+    # Standalone final line: Источник: ... / Источники: ...
+    body = re.sub(r"(?im)\n\s*(?:источник|источники)\s*[:：–—-]\s*[^\n]*\s*$", "", body).strip()
+    # Attribution appended to the final paragraph (typically after a full stop).
+    body = re.sub(r"(?i)(?<=\.)\s+(?:источник|источники)\s*[:：–—-]\s*[^\n]*\s*$", "", body).strip()
+    # Link-only attribution, without colon, on the last line.
+    body = re.sub(r"(?im)\n\s*(?:источник|источники)\s+https?://\S+\s*$", "", body).strip()
+    return body
+
+
+def _slide_sentences(body):
+    """Split at sentence boundaries without splitting common abbreviations."""
+    body = _slide_remove_trailing_source(body)
+    if not body:
+        return []
+    # Protect decimal points and common Russian abbreviations.
+    token = "\uE000"
+    protected = re.sub(r"(?<=\d)\.(?=\d)", token, body)
+    abbreviations = ("т.д.", "т.п.", "т.е.", "т.к.", "и т.д.", "и т.п.",
+                     "г.", "ул.", "д.", "стр.", "им.", "руб.", "млн.", "млрд.",
+                     "тыс.", "ок.", "рис.", "см.")
+    for abbr in sorted(abbreviations, key=len, reverse=True):
+        protected = re.sub(re.escape(abbr), lambda m: m.group().replace(".", token), protected, flags=re.I)
+    # A sentence ends only before a whitespace followed by the next sentence.
+    pieces = re.split(r"(?<=[.!?…])(?:[\"»”’)]*)\s+(?=[\"«„“(]*[А-ЯЁA-Z0-9])", protected)
+    # Restore abbreviation periods and preserve all source words.
+    return [x.replace(token, ".").strip() for x in pieces if x.strip()]
+
+
 def _slide_paginate(title, body, fmt):
-    words = body.split()
-    if not words:
+    sentences = _slide_sentences(body)
+    if not sentences:
         raise ValueError("В посте отсутствует текст статьи. Добавьте текст после заголовка.")
     w, h = SLIDE_FORMATS[fmt]
     margin = 86 if fmt == "4x5" else 76
     max_w = w - 2 * margin
     draw = ImageDraw.Draw(Image.new("RGB", (4, 4)))
-    # Try readable body sizes first; never silently drop or truncate words.
+    # A page boundary is permitted only between complete sentences.
+    # Find the largest readable font that fits all sentences on five pages.
     for body_size in range(43, 15, -1):
         title_size = min(78, max(45, round(body_size * 1.7)))
         title_font = _slide_font(title_size, True)
@@ -3432,30 +3464,44 @@ def _slide_paginate(title, body, fmt):
             continue
         body_font = _slide_font(body_size)
         available = [h - 115 - (156 + title_h + 32)] + [h - 115 - (156 + 56)] * 4
-        pages = [[] for _ in range(5)]
-        cursor = 0
-        for page_idx in range(5):
-            # Distribute text across all five slides, with measured height limits.
-            remaining = len(words) - cursor
-            slots = 5 - page_idx
-            target = (remaining + slots - 1) // slots
-            best = 0
-            for n in range(1, remaining + 1):
-                chunk = " ".join(words[cursor:cursor+n])
+        # Use DP to balance page fill while respecting full sentences.
+        n = len(sentences)
+        prefix = [0]
+        for sentence in sentences:
+            prefix.append(prefix[-1] + len(sentence.split()))
+        cache = {}
+        def fits(start, end, page):
+            key = (start, end)
+            if key not in cache:
+                chunk = " ".join(sentences[start:end])
                 lines = _slide_wrap(draw, chunk, body_font, max_w)
-                if _slide_lines_height(lines, body_size) > available[page_idx]:
-                    break
-                best = n
-                if n >= target and page_idx < 4:
-                    break
-            if best == 0 and remaining:
+                cache[key] = _slide_lines_height(lines, body_size)
+            return cache[key] <= available[page]
+        # Page 0 may have a smaller capacity due to the headline.
+        states = {0: (0.0, [])}
+        for page in range(5):
+            nxt = {}
+            for start, (cost, bounds) in states.items():
+                for end in range(start, n + 1):
+                    if end > start and not fits(start, end, page):
+                        break
+                    # Encourage spreading text across five slides without splitting sentences.
+                    words = prefix[end] - prefix[start]
+                    target = prefix[-1] / 5
+                    penalty = ((words - target) / max(target, 1)) ** 2
+                    if end == start:
+                        penalty += 3.0
+                    score = cost + penalty
+                    if end not in nxt or score < nxt[end][0]:
+                        nxt[end] = (score, bounds + [(start, end)])
+            states = nxt
+            if not states:
                 break
-            pages[page_idx] = words[cursor:cursor+best]
-            cursor += best
-        if cursor == len(words):
-            # Empty pages only when the source contains fewer than five words.
-            return [" ".join(x) for x in pages], body_size, title_size
-    raise ValueError("Статья слишком длинная для 5 слайдов с читаемым шрифтом. Сократите текст.")
+        if n in states:
+            bounds = states[n][1]
+            pages = [" ".join(sentences[start:end]) for start, end in bounds]
+            return pages, body_size, title_size
+    raise ValueError("Статья слишком длинная для 5 слайдов без разрыва предложений. Сократите текст или используйте более короткие предложения.")
 
 def make_news_slideshow(photos, title, body, fmt):
     if not photos:
