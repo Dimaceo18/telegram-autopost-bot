@@ -3579,7 +3579,7 @@ def _slide_paginate(title, body, fmt, page_count=5):
     draw = ImageDraw.Draw(Image.new("RGB", (4, 4)))
     # A page boundary is permitted only between complete sentences.
     # Find the largest readable font that fits complete sentences on the requested number of pages.
-    for body_size in range(43, 15, -1):
+    for body_size in range(56, 19, -1):
         title_size = min(78, max(45, round(body_size * 1.7)))
         title_font = _slide_font(title_size, True)
         title_lines = _slide_wrap(draw, title.upper(), title_font, max_w)
@@ -3710,7 +3710,7 @@ def make_news_slideshow_video(slides, audio_type="silent", seconds_per_slide=4):
                 out.write(f"file 'slide_{i:02d}.jpg'\n")
                 out.write(f"duration {seconds_per_slide}\n")
             out.write(f"file 'slide_{len(slides)-1:02d}.jpg'\n")
-        command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                    "-safe", "0", "-f", "concat", "-i", concat_file]
         if audio_type != "silent":
             data = download_audio_from_github(audio_type)
@@ -3720,8 +3720,14 @@ def make_news_slideshow_video(slides, audio_type="silent", seconds_per_slide=4):
             with open(audio_path, "wb") as out:
                 out.write(data)
             command += ["-stream_loop", "-1", "-i", audio_path]
-        command += ["-t", str(len(slides) * seconds_per_slide), "-r", "24",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+        # Keep video encoding within the RAM budget of a small Render instance.
+        # The designed JPEG slides remain 1080px; only the MP4 is downscaled.
+        # 12 fps is enough for still-image slides and greatly reduces encoder load.
+        command += ["-t", str(len(slides) * seconds_per_slide),
+                    "-vf", "scale=720:-2:flags=fast_bilinear,setsar=1",
+                    "-r", "12", "-threads", "1",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "27",
+                    "-x264-params", "threads=1:lookahead-threads=1",
                     "-pix_fmt", "yuv420p"]
         if audio_type != "silent":
             command += ["-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-b:a", "128k"]
@@ -3729,7 +3735,7 @@ def make_news_slideshow_video(slides, audio_type="silent", seconds_per_slide=4):
             command += ["-an"]
         output_path = os.path.join(tmp, "news_slideshow.mp4")
         command += ["-movflags", "+faststart", output_path]
-        logger.info("SLIDESHOW: FFmpeg started; slides=%d, duration=%ds, audio=%s", len(slides), len(slides) * seconds_per_slide, audio_type)
+        logger.info("SLIDESHOW: FFmpeg started (low RAM 720px/12fps/1 thread); slides=%d, duration=%ds, audio=%s", len(slides), len(slides) * seconds_per_slide, audio_type)
         started = time.monotonic()
         try:
             result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=240)
@@ -3862,6 +3868,7 @@ def _slideshow_worker(chat_id, uid, st, fmt, mode, count, audio_type):
                 _slideshow_encoding_lock.release()
             logger.info("SLIDESHOW: uploading MP4 to Telegram")
             w, h = SLIDE_FORMATS[fmt]
+            w, h = 720, round(h * 720 / w)
             sent = send_video_with_retry(chat_id, video, caption=f"🎬 Новостное слайд-шоу · {len(slides)} слайдов", width=w, height=h)
             if sent is None:
                 raise RuntimeError("Telegram не принял готовое MP4-видео. Проверьте размер файла и логи Render.")
