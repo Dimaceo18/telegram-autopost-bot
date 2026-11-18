@@ -2826,7 +2826,7 @@ def process_album_to_video(uid: int, media_group_id: str, chat_id: int):
     )
 
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("album_video:"))
+@bot.callback_query_handler(func=lambda c: c.data.startswith("album_video:") and not c.data.startswith(("album_video:audio_", "album_video:format_", "album_video:mode_")))
 def on_album_video_callback(c):
     uid = c.from_user.id
     action = c.data.split(":")[1]
