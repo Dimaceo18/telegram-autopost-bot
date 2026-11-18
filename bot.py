@@ -3562,77 +3562,57 @@ def _slideshow_page_count(photo_count):
     return 10 if photo_count >= 6 else 5
 
 def _slide_paginate(title, body, fmt, page_count=5):
-    sentences = _slide_sentences(body)
-    if not sentences:
+    """Fill consecutive slides from the first one; balance text across used slides.
+
+    Short articles occupy only the first slides. Longer articles are spread
+    evenly across all slides, without empty gaps or dropped words.
+    """
+    text = _slide_remove_trailing_source(body).strip()
+    words = text.split()
+    if not words:
         raise ValueError("В посте отсутствует текст статьи. Добавьте текст после заголовка.")
-    # For a single picture, the article must occupy ALL five slides, in order.
-    # If fewer than five complete sentences exist, divide longer sentences into
-    # contiguous word groups rather than leaving intermediate pages empty.
-    if page_count == 5 and len(sentences) < 5:
-        words = _slide_join_units(sentences).split()
-        if len(words) >= 5:
-            sentences = [" ".join(words[(i * len(words)) // 5:((i + 1) * len(words)) // 5])
-                         for i in range(5)]
+    # Around 14 words per slide is a readable pace for a 5-second news slide.
+    # Very short posts are placed at the beginning, never at the end.
+    used = min(page_count, max(1, (len(words) + 13) // 14))
     w, h = SLIDE_FORMATS[fmt]
     margin = 76 if fmt == "square" else 86
     max_w = w - 2 * margin
     draw = ImageDraw.Draw(Image.new("RGB", (4, 4)))
-    # A page boundary is permitted only between complete sentences.
-    # Find the largest readable font that fits complete sentences on the requested number of pages.
+    # Preserve the full text in its original order, split on word boundaries.
+    # Choose the largest font that fits every active slide, including the title.
     for body_size in range(56, 19, -1):
         title_size = min(78, max(45, round(body_size * 1.7)))
-        title_font = _slide_font(title_size, True)
-        title_lines = _slide_wrap(draw, title.upper(), title_font, max_w)
+        title_lines = _slide_wrap(draw, title.upper(), _slide_font(title_size, True), max_w)
         title_h = _slide_lines_height(title_lines, title_size, .20)
         if title_h > h * .40:
             continue
-        body_font = _slide_font(body_size)
-        available = [h - 115 - (156 + title_h + 32)] + [h - 115 - (156 + 56)] * (page_count - 1)
-        # Use DP to balance page fill while respecting full sentences.
-        n = len(sentences)
-        prefix = [0]
-        for sentence in sentences:
-            prefix.append(prefix[-1] + len(sentence.split()))
-        cache = {}
-        def fits(start, end, page):
-            key = (start, end)
-            if key not in cache:
-                chunk = _slide_join_units(sentences[start:end])
-                lines = _slide_wrap(draw, chunk, body_font, max_w)
-                cache[key] = _slide_lines_height(lines, body_size)
-            return cache[key] <= available[page]
-        # Page 0 may have a smaller capacity due to the headline.
-        states = {0: (0.0, [])}
-        for page in range(page_count):
-            nxt = {}
-            for start, (cost, bounds) in states.items():
-                for end in range(start, n + 1):
-                    if end > start and not fits(start, end, page):
-                        break
-                    # Encourage spreading text across five slides without splitting sentences.
-                    words = prefix[end] - prefix[start]
-                    target = prefix[-1] / page_count
-                    penalty = ((words - target) / max(target, 1)) ** 2
-                    if end == start:
-                        # Single-photo slideshows use all five pages, without gaps.
-                        if page_count == 5 and n >= 5:
-                            continue
-                        if start < n:
-                            continue
-                        penalty = 0.0
-                    if page_count == 5 and n >= 5 and n - end < page_count - page - 1:
-                        continue
-                    score = cost + penalty
-                    if end not in nxt or score < nxt[end][0]:
-                        nxt[end] = (score, bounds + [(start, end)])
-            states = nxt
-            if not states:
+        capacity = [h - 115 - (156 + title_h + 32)] + [h - 115 - (156 + 56)] * (page_count - 1)
+        font = _slide_font(body_size)
+        # Try a balanced division first; if the headline takes extra space,
+        # allow a slightly smaller first portion while keeping pages contiguous.
+        def page_height(chunk):
+            return _slide_lines_height(_slide_wrap(draw, chunk, font, max_w), body_size)
+        bounds = [0]
+        feasible = True
+        for i in range(used):
+            start = bounds[-1]
+            remaining_pages = used - i
+            remaining_words = len(words) - start
+            if i == used - 1:
+                end = len(words)
+            else:
+                ideal = max(1, round(remaining_words / remaining_pages))
+                end = min(len(words) - (remaining_pages - 1), start + ideal)
+                while end > start + 1 and page_height(" ".join(words[start:end])) > capacity[i]:
+                    end -= 1
+            if end <= start or page_height(" ".join(words[start:end])) > capacity[i]:
+                feasible = False
                 break
-        if n in states:
-            bounds = states[n][1]
-            pages = [_slide_join_units(sentences[start:end]) for start, end in bounds]
-            return pages, body_size, title_size
-    raise ValueError(f"Статья слишком длинная для {page_count} слайдов без разрыва предложений. Сократите текст или используйте более короткие предложения.")
+            bounds.append(end)
+        if feasible and bounds[-1] == len(words):
+            pages = [" ".join(words[bounds[i]:bounds[i+1]]) for i in range(used)]
+            return pages + [""] * (page_count - used), body_size, title_size
+    raise ValueError(f"Текст не помещается на {page_count} слайдах. Сократите текст или выберите другой формат.")
 
 def make_news_slideshow(photos, title, body, fmt):
     if not photos:
@@ -3696,7 +3676,7 @@ def make_news_slideshow(photos, title, body, fmt):
 
 _slideshow_encoding_lock = threading.Lock()
 
-def make_news_slideshow_video(slides, audio_type="silent", seconds_per_slide=4):
+def make_news_slideshow_video(slides, audio_type="silent", seconds_per_slide=5):
     """Encode the exact same designed JPEG slides as a Telegram-friendly MP4."""
     import tempfile
     import subprocess
@@ -3863,13 +3843,13 @@ def _slideshow_worker(chat_id, uid, st, fmt, mode, count, audio_type):
             if not _slideshow_encoding_lock.acquire(blocking=False):
                 raise RuntimeError("Другое слайд-шоу уже кодируется. Повторите запрос после завершения.")
             try:
-                video = make_news_slideshow_video(slides, audio_type)
+                video = make_news_slideshow_video(slides, audio_type, seconds_per_slide=5)
             finally:
                 _slideshow_encoding_lock.release()
             logger.info("SLIDESHOW: uploading MP4 to Telegram")
             w, h = SLIDE_FORMATS[fmt]
             w, h = 720, round(h * 720 / w)
-            sent = send_video_with_retry(chat_id, video, caption=f"🎬 Новостное слайд-шоу · {len(slides)} слайдов", width=w, height=h)
+            sent = send_video_with_retry(chat_id, video, caption=f"🎬 Новостное слайд-шоу · {len(slides)} слайдов по 5 секунд", width=w, height=h)
             if sent is None:
                 raise RuntimeError("Telegram не принял готовое MP4-видео. Проверьте размер файла и логи Render.")
             send_message_with_retry(chat_id, "✅ Готово! MP4-видео отправлено.", reply_markup=main_menu_kb())
