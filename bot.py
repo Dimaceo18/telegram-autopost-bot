@@ -13,6 +13,7 @@ import tempfile
 import shutil
 import traceback
 import subprocess
+import random
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urljoin
@@ -3605,6 +3606,8 @@ def make_news_slideshow(photos, title, body, fmt):
         results.append(out)
     return results
 
+_slideshow_encoding_lock = threading.Lock()
+
 def make_news_slideshow_video(slides, audio_type="silent", seconds_per_slide=4):
     """Encode the exact same designed JPEG slides as a Telegram-friendly MP4."""
     import tempfile
@@ -3638,12 +3641,22 @@ def make_news_slideshow_video(slides, audio_type="silent", seconds_per_slide=4):
             command += ["-an"]
         output_path = os.path.join(tmp, "news_slideshow.mp4")
         command += ["-movflags", "+faststart", output_path]
+        logger.info("SLIDESHOW: FFmpeg started; slides=%d, duration=%ds, audio=%s", len(slides), len(slides) * seconds_per_slide, audio_type)
+        started = time.monotonic()
         try:
-            subprocess.run(command, check=True, capture_output=True, text=True, timeout=240)
+            result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=240)
+            logger.info("SLIDESHOW: FFmpeg completed in %.1fs", time.monotonic() - started)
+        except subprocess.TimeoutExpired as exc:
+            logger.exception("SLIDESHOW: FFmpeg exceeded 240 seconds")
+            raise RuntimeError("Обработка видео превысила 4 минуты. Попробуйте меньше фотографий или другой формат.") from exc
         except FileNotFoundError as exc:
             raise RuntimeError("На сервере не установлен FFmpeg.") from exc
         except subprocess.CalledProcessError as exc:
             raise RuntimeError("FFmpeg: " + (exc.stderr or "Ошибка кодирования")[-700:]) from exc
+        size_mb = os.path.getsize(output_path) / (1024 * 1024)
+        logger.info("SLIDESHOW: MP4 ready; size=%.1f MB", size_mb)
+        if size_mb > 49:
+            raise RuntimeError("Видео получилось больше 49 МБ. Нужна дополнительная компрессия.")
         with open(output_path, "rb") as out:
             video = BytesIO(out.read())
         video.name = "news_slideshow.mp4"
@@ -3715,10 +3728,19 @@ def on_slideshow_callback(c):
     mode = st.get("slideshow_mode", "photo")
     count = _slideshow_page_count(len(st.get("slideshow_photos") or []))
     send_message_with_retry(chat_id, f"⏳ Создаю {count} слайдов с полным текстом статьи...")
+    logger.info("SLIDESHOW: start user=%s count=%s format=%s mode=%s", uid, count, fmt, mode)
     try:
         slides = make_news_slideshow(st["slideshow_photos"], st["slideshow_title"], st["slideshow_body"], fmt)
+        logger.info("SLIDESHOW: images rendered: %d", len(slides))
         if mode == "video":
-            video = make_news_slideshow_video(slides, audio_type)
+            send_message_with_retry(chat_id, "🎞 Слайды готовы. Кодирую MP4, это может занять 1–3 минуты...")
+            if not _slideshow_encoding_lock.acquire(blocking=False):
+                raise RuntimeError("Другое слайд-шоу уже кодируется. Повторите запрос после завершения.")
+            try:
+                video = make_news_slideshow_video(slides, audio_type)
+            finally:
+                _slideshow_encoding_lock.release()
+            logger.info("SLIDESHOW: uploading MP4 to Telegram")
             w, h = SLIDE_FORMATS[fmt]
             sent = send_video_with_retry(chat_id, video, caption=f"🎬 Новостное слайд-шоу · {len(slides)} слайдов", width=w, height=h)
             if sent is None:
@@ -3730,7 +3752,7 @@ def on_slideshow_callback(c):
             send_message_with_retry(chat_id, f"✅ Готово! Все {len(slides)} слайдов отправлены как фотографии в одном альбоме.", reply_markup=main_menu_kb())
         st["step"] = "idle"
     except Exception as exc:
-        logger.exception("Slideshow generation failed")
+        logger.exception("Slideshow generation failed user=%s", uid)
         st["step"] = "slideshow_format"
         send_message_with_retry(chat_id, f"❌ Не удалось создать слайд-шоу: {exc}", reply_markup=slideshow_format_kb())
 
@@ -6651,13 +6673,9 @@ if __name__ == "__main__":
                 bot.infinity_polling(timeout=60, long_polling_timeout=60)
             except Exception as e:
                 logger.error(f"Polling error: {e}")
-                if "409" in str(e):
-                    logger.error("Conflict detected! Waiting 30 seconds...")
-                    try:
-                        bot.remove_webhook()
-                    except:
-                        pass
-                    time.sleep(30)
+                if "409" in str(e) or "Conflict" in str(e):
+                    logger.error("Telegram 409: another process is polling this token. Stop duplicate Render services/workers or local copies. Waiting 90 seconds before retry.")
+                    time.sleep(90 + random.uniform(0, 10))
                 else:
                     time.sleep(10)
                 continue
