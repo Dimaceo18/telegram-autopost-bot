@@ -3454,6 +3454,23 @@ def slideshow_format_kb():
            InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
     return kb
 
+# Дикторы OpenAI: выбор для каждого ролика, без изменения Render ENV.
+SLIDESHOW_TTS_VOICES = {
+    "onyx": "🎙 Мужской · Onyx (низкий)",
+    "echo": "🎙 Мужской · Echo (мягкий)",
+    "alloy": "🎙 Нейтральный · Alloy",
+    "nova": "🎙 Женский · Nova (энергичный)",
+    "shimmer": "🎙 Женский · Shimmer (мягкий)",
+    "fable": "🎙 Выразительный · Fable",
+}
+
+def slideshow_voice_kb():
+    kb = InlineKeyboardMarkup(row_width=1)
+    for voice_id, label in SLIDESHOW_TTS_VOICES.items():
+        kb.add(InlineKeyboardButton(label, callback_data=f"slideshow:voice_{voice_id}"))
+    kb.add(InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
 def slideshow_audio_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(InlineKeyboardButton("🔇 Без звука", callback_data="slideshow:audio_silent"),
@@ -3702,7 +3719,7 @@ def make_news_slideshow(photos, title, body, fmt):
 
 _slideshow_encoding_lock = threading.Lock()
 
-def _openai_tts_speech(text, output_path):
+def _openai_tts_speech(text, output_path, voice=None):
     """Generate Russian narration for one slide using OpenAI Speech API."""
     if not OPENAI_API_KEY:
         raise RuntimeError("Для озвучки добавьте OPENAI_API_KEY в Environment на Render.")
@@ -3714,9 +3731,9 @@ def _openai_tts_speech(text, output_path):
         response = requests.post(
             "https://api.openai.com/v1/audio/speech",
             headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": "gpt-4o-mini-tts", "voice": OPENAI_TTS_VOICE,
+            json={"model": "gpt-4o-mini-tts", "voice": voice or OPENAI_TTS_VOICE,
                   "input": text[:4000], "response_format": "mp3",
-                  "instructions": "Говори на русском языке. Спокойная, выразительная, профессиональная дикторская подача новостей. Чёткая артикуляция, естественный темп, без театральности."},
+                  "instructions": "Читай исключительно на естественном литературном русском языке, с произношением носителя русского языка, без иностранного акцента. Подача профессионального диктора новостей: спокойная, уверенная, чёткая, без театральности. Соблюдай естественные паузы, корректно произноси русские имена, географические названия и числа."},
             timeout=(15, 120), stream=True,
         )
         if not response.ok:
@@ -3750,7 +3767,7 @@ def _slideshow_audio_duration(path):
         raise RuntimeError("Не удалось определить длительность озвучки (нужен ffprobe).") from exc
 
 
-def make_news_slideshow_tts_video(slides, title, body, fmt):
+def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None):
     """Narrate each populated slide, use its actual audio length as display duration.
 
     Empty slides are retained for 5 seconds without narration. Each populated slide
@@ -3774,7 +3791,7 @@ def make_news_slideshow_tts_video(slides, title, body, fmt):
             if narration:
                 audio_path = os.path.join(tmp, f"voice_{i:02d}.mp3")
                 logger.info("SLIDESHOW TTS: synthesizing slide %d/%d (%d chars)", i + 1, len(slides), len(narration))
-                _openai_tts_speech(narration, audio_path)
+                _openai_tts_speech(narration, audio_path, voice=voice)
                 voice_duration = _slideshow_audio_duration(audio_path)
                 duration = max(2.0, voice_duration + 0.45)
             else:
@@ -3967,7 +3984,9 @@ def on_slideshow_callback(c):
             return
         st["slideshow_format"] = choice
         if st.get("slideshow_mode") == "video" and st.get("slideshow_tts_direct"):
-            audio_type = "openai_tts"
+            st["step"] = "slideshow_voice"
+            send_message_with_retry(chat_id, "🎙 Выберите диктора для русской озвучки:", reply_markup=slideshow_voice_kb())
+            return
         elif st.get("slideshow_mode") == "video":
             st["step"] = "slideshow_audio"
             send_message_with_retry(chat_id, "🎵 Выберите музыку для видео:", reply_markup=slideshow_audio_kb())
@@ -3979,6 +3998,19 @@ def on_slideshow_callback(c):
         audio_type = choice[len("audio_"):]
         if audio_type not in ("silent", "важная", "обычная", "openai_tts"):
             return
+        if audio_type == "openai_tts":
+            st["step"] = "slideshow_voice"
+            send_message_with_retry(chat_id, "🎙 Выберите диктора для русской озвучки:", reply_markup=slideshow_voice_kb())
+            return
+    elif choice.startswith("voice_"):
+        if st.get("step") != "slideshow_voice":
+            return
+        voice_id = choice[len("voice_"):]
+        if voice_id not in SLIDESHOW_TTS_VOICES:
+            return
+        st["slideshow_tts_voice"] = voice_id
+        audio_type = "openai_tts"
+        send_message_with_retry(chat_id, f"🎙 Выбран диктор: {SLIDESHOW_TTS_VOICES[voice_id]}. Запускаю озвучку.")
     else:
         return
     if st.get("step") == "slideshow_processing":
@@ -4006,7 +4038,8 @@ def _slideshow_worker(chat_id, uid, st, fmt, mode, count, audio_type):
             try:
                 if audio_type == "openai_tts":
                     video, video_duration = make_news_slideshow_tts_video(
-                        slides, st["slideshow_title"], st["slideshow_body"], fmt)
+                        slides, st["slideshow_title"], st["slideshow_body"], fmt,
+                        voice=st.get("slideshow_tts_voice") or OPENAI_TTS_VOICE)
                 else:
                     video = make_news_slideshow_video(slides, audio_type, seconds_per_slide=5)
                     video_duration = len(slides) * 5
