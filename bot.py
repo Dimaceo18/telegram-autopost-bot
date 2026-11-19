@@ -85,9 +85,6 @@ TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 DEEPSEEK_API_KEY = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
 OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 OPENAI_TTS_VOICE = (os.getenv("OPENAI_TTS_VOICE") or "onyx").strip()
-YANDEX_SPEECHKIT_API_KEY = (os.getenv("YANDEX_SPEECHKIT_API_KEY") or os.getenv("YANDEX_API_KEY") or "").strip()
-YANDEX_SPEECHKIT_IAM_TOKEN = (os.getenv("YANDEX_SPEECHKIT_IAM_TOKEN") or "").strip()
-YANDEX_FOLDER_ID = (os.getenv("YANDEX_FOLDER_ID") or "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
 CHANNEL_MN = (os.getenv("CHANNEL_MN") or "").strip()
@@ -204,34 +201,18 @@ BTN_POST = "📝 Оформить пост"
 BTN_ENHANCE = "✨ Улучшить качество"
 BTN_WATERMARK = "💧 Водяные знаки"
 BTN_PRICES = "💰 Цены"
-BTN_AI_TEXT = "✂️ Сократить текст"
-BTN_CROP = "✂️ Обрезать"
+BTN_AI_TEXT = "🤖 Текст в ИИ"
 BTN_MAKE_VIDEO = "🎬 Сделать видео"
 BTN_SLIDESHOW = "🖼 Сделать слайд-шоу"
 BTN_SLIDESHOW_TTS = "🎙 Слайд-шоу с озвучкой ИИ"
 
 def main_menu_kb():
-    """Шесть основных действий без лишних пунктов."""
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_AI_TEXT))
-    kb.row(KeyboardButton(BTN_SLIDESHOW), KeyboardButton(BTN_MAKE_VIDEO))
-    kb.row(KeyboardButton(BTN_CROP), KeyboardButton(BTN_WATERMARK))
-    return kb
-
-def shorten_choice_kb():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(InlineKeyboardButton("📱 Пост для ТГ (500 симв.)", callback_data="shorten:tg"),
-           InlineKeyboardButton("🧵 Пост для Тредс (400 симв.)", callback_data="shorten:threads"))
-    return kb
-
-def shorten_next_kb(kind):
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(InlineKeyboardButton("🎬 Сделать видео", callback_data=f"next:{kind}:video"),
-           InlineKeyboardButton("🖼 Слайд-шоу", callback_data=f"next:{kind}:slideshow"),
-           InlineKeyboardButton("📢 Опубликовать", callback_data=f"next:{kind}:publish"),
-           InlineKeyboardButton("📝 Оформить пост", callback_data=f"next:{kind}:design"))
-    kb.add(InlineKeyboardButton("✏️ Редактировать", callback_data=f"{kind}:edit"),
-           InlineKeyboardButton("🔄 Сократить заново", callback_data=f"{kind}:redo"))
+    kb.row(KeyboardButton(BTN_ENHANCE), KeyboardButton(BTN_WATERMARK))
+    kb.row(KeyboardButton(BTN_PRICES), KeyboardButton(BTN_MAKE_VIDEO))
+    kb.row(KeyboardButton(BTN_SLIDESHOW))
+    kb.row(KeyboardButton(BTN_SLIDESHOW_TTS))
     return kb
 
 def repost_action_kb():
@@ -262,7 +243,15 @@ def after_ai_kb():
     return kb
 
 def post_action_kb(post_type: str = "tg"):
-    return shorten_next_kb(post_type)
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🔄 Переделать еще раз", callback_data=f"{post_type}:redo"),
+        InlineKeyboardButton("📝 Оформить пост", callback_data=f"{post_type}:design"),
+        InlineKeyboardButton("📢 Выбрать канал", callback_data=f"{post_type}:select_channel"),
+        InlineKeyboardButton("✏️ Редактировать текст", callback_data=f"{post_type}:edit"),
+        InlineKeyboardButton("◀️ Назад", callback_data=f"{post_type}:back")
+    )
+    return kb
 
 def template_kb():
     kb = InlineKeyboardMarkup(row_width=1)
@@ -534,27 +523,16 @@ def send_media_group_with_retry(chat_id, media_list, max_retries=3):
 def check_file_size(file_bytes: bytes) -> bool:
     return len(file_bytes) <= MAX_FILE_SIZE
 
-# Повторно используем соединения HTTP для скачивания медиа.
-_tg_download_session = requests.Session()
-_tg_download_adapter = HTTPAdapter(pool_connections=16, pool_maxsize=32)
-_tg_download_session.mount("https://", _tg_download_adapter)
-
 def tg_file_bytes(file_id: str) -> bytes:
-    """Скачивание с быстрым обнаружением сетевых проблем и одной повторной попыткой."""
-    last_error = None
-    for attempt in range(2):
-        try:
-            file_info = bot.get_file(file_id)
-            file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-            response = _tg_download_session.get(file_url, timeout=(5, 15))
-            response.raise_for_status()
-            return response.content
-        except (requests.exceptions.RequestException, Exception) as exc:
-            last_error = exc
-            logger.warning("Telegram download attempt %s/2 failed: %s", attempt + 1, exc)
-            if attempt == 0:
-                time.sleep(0.5)
-    raise last_error
+    try:
+        file_info = bot.get_file(file_id)
+        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+        r = requests.get(file_url, timeout=30)
+        r.raise_for_status()
+        return r.content
+    except Exception as e:
+        logger.error(f"Failed to download file: {e}")
+        raise
 
 def get_video_info(file_id: str, video_obj) -> Dict:
     return {
@@ -2752,7 +2730,7 @@ def run_http_server():
 # =========================
 _album_lock = threading.RLock()
 _album_timers = {}
-ALBUM_QUIET_SECONDS = 2.5
+ALBUM_QUIET_SECONDS = 5.0
 
 def _receive_album_item(message, uid, is_repost=False):
     """Collect an album safely: concurrent Telegram handlers cannot pop each other's data."""
@@ -3465,48 +3443,21 @@ def slideshow_format_kb():
            InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
     return kb
 
-# Русскоязычные дикторы: по 3 мужских и 3 женских на каждого провайдера.
-# SpeechKit: только голоса ru-RU, доступные в REST API v1.
+# Дикторы OpenAI: выбор для каждого ролика, без изменения Render ENV.
 SLIDESHOW_TTS_VOICES = {
-    "openai": {
-        "onyx": "👨 Onyx · низкий мужской",
-        "echo": "👨 Echo · мягкий мужской",
-        "ash": "👨 Ash · мужской",
-        "nova": "👩 Nova · женский",
-        "shimmer": "👩 Shimmer · мягкий женский",
-        "coral": "👩 Coral · женский",
-    },
-    "yandex": {
-        "filipp": "👨 Филипп · мужской",
-        "ermil": "👨 Ермил · мужской",
-        "zahar": "👨 Захар · мужской",
-        "jane": "👩 Джейн · женский",
-        "marina": "👩 Марина · женский",
-        "omazh": "👩 Омаж · женский",
-    },
+    "onyx": "🎙 Мужской · Onyx (низкий)",
+    "echo": "🎙 Мужской · Echo (мягкий)",
+    "alloy": "🎙 Нейтральный · Alloy",
+    "nova": "🎙 Женский · Nova (энергичный)",
+    "shimmer": "🎙 Женский · Shimmer (мягкий)",
+    "fable": "🎙 Выразительный · Fable",
 }
-SLIDESHOW_TTS_PREVIEW_TEXT = (
-    "Добрый день! Это пример новостной озвучки. "
-    "Сегодня в Минске обсуждают главные события города. "
-    "Послушайте мой голос и выберите подходящего диктора для вашего видео."
-)
-_slideshow_preview_last = {}
-_slideshow_preview_lock = threading.Lock()
 
-def slideshow_provider_kb():
+def slideshow_voice_kb():
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("🤖 GPT · OpenAI", callback_data="slideshow:provider_openai"),
-           InlineKeyboardButton("🇷🇺 Яндекс · SpeechKit", callback_data="slideshow:provider_yandex"),
-           InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
-    return kb
-
-def slideshow_voice_kb(provider="openai"):
-    kb = InlineKeyboardMarkup(row_width=2)
-    for voice_id, label in SLIDESHOW_TTS_VOICES[provider].items():
-        kb.row(InlineKeyboardButton(label, callback_data=f"slideshow:voice_{voice_id}"),
-               InlineKeyboardButton("▶️ Послушать", callback_data=f"slideshow:preview_{voice_id}"))
-    kb.row(InlineKeyboardButton("⬅️ Выбрать сервис", callback_data="slideshow:back_provider"))
-    kb.row(InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    for voice_id, label in SLIDESHOW_TTS_VOICES.items():
+        kb.add(InlineKeyboardButton(label, callback_data=f"slideshow:voice_{voice_id}"))
+    kb.add(InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
     return kb
 
 def slideshow_audio_kb():
@@ -3514,7 +3465,7 @@ def slideshow_audio_kb():
     kb.add(InlineKeyboardButton("🔇 Без звука", callback_data="slideshow:audio_silent"),
            InlineKeyboardButton("📢 Важное", callback_data="slideshow:audio_важная"),
            InlineKeyboardButton("🎵 Обычное", callback_data="slideshow:audio_обычная"),
-           InlineKeyboardButton("🎙 Озвучка ИИ (GPT / Яндекс)", callback_data="slideshow:audio_openai_tts"),
+           InlineKeyboardButton("🎙 Озвучка ИИ (OpenAI)", callback_data="slideshow:audio_openai_tts"),
            InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
     return kb
 
@@ -3790,59 +3741,6 @@ def _openai_tts_speech(text, output_path, voice=None):
         raise RuntimeError(f"Не удалось получить озвучку OpenAI: {exc}") from exc
 
 
-def _yandex_tts_speech(text, output_path, voice="marina"):
-    """Yandex SpeechKit v1: API key or IAM token; MP3 for ffmpeg and Telegram."""
-    if not YANDEX_SPEECHKIT_API_KEY and not YANDEX_SPEECHKIT_IAM_TOKEN:
-        raise RuntimeError("Добавьте YANDEX_SPEECHKIT_API_KEY в Environment на Render.")
-    if voice not in SLIDESHOW_TTS_VOICES["yandex"]:
-        raise ValueError("Неизвестный голос Яндекса.")
-    auth = ("Api-Key " + YANDEX_SPEECHKIT_API_KEY if YANDEX_SPEECHKIT_API_KEY
-            else "Bearer " + YANDEX_SPEECHKIT_IAM_TOKEN)
-    data = {"text": (text or "").strip()[:4500], "lang": "ru-RU", "voice": voice,
-            "format": "mp3", "speed": "1.0"}
-    if not data["text"]:
-        raise ValueError("Нельзя озвучить пустой текст.")
-    # Folder ID is required with IAM, but must not be passed for service-account API key.
-    if not YANDEX_SPEECHKIT_API_KEY:
-        if not YANDEX_FOLDER_ID:
-            raise RuntimeError("Для IAM-токена добавьте YANDEX_FOLDER_ID на Render.")
-        data["folderId"] = YANDEX_FOLDER_ID
-    try:
-        with requests.post("https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize",
-                           headers={"Authorization": auth}, data=data,
-                           timeout=(12, 100), stream=True) as response:
-            if not response.ok:
-                raise RuntimeError(f"SpeechKit HTTP {response.status_code}: {response.text[:350]}")
-            with open(output_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=65536):
-                    if chunk:
-                        f.write(chunk)
-        if os.path.getsize(output_path) < 500:
-            raise RuntimeError("SpeechKit вернул пустой аудиофайл.")
-    except requests.RequestException as exc:
-        raise RuntimeError(f"Ошибка соединения со SpeechKit: {exc}") from exc
-
-
-def _slideshow_preview_worker(chat_id, uid, provider, voice):
-    try:
-        with tempfile.TemporaryDirectory(prefix="tts_preview_") as tmp:
-            audio_path = os.path.join(tmp, "preview.mp3")
-            if provider == "yandex":
-                _yandex_tts_speech(SLIDESHOW_TTS_PREVIEW_TEXT, audio_path, voice)
-            else:
-                _openai_tts_speech(SLIDESHOW_TTS_PREVIEW_TEXT, audio_path, voice)
-            with open(audio_path, "rb") as f:
-                payload = BytesIO(f.read())
-            payload.name = "preview.mp3"
-            bot.send_audio(chat_id, payload,
-                           caption=f"🔊 Пример: {SLIDESHOW_TTS_VOICES[provider][voice]}\n"
-                                   "Для выбора нажмите кнопку с именем диктора выше.",
-                           timeout=90)
-    except Exception as exc:
-        logger.exception("TTS preview failed: %s", exc)
-        send_message_with_retry(chat_id, f"❌ Не удалось прослушать голос: {str(exc)[:300]}")
-
-
 def _slideshow_audio_duration(path):
     """Duration in seconds as reported by ffprobe."""
     try:
@@ -3858,7 +3756,7 @@ def _slideshow_audio_duration(path):
         raise RuntimeError("Не удалось определить длительность озвучки (нужен ffprobe).") from exc
 
 
-def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None, provider="openai"):
+def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None):
     """Narrate each populated slide, use its actual audio length as display duration.
 
     Empty slides are retained for 5 seconds without narration. Each populated slide
@@ -3882,10 +3780,7 @@ def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None, provider
             if narration:
                 audio_path = os.path.join(tmp, f"voice_{i:02d}.mp3")
                 logger.info("SLIDESHOW TTS: synthesizing slide %d/%d (%d chars)", i + 1, len(slides), len(narration))
-                if provider == "yandex":
-                    _yandex_tts_speech(narration, audio_path, voice=voice or "marina")
-                else:
-                    _openai_tts_speech(narration, audio_path, voice=voice)
+                _openai_tts_speech(narration, audio_path, voice=voice)
                 voice_duration = _slideshow_audio_duration(audio_path)
                 duration = max(2.0, voice_duration + 0.45)
             else:
@@ -4048,7 +3943,7 @@ def _start_slideshow(chat_id, uid, video_tts_direct=False):
             st["slideshow_mode"] = "video"
             st["step"] = "slideshow_format"
             count = _slideshow_page_count(len(photos) + len(videos))
-            send_message_with_retry(chat_id, f"🎙 Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
+            send_message_with_retry(chat_id, f"🎙 Озвучка OpenAI выбрана. Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
         else:
             send_message_with_retry(chat_id, "🖼 Выберите тип слайд-шоу:", reply_markup=slideshow_mode_kb())
 
@@ -4078,8 +3973,8 @@ def on_slideshow_callback(c):
             return
         st["slideshow_format"] = choice
         if st.get("slideshow_mode") == "video" and st.get("slideshow_tts_direct"):
-            st["step"] = "slideshow_provider"
-            send_message_with_retry(chat_id, "🎙 Выберите сервис озвучки:", reply_markup=slideshow_provider_kb())
+            st["step"] = "slideshow_voice"
+            send_message_with_retry(chat_id, "🎙 Выберите диктора для русской озвучки:", reply_markup=slideshow_voice_kb())
             return
         elif st.get("slideshow_mode") == "video":
             st["step"] = "slideshow_audio"
@@ -4093,55 +3988,18 @@ def on_slideshow_callback(c):
         if audio_type not in ("silent", "важная", "обычная", "openai_tts"):
             return
         if audio_type == "openai_tts":
-            st["step"] = "slideshow_provider"
-            send_message_with_retry(chat_id, "🎙 Выберите сервис озвучки:", reply_markup=slideshow_provider_kb())
+            st["step"] = "slideshow_voice"
+            send_message_with_retry(chat_id, "🎙 Выберите диктора для русской озвучки:", reply_markup=slideshow_voice_kb())
             return
-    elif choice == "back_provider":
-        if st.get("step") != "slideshow_voice":
-            return
-        st["step"] = "slideshow_provider"
-        send_message_with_retry(chat_id, "🎙 Выберите сервис озвучки:", reply_markup=slideshow_provider_kb())
-        return
-    elif choice.startswith("provider_"):
-        if st.get("step") != "slideshow_provider":
-            return
-        provider = choice[len("provider_"):]
-        if provider not in SLIDESHOW_TTS_VOICES:
-            return
-        st["slideshow_tts_provider"] = provider
-        st["step"] = "slideshow_voice"
-        send_message_with_retry(chat_id,
-            "🎙 Выберите диктора. Кнопка ▶️ позволяет прослушать русский пример перед выбором:",
-            reply_markup=slideshow_voice_kb(provider))
-        return
-    elif choice.startswith("preview_"):
-        if st.get("step") != "slideshow_voice":
-            return
-        provider = st.get("slideshow_tts_provider", "openai")
-        voice_id = choice[len("preview_"):]
-        if voice_id not in SLIDESHOW_TTS_VOICES.get(provider, {}):
-            return
-        with _slideshow_preview_lock:
-            now = time.monotonic()
-            if now - _slideshow_preview_last.get(uid, 0) < 4:
-                send_message_with_retry(chat_id, "⏳ Подождите несколько секунд перед следующим примером.")
-                return
-            _slideshow_preview_last[uid] = now
-        threading.Thread(target=_slideshow_preview_worker,
-                         args=(chat_id, uid, provider, voice_id), daemon=True).start()
-        return
     elif choice.startswith("voice_"):
         if st.get("step") != "slideshow_voice":
             return
-        provider = st.get("slideshow_tts_provider", "openai")
         voice_id = choice[len("voice_"):]
-        if voice_id not in SLIDESHOW_TTS_VOICES.get(provider, {}):
+        if voice_id not in SLIDESHOW_TTS_VOICES:
             return
         st["slideshow_tts_voice"] = voice_id
         audio_type = "openai_tts"
-        send_message_with_retry(chat_id,
-            f"🎙 Выбран диктор: {SLIDESHOW_TTS_VOICES[provider][voice_id]} "
-            f"({'Яндекс SpeechKit' if provider == 'yandex' else 'GPT OpenAI'}). Запускаю озвучку.")
+        send_message_with_retry(chat_id, f"🎙 Выбран диктор: {SLIDESHOW_TTS_VOICES[voice_id]}. Запускаю озвучку.")
     else:
         return
     if st.get("step") == "slideshow_processing":
@@ -4163,15 +4021,14 @@ def _slideshow_worker(chat_id, uid, st, fmt, mode, count, audio_type):
         slides = make_news_slideshow(current_photos, st["slideshow_title"], st["slideshow_body"], fmt)
         logger.info("SLIDESHOW: images rendered: %d", len(slides))
         if mode == "video":
-            send_message_with_retry(chat_id, "🎙 Слайды готовы. Создаю озвучку и собираю MP4, это может занять несколько минут..." if audio_type == "openai_tts" else "🎞 Слайды готовы. Кодирую MP4, это может занять 1–3 минуты...")
+            send_message_with_retry(chat_id, "🎙 Слайды готовы. Создаю озвучку OpenAI и собираю MP4, это может занять несколько минут..." if audio_type == "openai_tts" else "🎞 Слайды готовы. Кодирую MP4, это может занять 1–3 минуты...")
             if not _slideshow_encoding_lock.acquire(blocking=False):
                 raise RuntimeError("Другое слайд-шоу уже кодируется. Повторите запрос после завершения.")
             try:
                 if audio_type == "openai_tts":
                     video, video_duration = make_news_slideshow_tts_video(
                         slides, st["slideshow_title"], st["slideshow_body"], fmt,
-                        voice=st.get("slideshow_tts_voice") or OPENAI_TTS_VOICE,
-                        provider=st.get("slideshow_tts_provider", "openai"))
+                        voice=st.get("slideshow_tts_voice") or OPENAI_TTS_VOICE)
                 else:
                     video = make_news_slideshow_video(slides, audio_type, seconds_per_slide=5)
                     video_duration = len(slides) * 5
@@ -4213,7 +4070,7 @@ def crop_format_kb():
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="crop:cancel"))
     return kb
 
-def _start_crop(chat_id, uid, prompt_if_missing=False):
+def _start_crop(chat_id, uid):
     st = user_state.get(uid) or {}
     photos = st.get("album_photos") or st.get("media_group", {}).get("photos") or []
     if not photos and st.get("photo_bytes"):
@@ -4222,12 +4079,7 @@ def _start_crop(chat_id, uid, prompt_if_missing=False):
     if not videos and st.get("video_info"):
         videos = [st["video_info"]]
     if not photos and not videos:
-        if prompt_if_missing:
-            st["step"] = "crop_wait_media"
-            user_state[uid] = st
-            send_message_with_retry(chat_id, "✂️ Отправьте фото или видео для обрезки.")
-        else:
-            send_message_with_retry(chat_id, "❌ Сначала отправьте пост с фото или видео.")
+        send_message_with_retry(chat_id, "❌ Сначала отправьте пост с фото или видео.")
         return
     st["crop_photos"] = list(photos)
     st["crop_videos"] = list(videos)
@@ -4277,12 +4129,10 @@ def _run_crop(uid, chat_id, fmt):
     photos = st.get("crop_photos", [])
     videos = st.get("crop_videos", [])
     success, failures = 0, []
-    cropped_photos = []
     # Each media is sent separately to support mixed albums and Telegram size limits.
     for i, photo in enumerate(photos, 1):
         try:
             result = _crop_photo_bytes(photo, w, h)
-            cropped_photos.append(result.getvalue())
             if not send_photo_with_retry(chat_id, result, caption=f"✂️ Фото {i} · {fmt}"):
                 raise RuntimeError("Telegram не принял фото")
             success += 1
@@ -4324,47 +4174,10 @@ def _run_crop(uid, chat_id, fmt):
             logger.exception("Crop video failed")
             failures.append(f"Видео {i}: {exc}")
     st["step"] = "idle"
-    st["cropped_photos_for_watermark"] = cropped_photos
     message = f"✅ Готово: {success} медиа в формате {fmt}." if success else "❌ Не удалось обрезать медиа."
     if failures:
         message += "\n" + "\n".join(failures[:5])
-    if cropped_photos:
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("💧 Нанести водяной знак", callback_data="crop_watermark:choose"))
-        send_message_with_retry(chat_id, message + "\n\nМожно нанести водяной знак на обрезанные фото:", reply_markup=kb)
-    else:
-        send_message_with_retry(chat_id, message, reply_markup=main_menu_kb())
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("crop_watermark:"))
-def on_crop_watermark(c):
-    bot.answer_callback_query(c.id)
-    uid = c.from_user.id
-    st = user_state.get(uid) or {}
-    photos = st.get("cropped_photos_for_watermark") or []
-    if not photos:
-        send_message_with_retry(c.message.chat.id, "❌ Нет обрезанных фотографий для водяного знака.")
-        return
-    action = c.data.split(":", 1)[1]
-    if action == "choose":
-        kb = InlineKeyboardMarkup(row_width=2)
-        kb.add(InlineKeyboardButton("📰 MINSK NEWS", callback_data="crop_watermark:mn"),
-               InlineKeyboardButton("🚨 ЧП", callback_data="crop_watermark:chp"),
-               InlineKeyboardButton("🖼 Лого MN", callback_data="crop_watermark:logo"))
-        send_message_with_retry(c.message.chat.id, "💧 Выберите водяной знак:", reply_markup=kb)
-        return
-    def work():
-        for i, photo in enumerate(photos, 1):
-            try:
-                fn = {"mn": apply_watermark_mn, "chp": apply_watermark_chp,
-                      "logo": apply_watermark_logo_mn}.get(action)
-                if fn is None:
-                    return
-                result = fn(photo)
-                send_photo_with_retry(c.message.chat.id, result, caption=f"💧 Фото {i}")
-            except Exception:
-                logger.exception("Watermark after crop failed")
-                send_message_with_retry(c.message.chat.id, f"❌ Ошибка водяного знака на фото {i}.")
-    threading.Thread(target=work, daemon=True).start()
+    send_message_with_retry(chat_id, message, reply_markup=main_menu_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("crop:"))
 def on_crop_callback(c):
@@ -4394,14 +4207,6 @@ def on_repost_action(c):
     uid = c.from_user.id
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
-    # Меню уже показано. Если пользователь нажал кнопку раньше окончания
-    # загрузки фотографии, дождёмся её только на этапе выполнения действия.
-    media_ready = st.get("_media_ready")
-    if media_ready is not None and not media_ready.is_set():
-        bot.answer_callback_query(c.id, "Загружаю фото, секунду…")
-        if not media_ready.wait(timeout=25):
-            bot.send_message(c.message.chat.id, "⏳ Фото ещё загружается. Повторите действие через несколько секунд.")
-            return
     
     if action == "crop":
         bot.answer_callback_query(c.id)
@@ -4738,101 +4543,6 @@ def on_ai_action(c):
 # =========================
 # ОБРАБОТЧИКИ ДЛЯ TG И THREADS
 # =========================
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("shorten:"))
-def on_shorten_choice(c):
-    uid = c.from_user.id
-    kind = c.data.split(":", 1)[1]
-    st = user_state.get(uid) or {}
-    source = (st.get("shorten_source") or st.get("original_text_for_ai") or
-              st.get("original_text") or "").strip()
-    bot.answer_callback_query(c.id)
-    if not source:
-        send_message_with_retry(c.message.chat.id, "📝 Отправьте текст или репост для сокращения.")
-        st["step"] = "shorten_wait_text"
-        user_state[uid] = st
-        return
-    send_message_with_retry(c.message.chat.id, "⏳ Сокращаю текст...")
-    def work():
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            func = process_text_with_deepseek_tg if kind == "tg" else process_text_with_deepseek_threads
-            result = loop.run_until_complete(func(source))
-            st["tg_post_text" if kind == "tg" else "threads_post_text"] = result
-            st["post_type"] = kind
-            st["step"] = "waiting_post_action"
-            user_state[uid] = st
-            label = "Telegram" if kind == "tg" else "Threads"
-            send_message_with_retry(c.message.chat.id,
-                f"📱 <b>Пост для {label}</b>\n\n{html.escape(strip_html_tags(result))}\n\nЧто сделать с текстом и медиа?",
-                parse_mode="HTML", reply_markup=shorten_next_kb(kind))
-        except Exception as exc:
-            logger.exception("Shorten text failed")
-            send_message_with_retry(c.message.chat.id, f"❌ Ошибка сокращения: {exc}")
-        finally:
-            loop.close()
-    threading.Thread(target=work, daemon=True).start()
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("next:"))
-def on_shorten_next(c):
-    uid = c.from_user.id
-    parts = c.data.split(":")
-    if len(parts) != 3:
-        bot.answer_callback_query(c.id)
-        return
-    _, kind, action = parts
-    st = user_state.get(uid) or {}
-    result = st.get("tg_post_text" if kind == "tg" else "threads_post_text", "")
-    bot.answer_callback_query(c.id)
-    if not result:
-        send_message_with_retry(c.message.chat.id, "⚠️ Сначала сократите текст.")
-        return
-    plain = html.unescape(strip_html_tags(result))
-    st["original_text"] = plain
-    st["original_text_for_ai"] = plain
-    title, body = split_title_and_body(plain)
-    st["title"] = clean_title_for_card(title)
-    st["body_raw"] = body
-    user_state[uid] = st
-    if action == "publish":
-        send_message_with_retry(c.message.chat.id, "📢 Выберите канал для публикации:",
-                                reply_markup=post_channel_selection_kb(kind))
-    elif action == "design":
-        if not st.get("photo_bytes") and st.get("saved_photo_bytes"):
-            st["photo_bytes"] = st["saved_photo_bytes"]
-        if st.get("photo_bytes") or (st.get("media_group") or {}).get("photos"):
-            st["step"] = "waiting_template"
-            send_message_with_retry(c.message.chat.id, "📝 Выберите шаблон оформления:", reply_markup=template_kb())
-        else:
-            st["step"] = "waiting_photo"
-            send_message_with_retry(c.message.chat.id, "📸 Отправьте фотографию для оформления поста.")
-    elif action == "slideshow":
-        _start_slideshow(c.message.chat.id, uid)
-    elif action == "video":
-        # Reuse the existing video editor; preserve the shortened caption.
-        photos = st.get("album_photos") or (st.get("media_group") or {}).get("photos") or []
-        videos = st.get("album_videos") or (st.get("media_group") or {}).get("videos") or []
-        if photos:
-            album_id = f"shortened_{uid}_{int(time.time() * 1000)}"
-            user_album_cache[album_id] = {
-                "photos": list(photos), "videos": [], "caption": plain,
-                "user_id": uid, "chat_id": c.message.chat.id
-            }
-            threading.Thread(target=process_album_to_video,
-                             args=(uid, album_id, c.message.chat.id), daemon=True).start()
-        elif videos:
-            send_message_with_retry(c.message.chat.id,
-                "🎬 Для видео из полученного ролика нажмите «Сделать видео» и отправьте исходный файл. Сокращённый текст сохранён.")
-            st["step"] = "direct_video_wait"
-            st["direct_video_caption"] = plain
-            st["direct_video_title"] = title
-        else:
-            st["step"] = "direct_video_wait"
-            st["direct_video_caption"] = plain
-            st["direct_video_title"] = title
-            send_message_with_retry(c.message.chat.id,
-                "🎬 Отправьте видео или фотографии. Сокращённый текст сохранён для видео.")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tg:"))
 def on_tg_action(c):
@@ -6132,37 +5842,8 @@ def direct_video_audio_kb():
     kb.add(InlineKeyboardButton("🎵 Оригинал", callback_data="dv:audio_original"),
            InlineKeyboardButton("📢 Важное", callback_data="dv:audio_важная"),
            InlineKeyboardButton("🎵 Обычное", callback_data="dv:audio_обычная"),
-           InlineKeyboardButton("🔇 Без звука", callback_data="dv:audio_silent"),
-           InlineKeyboardButton("🎙 Озвучка ИИ (GPT / Яндекс)", callback_data="dv:audio_tts"))
+           InlineKeyboardButton("🔇 Без звука", callback_data="dv:audio_silent"))
     return kb
-
-def direct_video_tts_text_kb(has_caption):
-    kb = InlineKeyboardMarkup(row_width=1)
-    if has_caption:
-        kb.add(InlineKeyboardButton("📰 Озвучить текст из подписи", callback_data="dv:tts_text_caption"))
-    kb.add(InlineKeyboardButton("✏️ Ввести текст для озвучки", callback_data="dv:tts_text_custom"),
-           InlineKeyboardButton("❌ Отмена", callback_data="dv:cancel"))
-    return kb
-
-def direct_video_tts_provider_kb():
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("🤖 GPT · OpenAI", callback_data="dv:tts_provider_openai"),
-           InlineKeyboardButton("🇷🇺 Яндекс · SpeechKit", callback_data="dv:tts_provider_yandex"),
-           InlineKeyboardButton("❌ Отмена", callback_data="dv:cancel"))
-    return kb
-
-def direct_video_tts_voice_kb(provider):
-    kb = InlineKeyboardMarkup(row_width=2)
-    for voice, label in SLIDESHOW_TTS_VOICES[provider].items():
-        kb.row(InlineKeyboardButton(label, callback_data=f"dv:tts_voice_{voice}"),
-               InlineKeyboardButton("▶️ Послушать", callback_data=f"dv:tts_preview_{voice}"))
-    kb.add(InlineKeyboardButton("⬅️ Выбрать сервис", callback_data="dv:tts_back"),
-           InlineKeyboardButton("❌ Отмена", callback_data="dv:cancel"))
-    return kb
-
-def direct_video_tts_next(chat_id, st):
-    st["step"] = "direct_video_format"
-    bot.send_message(chat_id, "📱 Выберите формат:", reply_markup=direct_video_format_kb())
 
 def direct_video_format_kb():
     kb = InlineKeyboardMarkup(row_width=2)
@@ -6213,37 +5894,11 @@ def render_direct_video(uid, chat_id):
                     y += line_h + 2
                 layer.save(overlay)
             vf = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,eq=brightness=-0.035"
-            if st.get("direct_video_audio") == "tts":
-                # Extend video as needed for longer narration, never truncate the spoken text.
-                # Duration will be computed after synthesis, below.
-                pass
             cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src)]
             if overlay.exists():
                 cmd += ["-loop", "1", "-i", str(overlay)]
             audio_type = st.get("direct_video_audio", "original")
             audio_path = folder / "music.mp3"
-            if audio_type == "tts":
-                narration = (st.get("direct_video_tts_text") or "").strip()
-                if not narration:
-                    raise ValueError("Не задан текст для озвучки")
-                provider = st.get("direct_video_tts_provider", "openai")
-                voice = st.get("direct_video_tts_voice")
-                if provider == "yandex":
-                    _yandex_tts_speech(narration, str(audio_path), voice)
-                else:
-                    _openai_tts_speech(narration, str(audio_path), voice)
-                cmd += ["-i", str(audio_path)]
-                probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                                        "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
-                                       capture_output=True, text=True, check=True, timeout=15)
-                narration_seconds = float(probe.stdout.strip())
-                # Extend the last video frame only when narration is longer.
-                src_probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                                            "-of", "default=noprint_wrappers=1:nokey=1", str(src)],
-                                           capture_output=True, text=True, check=True, timeout=15)
-                source_seconds = float(src_probe.stdout.strip())
-                if narration_seconds > source_seconds:
-                    vf += f",tpad=stop_mode=clone:stop_duration={narration_seconds - source_seconds + 0.3:.3f}"
             if audio_type in ("важная", "обычная"):
                 response = requests.get(AUDIO_URLS[audio_type], timeout=30)
                 response.raise_for_status()
@@ -6255,15 +5910,9 @@ def render_direct_video(uid, chat_id):
                 cmd += ["-filter_complex", f"[0:v]{vf}[base];[base][1:v]overlay=0:0:shortest=1{enabled}[v]", "-map", "[v]"]
             else:
                 cmd += ["-vf", vf, "-map", "0:v:0"]
-            if audio_type in ("важная", "обычная", "tts"):
+            if audio_type in ("важная", "обычная"):
                 audio_idx = 2 if overlay.exists() else 1
-                cmd += ["-map", f"{audio_idx}:a:0"]
-                if audio_type == "tts":
-                    # Озвучка не обрывается, если длиннее исходного ролика.
-                    # В конце видео удерживаем последний кадр до конца речи.
-                    cmd += ["-af", "apad", "-shortest"]
-                else:
-                    cmd += ["-shortest"]
+                cmd += ["-map", f"{audio_idx}:a:0", "-shortest"]
             elif audio_type == "original":
                 cmd += ["-map", "0:a?", "-shortest"]
             else:
@@ -6294,54 +5943,6 @@ def on_direct_video_callback(c):
     if not st.get("direct_video_file_id"):
         bot.send_message(c.message.chat.id, "Сначала нажмите 🎬 Сделать видео и отправьте ролик.")
         return
-    if c.data.startswith("dv:tts_"):
-        choice = c.data[len("dv:tts_"):]
-        if choice == "text_caption":
-            narration = (st.get("direct_video_caption") or "").strip()
-            if not narration:
-                bot.send_message(c.message.chat.id, "❌ В подписи нет текста. Введите его вручную.")
-                return
-            st["direct_video_tts_text"] = narration
-            st["step"] = "direct_video_tts_provider"
-            bot.send_message(c.message.chat.id, "🎙 Выберите сервис озвучки:", reply_markup=direct_video_tts_provider_kb())
-        elif choice == "text_custom":
-            st["step"] = "direct_video_tts_text_input"
-            bot.send_message(c.message.chat.id, "✏️ Пришлите текст, который должен прочитать диктор:")
-        elif choice == "back":
-            st["step"] = "direct_video_tts_provider"
-            bot.send_message(c.message.chat.id, "🎙 Выберите сервис озвучки:", reply_markup=direct_video_tts_provider_kb())
-        elif choice.startswith("provider_"):
-            provider = choice[len("provider_"):]
-            if provider not in SLIDESHOW_TTS_VOICES:
-                return
-            st["direct_video_tts_provider"] = provider
-            st["step"] = "direct_video_tts_voice"
-            bot.send_message(c.message.chat.id, "🎙 Выберите диктора или послушайте пример:",
-                             reply_markup=direct_video_tts_voice_kb(provider))
-        elif choice.startswith("preview_"):
-            provider = st.get("direct_video_tts_provider", "openai")
-            voice = choice[len("preview_"):]
-            if voice not in SLIDESHOW_TTS_VOICES.get(provider, {}):
-                return
-            with _slideshow_preview_lock:
-                now = time.monotonic()
-                if now - _slideshow_preview_last.get(uid, 0) < 4:
-                    bot.send_message(c.message.chat.id, "⏳ Подождите несколько секунд перед следующим примером.")
-                    return
-                _slideshow_preview_last[uid] = now
-            threading.Thread(target=_slideshow_preview_worker,
-                             args=(c.message.chat.id, uid, provider, voice), daemon=True).start()
-        elif choice.startswith("voice_"):
-            provider = st.get("direct_video_tts_provider", "openai")
-            voice = choice[len("voice_"):]
-            if voice not in SLIDESHOW_TTS_VOICES.get(provider, {}):
-                return
-            st["direct_video_tts_voice"] = voice
-            st["direct_video_audio"] = "tts"
-            bot.send_message(c.message.chat.id, f"✅ Выбран диктор: {SLIDESHOW_TTS_VOICES[provider][voice]}")
-            direct_video_tts_next(c.message.chat.id, st)
-        user_state[uid] = st
-        return
     action, value = c.data[3:].split("_", 1) if "_" in c.data[3:] else (c.data[3:], "")
     if action == "title":
         if value == "custom":
@@ -6356,12 +5957,6 @@ def on_direct_video_callback(c):
         st["step"] = "direct_video_audio"
         bot.send_message(c.message.chat.id, "🎵 Выберите звук:", reply_markup=direct_video_audio_kb())
     elif action == "audio":
-        if value == "tts":
-            st["step"] = "direct_video_tts_text"
-            bot.send_message(c.message.chat.id, "📰 Что озвучить?",
-                             reply_markup=direct_video_tts_text_kb(bool(st.get("direct_video_caption"))))
-            user_state[uid] = st
-            return
         st["direct_video_audio"] = value
         st["step"] = "direct_video_format"
         bot.send_message(c.message.chat.id, "📱 Выберите формат:", reply_markup=direct_video_format_kb())
@@ -6381,17 +5976,8 @@ def on_direct_video_callback(c):
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
                      func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
 def handle_forwarded_message(message):
-    # Telegram handler returns immediately; downloading the photo can take seconds.
-    # The user gets a receipt before media processing starts.
-    if not getattr(message, "media_group_id", None):
-        try:
-            bot.send_chat_action(message.chat.id, "typing")
-        except Exception:
-            pass
-    threading.Thread(target=_process_forwarded_message, args=(message,), daemon=True).start()
-
-
-def _process_forwarded_message(message):
+    # Как в прежней стабильной версии: обрабатываем медиа полностью,
+    # и только затем показываем кнопки действий.
     uid = message.from_user.id
     
     original_text = ""
@@ -6440,31 +6026,17 @@ def _process_forwarded_message(message):
     st["media_group"] = {"photos": [], "videos": []}
     st["card_bytes"] = None
     
-    # Сразу показываем меню: скачивание медиа не блокирует ответ.
-    user_state[uid] = st
-    media_ready = threading.Event()
-    st["_media_ready"] = media_ready
-    text_preview = original_text[:200] if original_text else "(без текста)"
-    source_text = f"📢 <b>Источник:</b> {source_info}\n" if source_info else ""
-    media_label = "📷 Фото" if message.photo else "🎬 Видео" if message.video else "📎 Материал"
-    send_message_with_retry(message.chat.id,
-        f"📎 <b>Материал получен!</b> {media_label}\n\n{source_text}"
-        f"📝 <b>Текст:</b> {html.escape(text_preview)}\n\n<b>Что сделать с этим постом?</b>",
-        parse_mode="HTML", reply_markup=repost_action_kb(), max_retries=1)
-    try:
-        if message.photo:
-            try:
-                photo_bytes = tg_file_bytes(message.photo[-1].file_id)
-                if check_file_size(photo_bytes):
-                    st["photo_bytes"] = photo_bytes
-                    st["saved_photo_bytes"] = photo_bytes
-                    st["media_group"]["photos"].append(photo_bytes)
-            except Exception:
-                logger.exception("Background repost photo download failed")
-    finally:
-        if not message.video:
-            media_ready.set()
-
+    if message.photo:
+        try:
+            file_id = message.photo[-1].file_id
+            photo_bytes = tg_file_bytes(file_id)
+            if check_file_size(photo_bytes):
+                st["photo_bytes"] = photo_bytes
+                st["saved_photo_bytes"] = photo_bytes
+                st["media_group"]["photos"].append(photo_bytes)
+        except Exception as e:
+            logger.error(f"Error extracting photo from forward: {e}")
+    
     if message.video:
         try:
             video_info = get_video_info(message.video.file_id, message.video)
@@ -6479,8 +6051,29 @@ def _process_forwarded_message(message):
         st["has_media"] = True
         st["media_type"] = "video" if message.video else "document"
     
-    media_ready.set()
     user_state[uid] = st
+    
+    text_preview = original_text[:200] if original_text else "(без текста)"
+    source_text = f"📢 <b>Источник:</b> {source_info}\n" if source_info else ""
+    
+    media_status = []
+    if st["photo_bytes"]:
+        media_status.append("✅ <b>Фото:</b> сохранено")
+    if st["video_info"]:
+        file_size_mb = st["video_info"].get('file_size', 0) / (1024 * 1024)
+        media_status.append(f"✅ <b>Видео:</b> сохранено ({file_size_mb:.1f}MB)")
+    if not media_status:
+        media_status.append("⚠️ <b>Медиа:</b> не найдено")
+    
+    title_display = ""
+    if st.get("title"):
+        title_display = f"\n📌 <b>Заголовок:</b> {st['title']}"
+    
+    media_status_text = "\n".join(media_status)
+    send_message_with_retry(message.chat.id,
+        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{media_status_text}"
+        f"{title_display}\n📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
+        parse_mode="HTML", reply_markup=repost_action_kb())
 
 
 @bot.message_handler(func=lambda message: re.search(r'https?://[^\s]+', message.text) and not re.search(r't\.me/', message.text))
@@ -6639,20 +6232,6 @@ def on_text(message):
     text = message.text.strip() if message.text else ""
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
     
-    if text == BTN_CROP:
-        _start_crop(message.chat.id, uid, prompt_if_missing=True)
-        return
-    if text == BTN_AI_TEXT:
-        cmd_ai_text(message)
-        return
-    if st.get("step") == "shorten_wait_text":
-        st["shorten_source"] = text
-        st["original_text"] = text
-        st["original_text_for_ai"] = text
-        st["step"] = "shorten_choose"
-        user_state[uid] = st
-        bot.reply_to(message, "✂️ Куда сократить текст?", reply_markup=shorten_choice_kb())
-        return
     if text == BTN_SLIDESHOW:
         _start_slideshow(message.chat.id, uid)
         return
@@ -6669,19 +6248,13 @@ def on_text(message):
             st["slideshow_mode"] = "video"
             st["step"] = "slideshow_format"
             count = _slideshow_page_count(len(st.get("slideshow_photos") or []) + len(st.get("slideshow_videos") or []))
-            bot.reply_to(message, f"🎙 Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
+            bot.reply_to(message, f"🎙 Озвучка OpenAI выбрана. Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
         else:
             bot.reply_to(message, "🖼 Выберите тип слайд-шоу:", reply_markup=slideshow_mode_kb())
         return
     if text == BTN_MAKE_VIDEO:
         user_state[uid] = {"step": "direct_video_wait", "template": "MN"}
         bot.reply_to(message, "🎬 Пришлите видео, одно фото или пост с несколькими фото. Из фотографий соберу MP4-слайд-шоу, затем предложу заголовок, звук и формат.")
-        return
-    if st.get("step") == "direct_video_tts_text_input":
-        st["direct_video_tts_text"] = text
-        st["step"] = "direct_video_tts_provider"
-        user_state[uid] = st
-        bot.reply_to(message, "🎙 Выберите сервис озвучки:", reply_markup=direct_video_tts_provider_kb())
         return
     if st.get("step") == "direct_video_title_input":
         st["direct_video_title"] = text
@@ -7043,20 +6616,6 @@ def on_photo_or_document(message):
         _receive_album_item(message, uid, is_repost=False)
         return
     
-    if st.get("step") == "crop_wait_media":
-        if message.photo:
-            st["media_group"] = {"photos": [tg_file_bytes(message.photo[-1].file_id)], "videos": []}
-        elif message.video:
-            st["media_group"] = {"photos": [], "videos": [get_video_info(message.video.file_id, message.video)]}
-        elif message.document and (message.document.mime_type or "").startswith("image/"):
-            st["media_group"] = {"photos": [tg_file_bytes(message.document.file_id)], "videos": []}
-        else:
-            bot.reply_to(message, "❌ Отправьте фотографию или видео.")
-            return
-        user_state[uid] = st
-        _start_crop(message.chat.id, uid)
-        return
-
     if st.get("step") == "direct_video_wait" and message.photo:
         try:
             photo = tg_file_bytes(message.photo[-1].file_id)
@@ -7119,8 +6678,8 @@ def on_photo_or_document(message):
             bot.reply_to(message, "❌ Видео превышает лимит 50 МБ.")
             return
         st.update(direct_video_file_id=message.video.file_id,
-                  direct_video_caption=message.caption or st.get("direct_video_caption", ""),
-                  direct_video_title=extract_title_from_text(message.caption or "") or st.get("direct_video_title", ""),
+                  direct_video_caption=message.caption or "",
+                  direct_video_title=extract_title_from_text(message.caption or ""),
                   step="direct_video_title")
         user_state[uid] = st
         bot.reply_to(message, "📝 Выберите заголовок для видео:", reply_markup=direct_video_title_kb(bool(st["direct_video_title"])))
@@ -7193,12 +6752,6 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
             return
     
-    # Обычное фото/видео с подписью: те же быстрые действия, что у репоста.
-    # Специальные режимы оформления, улучшения и видео выше не меняем.
-    if st.get("step") in (None, "idle", "waiting_repost_action") and (message.photo or message.video):
-        threading.Thread(target=_process_forwarded_message, args=(message,), daemon=True).start()
-        return
-
     try:
         if message.photo:
             # Each standalone photo starts a fresh media batch.
@@ -7351,17 +6904,9 @@ def cmd_prices(message):
 def cmd_ai_text(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
-    source = (st.get("original_text_for_ai") or st.get("original_text") or "").strip()
-    if source:
-        st["shorten_source"] = source
-        st["step"] = "shorten_choose"
-        user_state[uid] = st
-        send_message_with_retry(message.chat.id, "✂️ <b>Сократить текст</b>\n\nВыберите формат:",
-                                parse_mode="HTML", reply_markup=shorten_choice_kb())
-    else:
-        st["step"] = "shorten_wait_text"
-        user_state[uid] = st
-        send_message_with_retry(message.chat.id, "✂️ Отправьте текст или репост для сокращения.")
+    st["step"] = "waiting_ai_text"
+    user_state[uid] = st
+    send_message_with_retry(message.chat.id, "🤖 <b>Текст в ИИ</b>\n\nОтправь текст новости, и я сокращу его до 650 символов.\n\n<i>Обработка может занять до 30 секунд...</i>", parse_mode="HTML", reply_markup=main_menu_kb())
 
 
 @bot.message_handler(commands=["stop"])
@@ -7441,8 +6986,8 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.error(f"Polling error: {e}")
                 if "409" in str(e) or "Conflict" in str(e):
-                    logger.error("Telegram 409: overlapping getUpdates detected. Retrying in 5 seconds; check Render deploy overlap if repeated.")
-                    time.sleep(5)
+                    logger.error("Telegram 409: another process is polling this token. Stop duplicate Render services/workers or local copies. Waiting 90 seconds before retry.")
+                    time.sleep(90 + random.uniform(0, 10))
                 else:
                     time.sleep(10)
                 continue
