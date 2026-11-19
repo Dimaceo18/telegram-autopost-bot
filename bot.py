@@ -4342,6 +4342,14 @@ def on_repost_action(c):
     uid = c.from_user.id
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
+    # Меню уже показано. Если пользователь нажал кнопку раньше окончания
+    # загрузки фотографии, дождёмся её только на этапе выполнения действия.
+    media_ready = st.get("_media_ready")
+    if media_ready is not None and not media_ready.is_set():
+        bot.answer_callback_query(c.id, "Загружаю фото, секунду…")
+        if not media_ready.wait(timeout=25):
+            bot.send_message(c.message.chat.id, "⏳ Фото ещё загружается. Повторите действие через несколько секунд.")
+            return
     
     if action == "crop":
         bot.answer_callback_query(c.id)
@@ -6170,21 +6178,31 @@ def _process_forwarded_message(message):
     st["media_group"] = {"photos": [], "videos": []}
     st["card_bytes"] = None
     
-    if message.photo:
-        try:
-            send_message_with_retry(message.chat.id, "⏳ Репост получен. Загружаю фотографию…")
-        except Exception:
-            pass
-        try:
-            file_id = message.photo[-1].file_id
-            photo_bytes = tg_file_bytes(file_id)
-            if check_file_size(photo_bytes):
-                st["photo_bytes"] = photo_bytes
-                st["saved_photo_bytes"] = photo_bytes
-                st["media_group"]["photos"].append(photo_bytes)
-        except Exception as e:
-            logger.error(f"Error extracting photo from forward: {e}")
-    
+    # Сразу показываем меню: скачивание медиа не блокирует ответ.
+    user_state[uid] = st
+    media_ready = threading.Event()
+    st["_media_ready"] = media_ready
+    text_preview = original_text[:200] if original_text else "(без текста)"
+    source_text = f"📢 <b>Источник:</b> {source_info}\n" if source_info else ""
+    media_label = "📷 Фото" if message.photo else "🎬 Видео" if message.video else "📎 Материал"
+    send_message_with_retry(message.chat.id,
+        f"📎 <b>Материал получен!</b> {media_label}\n\n{source_text}"
+        f"📝 <b>Текст:</b> {html.escape(text_preview)}\n\n<b>Что сделать с этим постом?</b>",
+        parse_mode="HTML", reply_markup=repost_action_kb(), max_retries=1)
+    try:
+        if message.photo:
+            try:
+                photo_bytes = tg_file_bytes(message.photo[-1].file_id)
+                if check_file_size(photo_bytes):
+                    st["photo_bytes"] = photo_bytes
+                    st["saved_photo_bytes"] = photo_bytes
+                    st["media_group"]["photos"].append(photo_bytes)
+            except Exception:
+                logger.exception("Background repost photo download failed")
+    finally:
+        if not message.video:
+            media_ready.set()
+
     if message.video:
         try:
             video_info = get_video_info(message.video.file_id, message.video)
@@ -6199,29 +6217,8 @@ def _process_forwarded_message(message):
         st["has_media"] = True
         st["media_type"] = "video" if message.video else "document"
     
+    media_ready.set()
     user_state[uid] = st
-    
-    text_preview = original_text[:200] if original_text else "(без текста)"
-    source_text = f"📢 <b>Источник:</b> {source_info}\n" if source_info else ""
-    
-    media_status = []
-    if st["photo_bytes"]:
-        media_status.append("✅ <b>Фото:</b> сохранено")
-    if st["video_info"]:
-        file_size_mb = st["video_info"].get('file_size', 0) / (1024 * 1024)
-        media_status.append(f"✅ <b>Видео:</b> сохранено ({file_size_mb:.1f}MB)")
-    if not media_status:
-        media_status.append("⚠️ <b>Медиа:</b> не найдено")
-    
-    title_display = ""
-    if st.get("title"):
-        title_display = f"\n📌 <b>Заголовок:</b> {st['title']}"
-    
-    media_status_text = "\n".join(media_status)
-    send_message_with_retry(message.chat.id,
-        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{media_status_text}"
-        f"{title_display}\n📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
-        parse_mode="HTML", reply_markup=repost_action_kb())
 
 
 @bot.message_handler(func=lambda message: re.search(r'https?://[^\s]+', message.text) and not re.search(r't\.me/', message.text))
@@ -6900,6 +6897,12 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
             return
     
+    # Обычное фото/видео с подписью: те же быстрые действия, что у репоста.
+    # Специальные режимы оформления, улучшения и видео выше не меняем.
+    if st.get("step") in (None, "idle", "waiting_repost_action") and (message.photo or message.video):
+        threading.Thread(target=_process_forwarded_message, args=(message,), daemon=True).start()
+        return
+
     try:
         if message.photo:
             # Each standalone photo starts a fresh media batch.
@@ -7134,8 +7137,8 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.error(f"Polling error: {e}")
                 if "409" in str(e) or "Conflict" in str(e):
-                    logger.error("Telegram 409: another process is polling this token. Stop duplicate Render services/workers or local copies. Waiting 90 seconds before retry.")
-                    time.sleep(90 + random.uniform(0, 10))
+                    logger.error("Telegram 409: overlapping getUpdates detected. Retrying in 5 seconds; check Render deploy overlap if repeated.")
+                    time.sleep(5)
                 else:
                     time.sleep(10)
                 continue
