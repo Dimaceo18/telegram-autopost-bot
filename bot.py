@@ -3566,58 +3566,71 @@ def _slideshow_page_count(photo_count):
     """1-5 photos: 5 slides; 6-10 photos: 10 slides. Exactly 5 -> 5."""
     return 10 if photo_count >= 6 else 5
 
-def _slide_paginate(title, body, fmt, page_count=5):
-    """Fill consecutive slides from the first one; balance text across used slides.
+def _slide_clean_text(value):
+    """Remove decorative emoji/control characters, preserve punctuation and words."""
+    value = html.unescape(re.sub(r"<[^>]*>", "", value or ""))
+    value = remove_emojis(value)
+    value = re.sub(r"[\u200b-\u200f\u202a-\u202e\ufe0e\ufe0f\u2060\u20e3]", "", value)
+    value = re.sub(r"[\u0000-\u0008\u000b-\u001f\u007f]", " ", value)
+    value = re.sub(r"[▪●■◆★☆✨🔥👉☑✔✅❗❕📌📍🔴🟡🔵]+", " ", value)
+    value = re.sub(r"[ \t]+", " ", value)
+    return value.strip()
 
-    Short articles occupy only the first slides. Longer articles are spread
-    evenly across all slides, without empty gaps or dropped words.
-    """
-    text = _slide_remove_trailing_source(body).strip()
-    words = text.split()
-    if not words:
+
+def _slide_paginate(title, body, fmt, page_count=5):
+    """Paginate complete sentences only, with no truncation or split sentences."""
+    title = _slide_clean_text(title)
+    cleaned = _slide_clean_text(_slide_remove_trailing_source(body))
+    sentences = [_slide_clean_text(u) for u in _slide_sentences(cleaned)]
+    sentences = [u for u in sentences if u.strip()]
+    if not sentences:
         raise ValueError("В посте отсутствует текст статьи. Добавьте текст после заголовка.")
-    # Around 14 words per slide is a readable pace for a 5-second news slide.
-    # Very short posts are placed at the beginning, never at the end.
-    used = min(page_count, max(1, (len(words) + 13) // 14))
     w, h = SLIDE_FORMATS[fmt]
     margin = 76 if fmt == "square" else 86
     max_w = w - 2 * margin
     draw = ImageDraw.Draw(Image.new("RGB", (4, 4)))
-    # Preserve the full text in its original order, split on word boundaries.
-    # Choose the largest font that fits every active slide, including the title.
-    for body_size in range(56, 19, -1):
-        title_size = min(78, max(45, round(body_size * 1.7)))
+    # Use the largest legible font that can accommodate ALL sentences.
+    for body_size in range(56, 17, -1):
+        title_size = min(78, max(40, round(body_size * 1.7)))
         title_lines = _slide_wrap(draw, title.upper(), _slide_font(title_size, True), max_w)
         title_h = _slide_lines_height(title_lines, title_size, .20)
         if title_h > h * .40:
             continue
-        capacity = [h - 115 - (156 + title_h + 32)] + [h - 115 - (156 + 56)] * (page_count - 1)
+        capacities = [h - 115 - (156 + title_h + 32)] + [h - 115 - (156 + 56)] * (page_count - 1)
         font = _slide_font(body_size)
-        # Try a balanced division first; if the headline takes extra space,
-        # allow a slightly smaller first portion while keeping pages contiguous.
-        def page_height(chunk):
-            return _slide_lines_height(_slide_wrap(draw, chunk, font, max_w), body_size)
-        bounds = [0]
-        feasible = True
-        for i in range(used):
-            start = bounds[-1]
-            remaining_pages = used - i
-            remaining_words = len(words) - start
-            if i == used - 1:
-                end = len(words)
-            else:
-                ideal = max(1, round(remaining_words / remaining_pages))
-                end = min(len(words) - (remaining_pages - 1), start + ideal)
-                while end > start + 1 and page_height(" ".join(words[start:end])) > capacity[i]:
-                    end -= 1
-            if end <= start or page_height(" ".join(words[start:end])) > capacity[i]:
-                feasible = False
-                break
-            bounds.append(end)
-        if feasible and bounds[-1] == len(words):
-            pages = [" ".join(words[bounds[i]:bounds[i+1]]) for i in range(used)]
-            return pages + [""] * (page_count - used), body_size, title_size
-    raise ValueError(f"Текст не помещается на {page_count} слайдах. Сократите текст или выберите другой формат.")
+        def fits(txt, i):
+            return _slide_lines_height(_slide_wrap(draw, txt, font, max_w), body_size) <= capacities[i]
+        # Dynamic programming: choose page boundaries on complete sentences.
+        # Minimize uneven page lengths and empty pages, preferring fewer pages for short texts.
+        n = len(sentences)
+        if n > 350:
+            raise ValueError("Слишком много предложений для слайд-шоу.")
+        from functools import lru_cache
+        @lru_cache(None)
+        def solve(pos, page):
+            if pos == n:
+                return (0, ())
+            if page >= page_count:
+                return None
+            best = None
+            for end in range(pos + 1, n + 1):
+                chunk = _slide_join_units(sentences[pos:end])
+                if not fits(chunk, page):
+                    break
+                rest = solve(end, page + 1)
+                if rest is None:
+                    continue
+                # Prefer pages of roughly 14-30 words; don't create needless pages.
+                words = len(chunk.split())
+                cost = rest[0] + 10 + max(0, words - 30)**2 * .08 + max(0, 12 - words)**2 * .08
+                if best is None or cost < best[0]:
+                    best = (cost, (chunk,) + rest[1])
+            return best
+        result = solve(0, 0)
+        if result:
+            pages = list(result[1])
+            return pages + [""] * (page_count - len(pages)), body_size, title_size
+    raise ValueError(f"Полные предложения не помещаются на {page_count} слайдах. Сократите текст или выберите другой формат.")
 
 def make_news_slideshow(photos, title, body, fmt):
     if not photos:
@@ -3626,6 +3639,7 @@ def make_news_slideshow(photos, title, body, fmt):
         raise ValueError("Не найден заголовок поста.")
     page_count = _slideshow_page_count(len(photos))
     pages, body_size, title_size = _slide_paginate(title, body, fmt, page_count)
+    title = _slide_clean_text(title)
     w, h = SLIDE_FORMATS[fmt]
     margin = 76 if fmt == "square" else 86
     results = []
@@ -3647,7 +3661,7 @@ def make_news_slideshow(photos, title, body, fmt):
         draw = ImageDraw.Draw(image)
         # Слайд-шоу без верхней плашки «НОВОСТИ» и нижнего брендинга.
         footer_font = _slide_font(26, True)
-        count_text = f"{i+1:02d} / {page_count:02d}"
+        count_text = f"{i+1:02d} / {sum(bool(p.strip()) for p in pages):02d}"
         bb = draw.textbbox((0, 0), count_text, font=footer_font)
         draw.text((w - margin - (bb[2]-bb[0]), h - 91), count_text, font=footer_font, fill=(240, 240, 240))
         y = 156
@@ -3735,6 +3749,7 @@ def make_news_slideshow_tts_video(slides, title, body, fmt):
     if not slides:
         raise ValueError("Нет слайдов для видео.")
     page_texts, _, _ = _slide_paginate(title, body, fmt, len(slides))
+    title = _slide_clean_text(title)
     # First slide displays both the title and its first paragraph.
     narrations = [((title.strip() + ". " if i == 0 else "") + page.strip()).strip()
                   if page.strip() else "" for i, page in enumerate(page_texts)]
@@ -4049,23 +4064,31 @@ def _crop_photo_bytes(data, w, h):
         return out
 
 def _crop_video_bytes(data, w, h):
+    """Crop and compress input to a Telegram-friendly MP4, preserving full duration."""
     with tempfile.TemporaryDirectory(prefix="crop_media_") as tmp:
         source = os.path.join(tmp, "input.mp4")
         target = os.path.join(tmp, "cropped.mp4")
         with open(source, "wb") as f:
             f.write(data)
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
-               "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1",
-               "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-               "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", target]
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError((exc.stderr or "FFmpeg error")[-500:]) from exc
-        with open(target, "rb") as f:
-            out = BytesIO(f.read())
-        out.name = "cropped.mp4"
-        return out
+        # Lower bitrate if necessary, while preserving the full original clip.
+        for rate in ("2200k", "1300k", "750k", "450k"):
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", source,
+                   "-t", "120", "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1",
+                   "-c:v", "libx264", "-threads", "1", "-preset", "ultrafast", "-b:v", rate,
+                   "-maxrate", rate, "-bufsize", "2500k", "-pix_fmt", "yuv420p",
+                   "-c:a", "aac", "-b:a", "80k", "-movflags", "+faststart", target]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError((exc.stderr or "FFmpeg error")[-500:]) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("Превышено время обработки видео FFmpeg.") from exc
+            if os.path.getsize(target) <= 49 * 1024 * 1024:
+                with open(target, "rb") as f:
+                    out = BytesIO(f.read())
+                out.name = "cropped.mp4"
+                return out
+        raise ValueError("Не удалось уменьшить видео до 50 МБ. Пришлите файл меньшего размера.")
 
 def _run_crop(uid, chat_id, fmt):
     st = user_state.get(uid) or {}
@@ -4088,7 +4111,26 @@ def _run_crop(uid, chat_id, fmt):
             file_id = info.get("file_id") if isinstance(info, dict) else info
             if not file_id:
                 raise ValueError("Нет file_id")
+            if isinstance(info, dict):
+                if info.get("file_size", 0) > MAX_FILE_SIZE:
+                    raise ValueError("Видео больше 50 МБ. Пришлите файл меньше 50 МБ.")
+                if info.get("duration", 0) > 120:
+                    raise ValueError("Видео длиннее 2 минут. Пришлите ролик до 2 минут.")
             data = tg_file_bytes(file_id)
+            if len(data) > MAX_FILE_SIZE:
+                raise ValueError("Видео больше 50 МБ. Пришлите файл меньше 50 МБ.")
+            # Check actual duration, not only Telegram metadata.
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as probe_file:
+                probe_file.write(data)
+                probe_path = probe_file.name
+            try:
+                probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                        "-of", "default=noprint_wrappers=1:nokey=1", probe_path],
+                                       capture_output=True, text=True, timeout=25, check=True)
+                if float(probe.stdout.strip()) > 120:
+                    raise ValueError("Видео длиннее 2 минут. Пришлите ролик до 2 минут.")
+            finally:
+                os.unlink(probe_path)
             result = _crop_video_bytes(data, w, h)
             if len(result.getvalue()) > MAX_FILE_SIZE:
                 raise ValueError("Готовый MP4 превышает лимит отправки 50 МБ")
@@ -4116,6 +4158,13 @@ def on_crop_callback(c):
     if choice not in CROP_FORMATS or (user_state.get(uid) or {}).get("step") != "crop_format":
         send_message_with_retry(c.message.chat.id, "⚠️ Сначала отправьте пост и выберите «Обрезать».")
         return
+    for info in (user_state[uid].get("crop_videos") or []):
+        if isinstance(info, dict) and info.get("file_size", 0) > MAX_FILE_SIZE:
+            send_message_with_retry(c.message.chat.id, "❌ Видео больше 50 МБ. Пришлите файл меньше 50 МБ.")
+            return
+        if isinstance(info, dict) and info.get("duration", 0) > 120:
+            send_message_with_retry(c.message.chat.id, "❌ Видео длиннее 2 минут. Пришлите ролик до 2 минут.")
+            return
     user_state[uid]["step"] = "crop_processing"
     send_message_with_retry(c.message.chat.id, "⏳ Обрезаю все фото и видео, подождите...")
     threading.Thread(target=_run_crop, args=(uid, c.message.chat.id, choice), daemon=True).start()
