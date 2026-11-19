@@ -528,22 +528,21 @@ def check_file_size(file_bytes: bytes) -> bool:
 
 # Повторно используем соединения HTTP для скачивания медиа.
 def tg_file_bytes(file_id: str) -> bytes:
-    """Download Telegram media synchronously, retrying transient network errors."""
+    """Synchronous media fetch with bounded retries (no background download)."""
     last_error = None
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             file_info = bot.get_file(file_id)
             file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-            with requests.get(file_url, timeout=(15, 90)) as response:
-                response.raise_for_status()
-                return response.content
-        except (requests.exceptions.RequestException, Exception) as exc:
+            response = requests.get(file_url, timeout=(8, 22))
+            response.raise_for_status()
+            return response.content
+        except requests.exceptions.RequestException as exc:
             last_error = exc
-            logger.warning("Telegram media download attempt %s/3 failed: %s", attempt + 1, exc)
-            if attempt < 2:
-                time.sleep(2 * (attempt + 1))
-    logger.error("Failed to download Telegram media after retries: %s", last_error)
-    raise last_error
+            logger.warning("Telegram photo download %s/2 failed: %s", attempt + 1, exc)
+            if attempt == 0:
+                time.sleep(1)
+    raise RuntimeError(f"Не удалось скачать медиа из Telegram: {last_error}")
 
 def get_video_info(file_id: str, video_obj) -> Dict:
     return {
@@ -2864,7 +2863,10 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
         total_size = sum(v.get('file_size', 0) for v in videos) / (1024 * 1024)
         media_status.append(f"✅ <b>Видео:</b> {video_count} шт ({total_size:.1f}MB)")
     if not media_status:
-        media_status.append("⚠️ <b>Медиа:</b> не найдено")
+        if st.get("media_download_error"):
+            media_status.append("⚠️ <b>Фото не загрузилось из Telegram.</b> Отправьте фото повторно или отдельным сообщением.")
+        else:
+            media_status.append("⚠️ <b>Медиа:</b> не найдено")
     
     send_message_with_retry(chat_id,
         f"📸 <b>Альбом обнаружен!</b>\n\n{', '.join(media_status)}\n📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
@@ -4589,7 +4591,7 @@ def on_repost_action(c):
             user_state[uid] = st
             bot.answer_callback_query(c.id, f"📝 Использую заголовок: {st['title'][:50]}...")
             send_message_with_retry(c.message.chat.id, 
-                f"📝 <b>Заголовок уже сохранён:</b>\n«{st['title']}»\n\nВыбери шаблон оформления:",
+                f"📝 <b>Заголовок уже сохранён:</b>\n«{html.escape(st['title'])}»\n\nВыбери шаблон оформления:",
                 parse_mode="HTML", 
                 reply_markup=template_kb())
         else:
@@ -4791,7 +4793,7 @@ def on_ai_action(c):
             user_state[uid] = st
             bot.answer_callback_query(c.id, f"📝 Использую заголовок: {st['title'][:50]}...")
             send_message_with_retry(c.message.chat.id, 
-                f"📝 <b>Заголовок уже сохранён:</b>\n«{st['title']}»\n\nВыбери шаблон оформления:",
+                f"📝 <b>Заголовок уже сохранён:</b>\n«{html.escape(st['title'])}»\n\nВыбери шаблон оформления:",
                 parse_mode="HTML", 
                 reply_markup=template_kb())
         else:
@@ -5750,7 +5752,7 @@ def on_tpl(c):
             template_name = template_names.get(tpl, tpl)
             bot.answer_callback_query(c.id, f"Шаблон {template_name} выбран ✅")
             
-            title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
+            title_display = f"\n📌 <b>Заголовок:</b> {html.escape(st['title'])}" if st.get("title") else ""
             send_message_with_retry(c.message.chat.id, 
                 f"📰 Выбран шаблон <b>{template_name}</b>{title_display}\n\n📸 Фото уже есть!\n\n<b>Где разместить текст?</b>\n⬆️ Сверху или ⬇️ Снизу",
                 parse_mode="HTML", reply_markup=text_position_kb())
@@ -5767,7 +5769,7 @@ def on_tpl(c):
             st["step"] = "waiting_text_position"
             user_state[uid] = st
             bot.answer_callback_query(c.id, "Шаблон АМ выбран ✅")
-            title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
+            title_display = f"\n📌 <b>Заголовок:</b> {html.escape(st['title'])}" if st.get("title") else ""
             send_message_with_retry(c.message.chat.id, 
                 f"✨ Выбран шаблон <b>АМ</b>{title_display}\n\n📸 Фото уже есть!\n\n<b>Где разместить текст?</b>\n⬆️ Сверху или ⬇️ Снизу",
                 parse_mode="HTML", reply_markup=text_position_kb())
@@ -5782,7 +5784,7 @@ def on_tpl(c):
             st["step"] = "waiting_text_position_am2"
             user_state[uid] = st
             bot.answer_callback_query(c.id, "Шаблон АМ 2 выбран ✅")
-            title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
+            title_display = f"\n📌 <b>Заголовок:</b> {html.escape(st['title'])}" if st.get("title") else ""
             send_message_with_retry(c.message.chat.id, 
                 f"🎨 Выбран шаблон <b>АМ 2</b>{title_display}\n\n📐 <b>Выбери расположение текста:</b>",
                 parse_mode="HTML", reply_markup=text_position_kb_am2())
@@ -6365,6 +6367,7 @@ def handle_forwarded_message(message):
     if original_text:
         st["title"], st["body_raw"] = split_title_and_body(original_text)
     st["photo_bytes"] = None
+    st.pop("media_download_error", None)
     st["video_info"] = None
     st["video_file_id"] = None
     st["media_group"] = {"photos": [], "videos": []}
@@ -6379,7 +6382,8 @@ def handle_forwarded_message(message):
                 st["saved_photo_bytes"] = photo_bytes
                 st["media_group"]["photos"].append(photo_bytes)
         except Exception as e:
-            logger.error(f"Error extracting photo from forward: {e}")
+            logger.exception("Error extracting photo from forward")
+            st["media_download_error"] = str(e)
     
     if message.video:
         try:
@@ -6398,7 +6402,7 @@ def handle_forwarded_message(message):
     user_state[uid] = st
     
     text_preview = original_text[:200] if original_text else "(без текста)"
-    source_text = f"📢 <b>Источник:</b> {source_info}\n" if source_info else ""
+    source_text = f"📢 <b>Источник:</b> {html.escape(source_info)}\n" if source_info else ""
     
     media_status = []
     if st["photo_bytes"]:
@@ -6416,7 +6420,7 @@ def handle_forwarded_message(message):
     media_status_text = "\n".join(media_status)
     send_message_with_retry(message.chat.id,
         f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{media_status_text}"
-        f"{title_display}\n📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
+        f"{title_display}\n📝 <b>Текст:</b> {html.escape(text_preview)}...\n\n<b>Что сделать с этим постом?</b>",
         parse_mode="HTML", reply_markup=repost_action_kb())
 
 
@@ -6657,7 +6661,7 @@ def on_text(message):
         st["step"] = "waiting_repost_action"
         user_state[uid] = st
         
-        title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
+        title_display = f"\n📌 <b>Заголовок:</b> {html.escape(st['title'])}" if st.get("title") else ""
         
         bot.reply_to(
             message,
@@ -7143,7 +7147,7 @@ def on_photo_or_document(message):
         if st.get("title"):
             st["step"] = "waiting_template"
             user_state[uid] = st
-            title_display = f"\n📌 <b>Заголовок:</b> {st['title']}" if st.get("title") else ""
+            title_display = f"\n📌 <b>Заголовок:</b> {html.escape(st['title'])}" if st.get("title") else ""
             bot.reply_to(message, f"📸 Медиа сохранено!{title_display}\n\nТеперь выбери шаблон оформления:", reply_markup=template_kb())
         else:
             st["step"] = "waiting_title"
@@ -7337,7 +7341,7 @@ if __name__ == "__main__":
                     break
                 logger.warning("Telegram polling exited; retrying after delay")
                 retry_count += 1
-                _shutdown_requested.wait(min(10 * retry_count, 60))
+                _shutdown_requested.wait(min(45 * retry_count, 180))
             except Exception as exc:
                 if _shutdown_requested.is_set():
                     break
