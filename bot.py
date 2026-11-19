@@ -5985,8 +5985,37 @@ def direct_video_audio_kb():
     kb.add(InlineKeyboardButton("🎵 Оригинал", callback_data="dv:audio_original"),
            InlineKeyboardButton("📢 Важное", callback_data="dv:audio_важная"),
            InlineKeyboardButton("🎵 Обычное", callback_data="dv:audio_обычная"),
-           InlineKeyboardButton("🔇 Без звука", callback_data="dv:audio_silent"))
+           InlineKeyboardButton("🔇 Без звука", callback_data="dv:audio_silent"),
+           InlineKeyboardButton("🎙 Озвучка ИИ (GPT / Яндекс)", callback_data="dv:audio_tts"))
     return kb
+
+def direct_video_tts_text_kb(has_caption):
+    kb = InlineKeyboardMarkup(row_width=1)
+    if has_caption:
+        kb.add(InlineKeyboardButton("📰 Озвучить текст из подписи", callback_data="dv:tts_text_caption"))
+    kb.add(InlineKeyboardButton("✏️ Ввести текст для озвучки", callback_data="dv:tts_text_custom"),
+           InlineKeyboardButton("❌ Отмена", callback_data="dv:cancel"))
+    return kb
+
+def direct_video_tts_provider_kb():
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("🤖 GPT · OpenAI", callback_data="dv:tts_provider_openai"),
+           InlineKeyboardButton("🇷🇺 Яндекс · SpeechKit", callback_data="dv:tts_provider_yandex"),
+           InlineKeyboardButton("❌ Отмена", callback_data="dv:cancel"))
+    return kb
+
+def direct_video_tts_voice_kb(provider):
+    kb = InlineKeyboardMarkup(row_width=2)
+    for voice, label in SLIDESHOW_TTS_VOICES[provider].items():
+        kb.row(InlineKeyboardButton(label, callback_data=f"dv:tts_voice_{voice}"),
+               InlineKeyboardButton("▶️ Послушать", callback_data=f"dv:tts_preview_{voice}"))
+    kb.add(InlineKeyboardButton("⬅️ Выбрать сервис", callback_data="dv:tts_back"),
+           InlineKeyboardButton("❌ Отмена", callback_data="dv:cancel"))
+    return kb
+
+def direct_video_tts_next(chat_id, st):
+    st["step"] = "direct_video_format"
+    bot.send_message(chat_id, "📱 Выберите формат:", reply_markup=direct_video_format_kb())
 
 def direct_video_format_kb():
     kb = InlineKeyboardMarkup(row_width=2)
@@ -6037,11 +6066,37 @@ def render_direct_video(uid, chat_id):
                     y += line_h + 2
                 layer.save(overlay)
             vf = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,eq=brightness=-0.035"
+            if st.get("direct_video_audio") == "tts":
+                # Extend video as needed for longer narration, never truncate the spoken text.
+                # Duration will be computed after synthesis, below.
+                pass
             cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src)]
             if overlay.exists():
                 cmd += ["-loop", "1", "-i", str(overlay)]
             audio_type = st.get("direct_video_audio", "original")
             audio_path = folder / "music.mp3"
+            if audio_type == "tts":
+                narration = (st.get("direct_video_tts_text") or "").strip()
+                if not narration:
+                    raise ValueError("Не задан текст для озвучки")
+                provider = st.get("direct_video_tts_provider", "openai")
+                voice = st.get("direct_video_tts_voice")
+                if provider == "yandex":
+                    _yandex_tts_speech(narration, str(audio_path), voice)
+                else:
+                    _openai_tts_speech(narration, str(audio_path), voice)
+                cmd += ["-i", str(audio_path)]
+                probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                        "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+                                       capture_output=True, text=True, check=True, timeout=15)
+                narration_seconds = float(probe.stdout.strip())
+                # Extend the last video frame only when narration is longer.
+                src_probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                            "-of", "default=noprint_wrappers=1:nokey=1", str(src)],
+                                           capture_output=True, text=True, check=True, timeout=15)
+                source_seconds = float(src_probe.stdout.strip())
+                if narration_seconds > source_seconds:
+                    vf += f",tpad=stop_mode=clone:stop_duration={narration_seconds - source_seconds + 0.3:.3f}"
             if audio_type in ("важная", "обычная"):
                 response = requests.get(AUDIO_URLS[audio_type], timeout=30)
                 response.raise_for_status()
@@ -6053,9 +6108,15 @@ def render_direct_video(uid, chat_id):
                 cmd += ["-filter_complex", f"[0:v]{vf}[base];[base][1:v]overlay=0:0:shortest=1{enabled}[v]", "-map", "[v]"]
             else:
                 cmd += ["-vf", vf, "-map", "0:v:0"]
-            if audio_type in ("важная", "обычная"):
+            if audio_type in ("важная", "обычная", "tts"):
                 audio_idx = 2 if overlay.exists() else 1
-                cmd += ["-map", f"{audio_idx}:a:0", "-shortest"]
+                cmd += ["-map", f"{audio_idx}:a:0"]
+                if audio_type == "tts":
+                    # Озвучка не обрывается, если длиннее исходного ролика.
+                    # В конце видео удерживаем последний кадр до конца речи.
+                    cmd += ["-af", "apad", "-shortest"]
+                else:
+                    cmd += ["-shortest"]
             elif audio_type == "original":
                 cmd += ["-map", "0:a?", "-shortest"]
             else:
@@ -6086,6 +6147,54 @@ def on_direct_video_callback(c):
     if not st.get("direct_video_file_id"):
         bot.send_message(c.message.chat.id, "Сначала нажмите 🎬 Сделать видео и отправьте ролик.")
         return
+    if c.data.startswith("dv:tts_"):
+        choice = c.data[len("dv:tts_"):]
+        if choice == "text_caption":
+            narration = (st.get("direct_video_caption") or "").strip()
+            if not narration:
+                bot.send_message(c.message.chat.id, "❌ В подписи нет текста. Введите его вручную.")
+                return
+            st["direct_video_tts_text"] = narration
+            st["step"] = "direct_video_tts_provider"
+            bot.send_message(c.message.chat.id, "🎙 Выберите сервис озвучки:", reply_markup=direct_video_tts_provider_kb())
+        elif choice == "text_custom":
+            st["step"] = "direct_video_tts_text_input"
+            bot.send_message(c.message.chat.id, "✏️ Пришлите текст, который должен прочитать диктор:")
+        elif choice == "back":
+            st["step"] = "direct_video_tts_provider"
+            bot.send_message(c.message.chat.id, "🎙 Выберите сервис озвучки:", reply_markup=direct_video_tts_provider_kb())
+        elif choice.startswith("provider_"):
+            provider = choice[len("provider_"):]
+            if provider not in SLIDESHOW_TTS_VOICES:
+                return
+            st["direct_video_tts_provider"] = provider
+            st["step"] = "direct_video_tts_voice"
+            bot.send_message(c.message.chat.id, "🎙 Выберите диктора или послушайте пример:",
+                             reply_markup=direct_video_tts_voice_kb(provider))
+        elif choice.startswith("preview_"):
+            provider = st.get("direct_video_tts_provider", "openai")
+            voice = choice[len("preview_"):]
+            if voice not in SLIDESHOW_TTS_VOICES.get(provider, {}):
+                return
+            with _slideshow_preview_lock:
+                now = time.monotonic()
+                if now - _slideshow_preview_last.get(uid, 0) < 4:
+                    bot.send_message(c.message.chat.id, "⏳ Подождите несколько секунд перед следующим примером.")
+                    return
+                _slideshow_preview_last[uid] = now
+            threading.Thread(target=_slideshow_preview_worker,
+                             args=(c.message.chat.id, uid, provider, voice), daemon=True).start()
+        elif choice.startswith("voice_"):
+            provider = st.get("direct_video_tts_provider", "openai")
+            voice = choice[len("voice_"):]
+            if voice not in SLIDESHOW_TTS_VOICES.get(provider, {}):
+                return
+            st["direct_video_tts_voice"] = voice
+            st["direct_video_audio"] = "tts"
+            bot.send_message(c.message.chat.id, f"✅ Выбран диктор: {SLIDESHOW_TTS_VOICES[provider][voice]}")
+            direct_video_tts_next(c.message.chat.id, st)
+        user_state[uid] = st
+        return
     action, value = c.data[3:].split("_", 1) if "_" in c.data[3:] else (c.data[3:], "")
     if action == "title":
         if value == "custom":
@@ -6100,6 +6209,12 @@ def on_direct_video_callback(c):
         st["step"] = "direct_video_audio"
         bot.send_message(c.message.chat.id, "🎵 Выберите звук:", reply_markup=direct_video_audio_kb())
     elif action == "audio":
+        if value == "tts":
+            st["step"] = "direct_video_tts_text"
+            bot.send_message(c.message.chat.id, "📰 Что озвучить?",
+                             reply_markup=direct_video_tts_text_kb(bool(st.get("direct_video_caption"))))
+            user_state[uid] = st
+            return
         st["direct_video_audio"] = value
         st["step"] = "direct_video_format"
         bot.send_message(c.message.chat.id, "📱 Выберите формат:", reply_markup=direct_video_format_kb())
@@ -6400,6 +6515,12 @@ def on_text(message):
     if text == BTN_MAKE_VIDEO:
         user_state[uid] = {"step": "direct_video_wait", "template": "MN"}
         bot.reply_to(message, "🎬 Пришлите видео, одно фото или пост с несколькими фото. Из фотографий соберу MP4-слайд-шоу, затем предложу заголовок, звук и формат.")
+        return
+    if st.get("step") == "direct_video_tts_text_input":
+        st["direct_video_tts_text"] = text
+        st["step"] = "direct_video_tts_provider"
+        user_state[uid] = st
+        bot.reply_to(message, "🎙 Выберите сервис озвучки:", reply_markup=direct_video_tts_provider_kb())
         return
     if st.get("step") == "direct_video_title_input":
         st["direct_video_title"] = text
