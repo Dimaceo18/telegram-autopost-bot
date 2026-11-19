@@ -528,15 +528,22 @@ def check_file_size(file_bytes: bytes) -> bool:
 
 # Повторно используем соединения HTTP для скачивания медиа.
 def tg_file_bytes(file_id: str) -> bytes:
-    try:
-        file_info = bot.get_file(file_id)
-        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-        r = requests.get(file_url, timeout=30)
-        r.raise_for_status()
-        return r.content
-    except Exception as e:
-        logger.error(f"Failed to download file: {e}")
-        raise
+    """Download Telegram media synchronously, retrying transient network errors."""
+    last_error = None
+    for attempt in range(3):
+        try:
+            file_info = bot.get_file(file_id)
+            file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+            with requests.get(file_url, timeout=(15, 90)) as response:
+                response.raise_for_status()
+                return response.content
+        except (requests.exceptions.RequestException, Exception) as exc:
+            last_error = exc
+            logger.warning("Telegram media download attempt %s/3 failed: %s", attempt + 1, exc)
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+    logger.error("Failed to download Telegram media after retries: %s", last_error)
+    raise last_error
 
 def get_video_info(file_id: str, video_obj) -> Dict:
     return {
@@ -7278,15 +7285,17 @@ def handle_ai_text_button(message):
 
 
 # =========================
-# GRACEFUL SHUTDOWN
+# GRACEFUL SHUTDOWN / POLLING
 # =========================
+_shutdown_requested = threading.Event()
+
 def signal_handler(sig, frame):
-    logger.info("Shutting down gracefully...")
+    logger.info("Shutdown signal %s received; stopping Telegram polling", sig)
+    _shutdown_requested.set()
     try:
         bot.stop_polling()
-    except:
-        pass
-    sys.exit(0)
+    except Exception:
+        logger.exception("Unable to stop polling cleanly")
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
@@ -7300,35 +7309,49 @@ if __name__ == "__main__":
     try:
         download_fonts()
         ensure_fonts()
-        logger.info("Fonts loaded successfully")
-        
         for attempt in range(3):
+            if _shutdown_requested.is_set():
+                break
             try:
                 bot.remove_webhook()
-                time.sleep(1)
-                logger.info(f"Webhook removed (attempt {attempt + 1})")
+                logger.info("Webhook removed")
                 break
-            except Exception as e:
-                logger.warning(f"Failed to remove webhook (attempt {attempt + 1}): {e}")
-                time.sleep(2)
-        
-        http_thread = threading.Thread(target=run_http_server, daemon=True)
-        http_thread.start()
-        logger.info("🌐 Health check server thread started")
-        
-        logger.info("🤖 Bot started polling...")
-        while True:
+            except Exception as exc:
+                logger.warning("Failed to remove webhook (%s/3): %s", attempt + 1, exc)
+                _shutdown_requested.wait(2)
+
+        if not _shutdown_requested.is_set():
+            http_thread = threading.Thread(target=run_http_server, daemon=True)
+            http_thread.start()
+            logger.info("Health check server started")
+
+        # polling() returns control to this loop on errors, unlike infinity_polling()
+        # which retries internally and can repeatedly conflict during a deployment.
+        retry_count = 0
+        while not _shutdown_requested.is_set():
             try:
-                bot.infinity_polling(timeout=60, long_polling_timeout=60)
-            except Exception as e:
-                logger.error(f"Polling error: {e}")
-                if "409" in str(e) or "Conflict" in str(e):
-                    logger.error("Telegram 409: another process is polling this token. Stop duplicate Render services/workers or local copies. Waiting 90 seconds before retry.")
-                    time.sleep(90 + random.uniform(0, 10))
+                logger.info("Starting Telegram polling")
+                bot.polling(non_stop=False, timeout=20, long_polling_timeout=20,
+                            interval=0)
+                if _shutdown_requested.is_set():
+                    break
+                logger.warning("Telegram polling exited; retrying after delay")
+                retry_count += 1
+                _shutdown_requested.wait(min(10 * retry_count, 60))
+            except Exception as exc:
+                if _shutdown_requested.is_set():
+                    break
+                msg = str(exc).lower()
+                if "409" in msg or "conflict" in msg:
+                    retry_count += 1
+                    delay = min(30 * retry_count, 180) + random.uniform(0, 5)
+                    logger.error("Telegram 409: competing getUpdates client. Waiting %.1fs; check for a second Render instance/service.", delay)
                 else:
-                    time.sleep(10)
-                continue
-                
-    except Exception as e:
-        logger.error(f"❌ Bot crashed: {e}")
+                    retry_count += 1
+                    delay = min(5 * retry_count, 60)
+                    logger.exception("Telegram polling error; retry in %ss", delay)
+                _shutdown_requested.wait(delay)
+        logger.info("Bot process exiting")
+    except Exception:
+        logger.exception("Bot crashed during startup")
         raise
