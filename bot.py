@@ -3439,6 +3439,17 @@ def slideshow_mode_kb():
            InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
     return kb
 
+def slideshow_photo_template_kb():
+    """Select a visual style only for photo albums; video stays unchanged."""
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🟥 ВМ · текущий", callback_data="slideshow:template_vm"),
+        InlineKeyboardButton("📰 МН · Minsk News", callback_data="slideshow:template_mn"),
+    )
+    kb.row(InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
+
 def slideshow_format_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(InlineKeyboardButton("📱 4:5", callback_data="slideshow:4x5"),
@@ -3723,7 +3734,7 @@ def _slide_paginate(title, body, fmt, page_count=5):
             return pages + [""] * (page_count - len(pages)), body_size, title_size
     raise ValueError(f"Полные предложения не помещаются на {page_count} слайдах. Сократите текст или выберите другой формат.")
 
-def make_news_slideshow(photos, title, body, fmt, add_final_cta=False):
+def make_news_slideshow(photos, title, body, fmt, add_final_cta=False, template="VM"):
     if not photos:
         raise ValueError("Для слайд-шоу нужна хотя бы одна фотография.")
     if not title.strip():
@@ -3776,6 +3787,48 @@ def make_news_slideshow(photos, title, body, fmt, add_final_cta=False):
         # Darken only slides that actually contain text.
         image = Image.blend(image, Image.new("RGB", (w, h), (7, 12, 20)), .74)
         draw = ImageDraw.Draw(image)
+        if template == "MN":
+            # МН: фирменный Caviar Dreams, заголовок сверху, подпись MINSK NEWS
+            # снизу. Текст статьи остаётся полностью читаемым и не обрезается.
+            ensure_fonts()
+            mn_font_path = FONT_MN
+            title_font = load_font(mn_font_path, title_size)
+            body_font = load_font(mn_font_path, body_size)
+            small_font = load_font(mn_font_path, 30)
+            brand_font = load_font(mn_font_path, 30)
+            count_text = f"{i+1:02d} / {sum(bool(p.strip()) for p in pages):02d}"
+            cb = draw.textbbox((0, 0), count_text, font=small_font)
+            draw.text((w - margin - (cb[2] - cb[0]), h - 94), count_text,
+                      font=small_font, fill="white")
+            brand = FOOTER_TEXT
+            fb = draw.textbbox((0, 0), brand, font=brand_font)
+            draw.text(((w - (fb[2] - fb[0])) // 2, h - 95), brand,
+                      font=brand_font, fill="white")
+            y = 156
+            if i == 0:
+                # Like the MN post template: centered, white, uppercase title.
+                title_lines = _slide_wrap(draw, title.upper(), title_font, w - 2 * margin)
+                for line in title_lines:
+                    tb = draw.textbbox((0, 0), line, font=title_font)
+                    draw.text(((w - (tb[2] - tb[0])) // 2, y), line,
+                              font=title_font, fill="white")
+                    y += title_size + round(title_size * .20)
+                y += 32
+            else:
+                draw.text((margin, y), "ПРОДОЛЖЕНИЕ", font=small_font, fill="white")
+                y += 56
+            for line in _slide_wrap(draw, page, body_font, w - 2 * margin):
+                if line:
+                    draw.text((margin, y), line, font=body_font, fill="white")
+                y += body_size + round(body_size * .34)
+            if y > h - 115:
+                raise ValueError("Текст не помещается в границы слайда.")
+            out = BytesIO()
+            image.save(out, format="JPEG", quality=91, optimize=True)
+            out.seek(0)
+            out.name = f"news_slide_{i+1}.jpg"
+            results.append(out)
+            continue
         # Слайд-шоу без верхней плашки «НОВОСТИ» и нижнего брендинга.
         footer_font = _slide_font(26, True)
         count_text = f"{i+1:02d} / {sum(bool(p.strip()) for p in pages):02d}"
@@ -4176,9 +4229,23 @@ def on_slideshow_callback(c):
             send_message_with_retry(chat_id, "⚠️ Сначала отправьте пост и выберите создание слайд-шоу.")
             return
         st["slideshow_mode"] = "video" if choice == "mode_video" else "photo"
+        if choice == "mode_photo":
+            st["step"] = "slideshow_photo_template"
+            send_message_with_retry(chat_id, "🎨 Выберите шаблон фото-слайд-шоу:",
+                                    reply_markup=slideshow_photo_template_kb())
+            return
         st["step"] = "slideshow_format"
         count = _slideshow_page_count((len(st.get("slideshow_photos") or []) + len(st.get("slideshow_videos") or [])))
         send_message_with_retry(chat_id, f"📐 Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
+        return
+    if choice in ("template_vm", "template_mn"):
+        if st.get("step") != "slideshow_photo_template":
+            return
+        st["slideshow_photo_template"] = "MN" if choice == "template_mn" else "VM"
+        st["step"] = "slideshow_format"
+        count = _slideshow_page_count(len(st.get("slideshow_photos") or []) + len(st.get("slideshow_videos") or []))
+        send_message_with_retry(chat_id, f"📐 Выберите размер для {count} слайдов:",
+                                reply_markup=slideshow_format_kb())
         return
     if choice in SLIDE_FORMATS:
         if st.get("step") != "slideshow_format":
@@ -4276,7 +4343,10 @@ def _slideshow_worker(chat_id, uid, st, fmt, mode, count, audio_type):
         current_photos = list(st.get("slideshow_photos") or [])
         for video_info in st.get("slideshow_videos") or []:
             current_photos.append(_slideshow_video_preview(video_info))
-        slides = make_news_slideshow(current_photos, st["slideshow_title"], st["slideshow_body"], fmt, add_final_cta=(mode == "photo"))
+        slides = make_news_slideshow(
+            current_photos, st["slideshow_title"], st["slideshow_body"], fmt,
+            add_final_cta=(mode == "photo"),
+            template=st.get("slideshow_photo_template", "VM") if mode == "photo" else "VM")
         logger.info("SLIDESHOW: images rendered: %d", len(slides))
         if mode == "video":
             send_message_with_retry(chat_id, "🎙 Слайды готовы. Создаю озвучку и собираю MP4, это может занять несколько минут..." if audio_type == "openai_tts" else "🎞 Слайды готовы. Кодирую MP4, это может занять 1–3 минуты...")
