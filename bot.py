@@ -204,18 +204,34 @@ BTN_POST = "📝 Оформить пост"
 BTN_ENHANCE = "✨ Улучшить качество"
 BTN_WATERMARK = "💧 Водяные знаки"
 BTN_PRICES = "💰 Цены"
-BTN_AI_TEXT = "🤖 Текст в ИИ"
+BTN_AI_TEXT = "✂️ Сократить текст"
+BTN_CROP = "✂️ Обрезать"
 BTN_MAKE_VIDEO = "🎬 Сделать видео"
 BTN_SLIDESHOW = "🖼 Сделать слайд-шоу"
 BTN_SLIDESHOW_TTS = "🎙 Слайд-шоу с озвучкой ИИ"
 
 def main_menu_kb():
+    """Шесть основных действий без лишних пунктов."""
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_AI_TEXT))
-    kb.row(KeyboardButton(BTN_ENHANCE), KeyboardButton(BTN_WATERMARK))
-    kb.row(KeyboardButton(BTN_PRICES), KeyboardButton(BTN_MAKE_VIDEO))
-    kb.row(KeyboardButton(BTN_SLIDESHOW))
-    kb.row(KeyboardButton(BTN_SLIDESHOW_TTS))
+    kb.row(KeyboardButton(BTN_SLIDESHOW), KeyboardButton(BTN_MAKE_VIDEO))
+    kb.row(KeyboardButton(BTN_CROP), KeyboardButton(BTN_WATERMARK))
+    return kb
+
+def shorten_choice_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("📱 Пост для ТГ (500 симв.)", callback_data="shorten:tg"),
+           InlineKeyboardButton("🧵 Пост для Тредс (400 симв.)", callback_data="shorten:threads"))
+    return kb
+
+def shorten_next_kb(kind):
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("🎬 Сделать видео", callback_data=f"next:{kind}:video"),
+           InlineKeyboardButton("🖼 Слайд-шоу", callback_data=f"next:{kind}:slideshow"),
+           InlineKeyboardButton("📢 Опубликовать", callback_data=f"next:{kind}:publish"),
+           InlineKeyboardButton("📝 Оформить пост", callback_data=f"next:{kind}:design"))
+    kb.add(InlineKeyboardButton("✏️ Редактировать", callback_data=f"{kind}:edit"),
+           InlineKeyboardButton("🔄 Сократить заново", callback_data=f"{kind}:redo"))
     return kb
 
 def repost_action_kb():
@@ -246,15 +262,7 @@ def after_ai_kb():
     return kb
 
 def post_action_kb(post_type: str = "tg"):
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("🔄 Переделать еще раз", callback_data=f"{post_type}:redo"),
-        InlineKeyboardButton("📝 Оформить пост", callback_data=f"{post_type}:design"),
-        InlineKeyboardButton("📢 Выбрать канал", callback_data=f"{post_type}:select_channel"),
-        InlineKeyboardButton("✏️ Редактировать текст", callback_data=f"{post_type}:edit"),
-        InlineKeyboardButton("◀️ Назад", callback_data=f"{post_type}:back")
-    )
-    return kb
+    return shorten_next_kb(post_type)
 
 def template_kb():
     kb = InlineKeyboardMarkup(row_width=1)
@@ -4205,7 +4213,7 @@ def crop_format_kb():
     kb.add(InlineKeyboardButton("❌ Отмена", callback_data="crop:cancel"))
     return kb
 
-def _start_crop(chat_id, uid):
+def _start_crop(chat_id, uid, prompt_if_missing=False):
     st = user_state.get(uid) or {}
     photos = st.get("album_photos") or st.get("media_group", {}).get("photos") or []
     if not photos and st.get("photo_bytes"):
@@ -4214,7 +4222,12 @@ def _start_crop(chat_id, uid):
     if not videos and st.get("video_info"):
         videos = [st["video_info"]]
     if not photos and not videos:
-        send_message_with_retry(chat_id, "❌ Сначала отправьте пост с фото или видео.")
+        if prompt_if_missing:
+            st["step"] = "crop_wait_media"
+            user_state[uid] = st
+            send_message_with_retry(chat_id, "✂️ Отправьте фото или видео для обрезки.")
+        else:
+            send_message_with_retry(chat_id, "❌ Сначала отправьте пост с фото или видео.")
         return
     st["crop_photos"] = list(photos)
     st["crop_videos"] = list(videos)
@@ -4264,10 +4277,12 @@ def _run_crop(uid, chat_id, fmt):
     photos = st.get("crop_photos", [])
     videos = st.get("crop_videos", [])
     success, failures = 0, []
+    cropped_photos = []
     # Each media is sent separately to support mixed albums and Telegram size limits.
     for i, photo in enumerate(photos, 1):
         try:
             result = _crop_photo_bytes(photo, w, h)
+            cropped_photos.append(result.getvalue())
             if not send_photo_with_retry(chat_id, result, caption=f"✂️ Фото {i} · {fmt}"):
                 raise RuntimeError("Telegram не принял фото")
             success += 1
@@ -4309,10 +4324,47 @@ def _run_crop(uid, chat_id, fmt):
             logger.exception("Crop video failed")
             failures.append(f"Видео {i}: {exc}")
     st["step"] = "idle"
+    st["cropped_photos_for_watermark"] = cropped_photos
     message = f"✅ Готово: {success} медиа в формате {fmt}." if success else "❌ Не удалось обрезать медиа."
     if failures:
         message += "\n" + "\n".join(failures[:5])
-    send_message_with_retry(chat_id, message, reply_markup=main_menu_kb())
+    if cropped_photos:
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("💧 Нанести водяной знак", callback_data="crop_watermark:choose"))
+        send_message_with_retry(chat_id, message + "\n\nМожно нанести водяной знак на обрезанные фото:", reply_markup=kb)
+    else:
+        send_message_with_retry(chat_id, message, reply_markup=main_menu_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("crop_watermark:"))
+def on_crop_watermark(c):
+    bot.answer_callback_query(c.id)
+    uid = c.from_user.id
+    st = user_state.get(uid) or {}
+    photos = st.get("cropped_photos_for_watermark") or []
+    if not photos:
+        send_message_with_retry(c.message.chat.id, "❌ Нет обрезанных фотографий для водяного знака.")
+        return
+    action = c.data.split(":", 1)[1]
+    if action == "choose":
+        kb = InlineKeyboardMarkup(row_width=2)
+        kb.add(InlineKeyboardButton("📰 MINSK NEWS", callback_data="crop_watermark:mn"),
+               InlineKeyboardButton("🚨 ЧП", callback_data="crop_watermark:chp"),
+               InlineKeyboardButton("🖼 Лого MN", callback_data="crop_watermark:logo"))
+        send_message_with_retry(c.message.chat.id, "💧 Выберите водяной знак:", reply_markup=kb)
+        return
+    def work():
+        for i, photo in enumerate(photos, 1):
+            try:
+                fn = {"mn": apply_watermark_mn, "chp": apply_watermark_chp,
+                      "logo": apply_watermark_logo_mn}.get(action)
+                if fn is None:
+                    return
+                result = fn(photo)
+                send_photo_with_retry(c.message.chat.id, result, caption=f"💧 Фото {i}")
+            except Exception:
+                logger.exception("Watermark after crop failed")
+                send_message_with_retry(c.message.chat.id, f"❌ Ошибка водяного знака на фото {i}.")
+    threading.Thread(target=work, daemon=True).start()
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("crop:"))
 def on_crop_callback(c):
@@ -4686,6 +4738,101 @@ def on_ai_action(c):
 # =========================
 # ОБРАБОТЧИКИ ДЛЯ TG И THREADS
 # =========================
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("shorten:"))
+def on_shorten_choice(c):
+    uid = c.from_user.id
+    kind = c.data.split(":", 1)[1]
+    st = user_state.get(uid) or {}
+    source = (st.get("shorten_source") or st.get("original_text_for_ai") or
+              st.get("original_text") or "").strip()
+    bot.answer_callback_query(c.id)
+    if not source:
+        send_message_with_retry(c.message.chat.id, "📝 Отправьте текст или репост для сокращения.")
+        st["step"] = "shorten_wait_text"
+        user_state[uid] = st
+        return
+    send_message_with_retry(c.message.chat.id, "⏳ Сокращаю текст...")
+    def work():
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            func = process_text_with_deepseek_tg if kind == "tg" else process_text_with_deepseek_threads
+            result = loop.run_until_complete(func(source))
+            st["tg_post_text" if kind == "tg" else "threads_post_text"] = result
+            st["post_type"] = kind
+            st["step"] = "waiting_post_action"
+            user_state[uid] = st
+            label = "Telegram" if kind == "tg" else "Threads"
+            send_message_with_retry(c.message.chat.id,
+                f"📱 <b>Пост для {label}</b>\n\n{html.escape(strip_html_tags(result))}\n\nЧто сделать с текстом и медиа?",
+                parse_mode="HTML", reply_markup=shorten_next_kb(kind))
+        except Exception as exc:
+            logger.exception("Shorten text failed")
+            send_message_with_retry(c.message.chat.id, f"❌ Ошибка сокращения: {exc}")
+        finally:
+            loop.close()
+    threading.Thread(target=work, daemon=True).start()
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("next:"))
+def on_shorten_next(c):
+    uid = c.from_user.id
+    parts = c.data.split(":")
+    if len(parts) != 3:
+        bot.answer_callback_query(c.id)
+        return
+    _, kind, action = parts
+    st = user_state.get(uid) or {}
+    result = st.get("tg_post_text" if kind == "tg" else "threads_post_text", "")
+    bot.answer_callback_query(c.id)
+    if not result:
+        send_message_with_retry(c.message.chat.id, "⚠️ Сначала сократите текст.")
+        return
+    plain = html.unescape(strip_html_tags(result))
+    st["original_text"] = plain
+    st["original_text_for_ai"] = plain
+    title, body = split_title_and_body(plain)
+    st["title"] = clean_title_for_card(title)
+    st["body_raw"] = body
+    user_state[uid] = st
+    if action == "publish":
+        send_message_with_retry(c.message.chat.id, "📢 Выберите канал для публикации:",
+                                reply_markup=post_channel_selection_kb(kind))
+    elif action == "design":
+        if not st.get("photo_bytes") and st.get("saved_photo_bytes"):
+            st["photo_bytes"] = st["saved_photo_bytes"]
+        if st.get("photo_bytes") or (st.get("media_group") or {}).get("photos"):
+            st["step"] = "waiting_template"
+            send_message_with_retry(c.message.chat.id, "📝 Выберите шаблон оформления:", reply_markup=template_kb())
+        else:
+            st["step"] = "waiting_photo"
+            send_message_with_retry(c.message.chat.id, "📸 Отправьте фотографию для оформления поста.")
+    elif action == "slideshow":
+        _start_slideshow(c.message.chat.id, uid)
+    elif action == "video":
+        # Reuse the existing video editor; preserve the shortened caption.
+        photos = st.get("album_photos") or (st.get("media_group") or {}).get("photos") or []
+        videos = st.get("album_videos") or (st.get("media_group") or {}).get("videos") or []
+        if photos:
+            album_id = f"shortened_{uid}_{int(time.time() * 1000)}"
+            user_album_cache[album_id] = {
+                "photos": list(photos), "videos": [], "caption": plain,
+                "user_id": uid, "chat_id": c.message.chat.id
+            }
+            threading.Thread(target=process_album_to_video,
+                             args=(uid, album_id, c.message.chat.id), daemon=True).start()
+        elif videos:
+            send_message_with_retry(c.message.chat.id,
+                "🎬 Для видео из полученного ролика нажмите «Сделать видео» и отправьте исходный файл. Сокращённый текст сохранён.")
+            st["step"] = "direct_video_wait"
+            st["direct_video_caption"] = plain
+            st["direct_video_title"] = title
+        else:
+            st["step"] = "direct_video_wait"
+            st["direct_video_caption"] = plain
+            st["direct_video_title"] = title
+            send_message_with_retry(c.message.chat.id,
+                "🎬 Отправьте видео или фотографии. Сокращённый текст сохранён для видео.")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tg:"))
 def on_tg_action(c):
@@ -6492,6 +6639,20 @@ def on_text(message):
     text = message.text.strip() if message.text else ""
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
     
+    if text == BTN_CROP:
+        _start_crop(message.chat.id, uid, prompt_if_missing=True)
+        return
+    if text == BTN_AI_TEXT:
+        cmd_ai_text(message)
+        return
+    if st.get("step") == "shorten_wait_text":
+        st["shorten_source"] = text
+        st["original_text"] = text
+        st["original_text_for_ai"] = text
+        st["step"] = "shorten_choose"
+        user_state[uid] = st
+        bot.reply_to(message, "✂️ Куда сократить текст?", reply_markup=shorten_choice_kb())
+        return
     if text == BTN_SLIDESHOW:
         _start_slideshow(message.chat.id, uid)
         return
@@ -6882,6 +7043,20 @@ def on_photo_or_document(message):
         _receive_album_item(message, uid, is_repost=False)
         return
     
+    if st.get("step") == "crop_wait_media":
+        if message.photo:
+            st["media_group"] = {"photos": [tg_file_bytes(message.photo[-1].file_id)], "videos": []}
+        elif message.video:
+            st["media_group"] = {"photos": [], "videos": [get_video_info(message.video.file_id, message.video)]}
+        elif message.document and (message.document.mime_type or "").startswith("image/"):
+            st["media_group"] = {"photos": [tg_file_bytes(message.document.file_id)], "videos": []}
+        else:
+            bot.reply_to(message, "❌ Отправьте фотографию или видео.")
+            return
+        user_state[uid] = st
+        _start_crop(message.chat.id, uid)
+        return
+
     if st.get("step") == "direct_video_wait" and message.photo:
         try:
             photo = tg_file_bytes(message.photo[-1].file_id)
@@ -6944,8 +7119,8 @@ def on_photo_or_document(message):
             bot.reply_to(message, "❌ Видео превышает лимит 50 МБ.")
             return
         st.update(direct_video_file_id=message.video.file_id,
-                  direct_video_caption=message.caption or "",
-                  direct_video_title=extract_title_from_text(message.caption or ""),
+                  direct_video_caption=message.caption or st.get("direct_video_caption", ""),
+                  direct_video_title=extract_title_from_text(message.caption or "") or st.get("direct_video_title", ""),
                   step="direct_video_title")
         user_state[uid] = st
         bot.reply_to(message, "📝 Выберите заголовок для видео:", reply_markup=direct_video_title_kb(bool(st["direct_video_title"])))
@@ -7176,9 +7351,17 @@ def cmd_prices(message):
 def cmd_ai_text(message):
     uid = message.from_user.id
     st = user_state.get(uid) or {}
-    st["step"] = "waiting_ai_text"
-    user_state[uid] = st
-    send_message_with_retry(message.chat.id, "🤖 <b>Текст в ИИ</b>\n\nОтправь текст новости, и я сокращу его до 650 символов.\n\n<i>Обработка может занять до 30 секунд...</i>", parse_mode="HTML", reply_markup=main_menu_kb())
+    source = (st.get("original_text_for_ai") or st.get("original_text") or "").strip()
+    if source:
+        st["shorten_source"] = source
+        st["step"] = "shorten_choose"
+        user_state[uid] = st
+        send_message_with_retry(message.chat.id, "✂️ <b>Сократить текст</b>\n\nВыберите формат:",
+                                parse_mode="HTML", reply_markup=shorten_choice_kb())
+    else:
+        st["step"] = "shorten_wait_text"
+        user_state[uid] = st
+        send_message_with_retry(message.chat.id, "✂️ Отправьте текст или репост для сокращения.")
 
 
 @bot.message_handler(commands=["stop"])
