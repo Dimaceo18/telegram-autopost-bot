@@ -13,6 +13,7 @@ import tempfile
 import shutil
 import traceback
 import subprocess
+import random
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urljoin
@@ -82,6 +83,11 @@ logger = logging.getLogger(__name__)
 # =========================
 TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 DEEPSEEK_API_KEY = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
+OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
+OPENAI_TTS_VOICE = (os.getenv("OPENAI_TTS_VOICE") or "onyx").strip()
+YANDEX_SPEECHKIT_API_KEY = (os.getenv("YANDEX_SPEECHKIT_API_KEY") or os.getenv("YANDEX_API_KEY") or "").strip()
+YANDEX_SPEECHKIT_IAM_TOKEN = (os.getenv("YANDEX_SPEECHKIT_IAM_TOKEN") or "").strip()
+YANDEX_FOLDER_ID = (os.getenv("YANDEX_FOLDER_ID") or "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
 CHANNEL_MN = (os.getenv("CHANNEL_MN") or "").strip()
@@ -200,12 +206,16 @@ BTN_WATERMARK = "💧 Водяные знаки"
 BTN_PRICES = "💰 Цены"
 BTN_AI_TEXT = "🤖 Текст в ИИ"
 BTN_MAKE_VIDEO = "🎬 Сделать видео"
+BTN_SLIDESHOW = "🖼 Сделать слайд-шоу"
+BTN_SLIDESHOW_TTS = "🎙 Слайд-шоу с озвучкой ИИ"
 
 def main_menu_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton(BTN_POST), KeyboardButton(BTN_AI_TEXT))
     kb.row(KeyboardButton(BTN_ENHANCE), KeyboardButton(BTN_WATERMARK))
     kb.row(KeyboardButton(BTN_PRICES), KeyboardButton(BTN_MAKE_VIDEO))
+    kb.row(KeyboardButton(BTN_SLIDESHOW))
+    kb.row(KeyboardButton(BTN_SLIDESHOW_TTS))
     return kb
 
 def repost_action_kb():
@@ -217,7 +227,9 @@ def repost_action_kb():
         InlineKeyboardButton("📱 Пост для Тредс (400 симв.)", callback_data="repost:threads"),
         InlineKeyboardButton("💧 Нанести водяной знак", callback_data="repost:watermark"),
         InlineKeyboardButton("✏️ Редактировать текст", callback_data="repost:edit"),
-        InlineKeyboardButton("🎬 Сделать видео из альбома", callback_data="repost:make_album_video")
+        InlineKeyboardButton("🎬 Сделать видео из альбома", callback_data="repost:make_album_video"),
+        InlineKeyboardButton("🖼 Сделать слайд-шоу", callback_data="repost:slideshow"),
+        InlineKeyboardButton("✂️ Обрезать", callback_data="repost:crop")
     )
     return kb
 
@@ -463,33 +475,32 @@ def send_photo_with_retry(chat_id, photo, caption=None, parse_mode=None, reply_m
     return None
 
 def send_video_with_retry(chat_id, video, caption=None, parse_mode=None, reply_markup=None, width=None, height=None, max_retries=3):
+    """Send an MP4 as a playable Telegram video; retry safely with a fresh stream."""
     if caption and len(caption) > 950:
         caption = caption[:947] + "..."
-    
+    if hasattr(video, "getvalue"):
+        video_bytes = video.getvalue()
+    elif isinstance(video, (bytes, bytearray)):
+        video_bytes = bytes(video)
+    else:
+        video_bytes = None
     for attempt in range(max_retries):
         try:
+            if video_bytes is not None:
+                payload = BytesIO(video_bytes)
+                payload.name = "ready_video.mp4"
+            else:
+                video.seek(0)
+                payload = video
             return bot.send_video(
-                chat_id=chat_id,
-                video=video,
-                caption=caption,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup,
-                width=width,
-                height=height
+                chat_id, payload, caption=caption, parse_mode=parse_mode,
+                reply_markup=reply_markup, width=width, height=height,
+                supports_streaming=True, timeout=120
             )
         except Exception as e:
-            logger.error(f"Send video attempt {attempt + 1} failed: {e}")
+            logger.exception("Send MP4 attempt %s failed: %s", attempt + 1, e)
             if attempt < max_retries - 1:
                 time.sleep(2 + attempt * 2)
-            else:
-                try:
-                    return bot.send_video(
-                        chat_id=chat_id,
-                        video=video,
-                        reply_markup=reply_markup
-                    )
-                except:
-                    return None
     return None
 
 def send_media_group_with_retry(chat_id, media_list, max_retries=3):
@@ -515,6 +526,7 @@ def send_media_group_with_retry(chat_id, media_list, max_retries=3):
 def check_file_size(file_bytes: bytes) -> bool:
     return len(file_bytes) <= MAX_FILE_SIZE
 
+# Повторно используем соединения HTTP для скачивания медиа.
 def tg_file_bytes(file_id: str) -> bytes:
     try:
         file_info = bot.get_file(file_id)
@@ -589,23 +601,20 @@ def clean_title_for_card(title: str) -> str:
     return clean
 
 def split_title_and_body(text: str) -> Tuple[str, str]:
+    """Выделяет заголовок целиком, не обрывая его на первой точке.
+
+    Заголовок отделяется от текста новости переводом строки (или пустой
+    строкой). Несколько предложений в первой строке сохраняются полностью.
+    Если разделителя нет, весь переданный текст считается заголовком.
+    """
     if not text:
         return "", ""
-    text = text.strip()
-    
-    if '\n' in text:
-        lines = text.split('\n')
-        title = lines[0].strip()
-        body = '\n'.join(lines[1:]).strip()
-        return title, body
-    
-    if len(text) > 100 and '. ' in text:
-        parts = text.split('. ', 1)
-        title = (parts[0] + '.').strip()
-        body = parts[1].strip() if len(parts) > 1 else ""
-        return title, body
-    
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if "\n" in text:
+        title, body = text.split("\n", 1)
+        return title.strip(), body.strip()
     return text, ""
+
 
 def remove_emojis(text: str) -> str:
     emoji_pattern = re.compile(
@@ -651,9 +660,6 @@ def extract_title_from_text(text: str) -> str:
     clean_text = emoji_pattern.sub('', text).strip()
     
     title, body = split_title_and_body(clean_text)
-    
-    if len(title) > 150:
-        title = title[:147] + "..."
     
     return title
 
@@ -2726,18 +2732,82 @@ def run_http_server():
 # =========================
 # ОБРАБОТЧИК АЛЬБОМОВ
 # =========================
+_album_lock = threading.RLock()
+_album_timers = {}
+ALBUM_QUIET_SECONDS = 5.0
+
+def _receive_album_item(message, uid, is_repost=False):
+    """Collect an album safely: concurrent Telegram handlers cannot pop each other's data."""
+    key = f"{message.chat.id}:{uid}:{message.media_group_id}"
+    file_id = message.photo[-1].file_id if message.photo else None
+    media_type = "photo" if file_id else "video"
+    item = None
+    failure = False
+    try:
+        if media_type == "photo":
+            # Retry transient Telegram file errors instead of silently dropping a photo.
+            for attempt in range(3):
+                try:
+                    item = tg_file_bytes(file_id)
+                    if not check_file_size(item):
+                        raise ValueError("Фотография превышает ограничение размера")
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    time.sleep(0.7 * (attempt + 1))
+        elif message.video:
+            item = get_video_info(message.video.file_id, message.video)
+    except Exception:
+        failure = True
+        logger.exception("ALBUM: media download failed id=%s msg=%s", key, message.message_id)
+    with _album_lock:
+        album = user_album_cache.setdefault(key, {"photos": [], "videos": [], "caption": "",
+                                                     "chat_id": message.chat.id, "received": 0, "failures": 0})
+        album["received"] += 1
+        if message.caption and not album["caption"]:
+            album["caption"] = message.caption
+        if failure:
+            album["failures"] += 1
+        elif item is not None:
+            album["photos" if media_type == "photo" else "videos"].append((message.message_id, item))
+        timer = _album_timers.pop(key, None)
+        if timer is not None:
+            timer.cancel()
+        timer = threading.Timer(ALBUM_QUIET_SECONDS, process_album_with_media,
+                                args=(uid, key, message.chat.id, is_repost))
+        timer.daemon = True
+        _album_timers[key] = timer
+        timer.start()
+        logger.info("ALBUM: collected id=%s messages=%s photos=%s videos=%s", key,
+                    album["received"], len(album["photos"]), len(album["videos"]))
+
 def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_repost: bool = False):
-    time.sleep(2)
-    if media_group_id not in user_album_cache:
+    # One collector per album, finalized only after a quiet period.
+    with _album_lock:
+        album_data = user_album_cache.pop(media_group_id, None)
+        _album_timers.pop(media_group_id, None)
+    if album_data is None:
         return
-    
-    album_data = user_album_cache.pop(media_group_id)
+    album_data["photos"] = [data for _, data in sorted(album_data.get("photos", []))]
+    album_data["videos"] = [data for _, data in sorted(album_data.get("videos", []))]
+    logger.info("ALBUM: finalized id=%s received=%s photos=%s videos=%s failures=%s", media_group_id,
+                album_data.get("received", 0), len(album_data["photos"]),
+                len(album_data["videos"]), album_data.get("failures", 0))
     st = user_state.get(uid) or {}
+    # A new album is a NEW media batch: never inherit photos/videos/text
+    # from an earlier post, including when the current album contains video only.
+    for stale in ("album_photos", "album_videos", "photo_bytes", "saved_photo_bytes",
+                  "video_info", "video_file_id", "slideshow_photos", "slideshow_videos",
+                  "title", "body_raw", "original_text", "original_text_for_ai"):
+        st.pop(stale, None)
     
     caption = album_data.get("caption", "")
     photos = album_data.get("photos", [])
     videos = album_data.get("videos", [])
     
+    if album_data.get("failures"):
+        send_message_with_retry(chat_id, f"⚠️ Не удалось загрузить {album_data['failures']} файлов альбома. Попробуйте переслать альбом ещё раз, если фотографий меньше ожидаемого.")
     if caption:
         title, body = split_title_and_body(caption)
         st["title"] = clean_title_for_card(title)
@@ -2763,9 +2833,20 @@ def process_album_with_media(uid: int, media_group_id: str, chat_id: int, is_rep
         st["video_file_id"] = videos[0].get('file_id')
     
     st["card_bytes"] = None
+    direct_album_video = st.get("step") == "direct_video_wait"
     st["step"] = "waiting_repost_action"
     user_state[uid] = st
-    
+    if direct_album_video and photos:
+        st["original_caption"] = caption
+        st["album_photos"] = photos
+        st["title"] = extract_title_from_text(caption) if caption else ""
+        st["step"] = "video_from_album"
+        user_state[uid] = st
+        send_message_with_retry(chat_id,
+            f"🎬 Получено {len(photos)} фото. Создадим из них один MP4-ролик.\n\nВыберите заголовок:",
+            reply_markup=album_video_title_kb())
+        return
+
     text_preview = caption[:200] if caption else "(без текста)"
     photo_count = len(photos)
     video_count = len(videos)
@@ -2832,7 +2913,7 @@ def process_album_to_video(uid: int, media_group_id: str, chat_id: int):
     )
 
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("album_video:"))
+@bot.callback_query_handler(func=lambda c: c.data.startswith("album_video:") and not c.data.startswith(("album_video:audio_", "album_video:format_", "album_video:mode_")))
 def on_album_video_callback(c):
     uid = c.from_user.id
     action = c.data.split(":")[1]
@@ -3121,6 +3202,7 @@ def create_video_from_album(uid, chat_id, only_first_seconds=0):
             audio_codec='aac',
             threads=4,
             preset='medium',
+            ffmpeg_params=['-pix_fmt', 'yuv420p', '-movflags', '+faststart'],
             logger=None
         )
         
@@ -3141,16 +3223,17 @@ def create_video_from_album(uid, chat_id, only_first_seconds=0):
         caption += f"\n📸 {len(photos)} фото"
         caption += f"\n📱 Формат: {'4:5' if format_name == '4x5' else '9:16'}"
         
-        send_video_with_retry(
+        sent = send_video_with_retry(
             chat_id,
             BytesIO(output.getvalue()),
-            caption=caption,
+            caption=html.escape(re.sub(r"</?b>", "", caption)),
             parse_mode="HTML",
             width=target_w,
             height=target_h
         )
-        
-        bot.edit_message_text("✅ Видео из альбома готово!", chat_id, status_msg.message_id)
+        if sent is None:
+            raise RuntimeError("Telegram не принял MP4. Проверьте размер файла и логи отправки.")
+        bot.edit_message_text("✅ MP4-видео отправлено в чат!", chat_id, status_msg.message_id)
         
         shutil.rmtree(temp_dir)
         clear_state(uid)
@@ -3345,8 +3428,1116 @@ def build_caption_html(title: str, body: str, max_length: int = 950) -> str:
 
 
 # =========================
+# КАРУСЕЛЬ НОВОСТИ: 5 СЛАЙДОВ
+# =========================
+SLIDE_FORMATS = {"4x5": (1080, 1350), "9x16": (1080, 1920), "square": (1080, 1080)}
+
+def slideshow_mode_kb():
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("🖼 Фото слайд-шоу", callback_data="slideshow:mode_photo"),
+           InlineKeyboardButton("🎬 Видео слайд-шоу (MP4)", callback_data="slideshow:mode_video"),
+           InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
+def slideshow_photo_template_kb():
+    """Select a visual style only for photo albums; video stays unchanged."""
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🟥 ВМ · текущий", callback_data="slideshow:template_vm"),
+        InlineKeyboardButton("📰 МН · Minsk News", callback_data="slideshow:template_mn"),
+    )
+    kb.row(InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
+
+def slideshow_format_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("📱 4:5", callback_data="slideshow:4x5"),
+           InlineKeyboardButton("📱 9:16", callback_data="slideshow:9x16"),
+           InlineKeyboardButton("⬜ Квадрат 1:1", callback_data="slideshow:square"),
+           InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
+# Русскоязычные дикторы: по 3 мужских и 3 женских на каждого провайдера.
+# SpeechKit: только голоса ru-RU, доступные в REST API v1.
+SLIDESHOW_TTS_VOICES = {
+    "openai": {
+        "onyx": "👨 Onyx · низкий мужской",
+        "echo": "👨 Echo · мягкий мужской",
+        "ash": "👨 Ash · мужской",
+        "nova": "👩 Nova · женский",
+        "shimmer": "👩 Shimmer · мягкий женский",
+        "coral": "👩 Coral · женский",
+    },
+    "yandex": {
+        "filipp": "👨 Филипп · мужской",
+        "ermil": "👨 Ермил · мужской",
+        "zahar": "👨 Захар · мужской",
+        "jane": "👩 Джейн · женский",
+        "marina": "👩 Марина · женский",
+        "omazh": "👩 Омаж · женский",
+    },
+}
+SLIDESHOW_TTS_PREVIEW_TEXT = (
+    "Добрый день! Это пример новостной озвучки. "
+    "Сегодня в Минске обсуждают главные события города. "
+    "Послушайте мой голос и выберите подходящего диктора для вашего видео."
+)
+_slideshow_preview_last = {}
+_slideshow_preview_lock = threading.Lock()
+
+def slideshow_provider_kb():
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("🤖 GPT · OpenAI", callback_data="slideshow:provider_openai"),
+           InlineKeyboardButton("🇷🇺 Яндекс · SpeechKit", callback_data="slideshow:provider_yandex"),
+           InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
+def slideshow_voice_kb(provider="openai"):
+    kb = InlineKeyboardMarkup(row_width=2)
+    for voice_id, label in SLIDESHOW_TTS_VOICES[provider].items():
+        kb.row(InlineKeyboardButton(label, callback_data=f"slideshow:voice_{voice_id}"),
+               InlineKeyboardButton("▶️ Послушать", callback_data=f"slideshow:preview_{voice_id}"))
+    kb.row(InlineKeyboardButton("⬅️ Выбрать сервис", callback_data="slideshow:back_provider"))
+    kb.row(InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
+def slideshow_motion_kb():
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("✨ Плавная динамика (приближение, движение, появление)", callback_data="slideshow:motion_on"),
+           InlineKeyboardButton("🖼 Без эффектов (как раньше)", callback_data="slideshow:motion_off"),
+           InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
+
+def _slideshow_motion_filter(index, duration, fps=25):
+    return _slideshow_motion_filter_for_format(index, duration, "4:5", fps=fps)
+
+
+def _slideshow_motion_filter_for_format(index, duration, fmt, fps=25):
+    """Stable Ken Burns motion: one output frame per input frame.
+
+    Previous zoompan used d=frames on every looped input frame, restarting
+    the zoom and causing visible flicker/jumps. d=1 fixes this; 25 fps and
+    Lanczos oversampling eliminate the coarse 12-fps/bilinear shimmer.
+    """
+    width, height = SLIDE_FORMATS[fmt]
+    out_w = 720
+    out_h = int(round(height * out_w / width))
+    if out_h % 2:
+        out_h += 1
+    frames = max(2, int(round(duration * fps)))
+    # 3.5% movement is enough for a gentle newsroom effect.
+    # Use the actual input-frame index rather than the output-frame counter.
+    zoom = f"1+0.035*min(1,in/{frames - 1})"
+    # Keep camera near the centre: prevents cropped headline/footer.
+    dx = ("0.42", "0.58", "0.50", "0.50")[index % 4]
+    dy = ("0.50", "0.50", "0.42", "0.58")[index % 4]
+    x = f"(iw-iw/zoom)*{dx}"
+    y = f"(ih-ih/zoom)*{dy}"
+    return (
+        f"scale={out_w * 2}:{out_h * 2}:flags=lanczos,"
+        f"zoompan=z='{zoom}':x='{x}':y='{y}':d=1:"
+        f"s={out_w}x{out_h}:fps={fps},"
+        "setsar=1,format=yuv420p"
+    )
+
+
+def slideshow_audio_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("🔇 Без звука", callback_data="slideshow:audio_silent"),
+           InlineKeyboardButton("📢 Важное", callback_data="slideshow:audio_важная"),
+           InlineKeyboardButton("🎵 Обычное", callback_data="slideshow:audio_обычная"),
+           InlineKeyboardButton("🎙 Озвучка ИИ (GPT / Яндекс)", callback_data="slideshow:audio_openai_tts"),
+           InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
+def _slide_font(size, bold=False):
+    candidates = (["Montserrat-Black.ttf", "Inter-ExtraBold.ttf"] if bold else
+                  ["Inter-Regular.ttf", "Montserrat-Regular.ttf", "DejaVuSans.ttf"])
+    for name in candidates:
+        try:
+            return ImageFont.truetype(name, size)
+        except (OSError, ValueError):
+            continue
+    return ImageFont.load_default()
+
+def _slide_wrap(draw, text, font, width):
+    lines = []
+    for paragraph in text.split("\n"):
+        if not paragraph.strip():
+            lines.append("")
+            continue
+        current = ""
+        for word in paragraph.split():
+            candidate = (current + " " + word).strip()
+            if draw.textbbox((0, 0), candidate, font=font)[2] <= width:
+                current = candidate
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+                # Rare unbroken words: wrap character-by-character.
+                if draw.textbbox((0, 0), current, font=font)[2] > width:
+                    chunk = ""
+                    for ch in current:
+                        if chunk and draw.textbbox((0, 0), chunk + ch, font=font)[2] > width:
+                            lines.append(chunk)
+                            chunk = ch
+                        else:
+                            chunk += ch
+                    current = chunk
+        if current:
+            lines.append(current)
+    return lines
+
+def _slide_lines_height(lines, font_size, gap_ratio=0.34):
+    return len(lines) * (font_size + round(font_size * gap_ratio))
+
+def _slide_page_layout(title, chunks, fmt, body_size, title_size):
+    w, h = SLIDE_FORMATS[fmt]
+    margin = 76 if fmt == "square" else 86
+    max_w = w - margin * 2
+    dummy = ImageDraw.Draw(Image.new("RGB", (4, 4)))
+    body_font = _slide_font(body_size)
+    title_font = _slide_font(title_size, True)
+    title_lines = _slide_wrap(dummy, title.upper(), title_font, max_w)
+    # Title is prominent on first page; reserve sufficient space for it.
+    title_h = _slide_lines_height(title_lines, title_size, .20)
+    if title_h > h * .40:
+        return None
+    max_body_h = h - (margin + 100) - 112
+    if title:
+        max_body_h -= title_h + 32
+    lines = [_slide_wrap(dummy, chunk, body_font, max_w) for chunk in chunks]
+    return lines, title_lines, title_h, max_body_h
+
+def _slide_remove_trailing_source(body):
+    """Remove only a trailing source attribution, preserving article text."""
+    body = (body or "").strip()
+    # Standalone final line: Источник: ... / Источники: ...
+    body = re.sub(r"(?im)\n\s*(?:источник|источники)\s*[:：–—-]\s*[^\n]*\s*$", "", body).strip()
+    # Attribution appended to the final paragraph (typically after a full stop).
+    body = re.sub(r"(?i)(?<=\.)\s+(?:источник|источники)\s*[:：–—-]\s*[^\n]*\s*$", "", body).strip()
+    # Link-only attribution, without colon, on the last line.
+    body = re.sub(r"(?im)\n\s*(?:источник|источники)\s+https?://\S+\s*$", "", body).strip()
+    return body
+
+
+def _slide_sentences(body):
+    """Keep explicit line breaks (especially lists), split prose only at sentences."""
+    body = _slide_remove_trailing_source(body)
+    if not body:
+        return []
+    token = "\uE000"
+    units = []
+    abbreviations = ("т.д.", "т.п.", "т.е.", "т.к.", "и т.д.", "и т.п.",
+                     "г.", "ул.", "д.", "стр.", "им.", "руб.", "млн.", "млрд.",
+                     "тыс.", "ок.", "рис.", "см.")
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if units and not units[-1].endswith("\n"):
+                units[-1] += "\n"
+            continue
+        protected = re.sub(r"(?<=\d)\.(?=\d)", token, line)
+        for abbr in sorted(abbreviations, key=len, reverse=True):
+            protected = re.sub(re.escape(abbr), lambda m: m.group().replace(".", token), protected, flags=re.I)
+        pieces = re.split(r'(?<=[.!?…])\s+(?=["«„“(]*[А-ЯЁA-Z0-9])', protected)
+        pieces = [x.replace(token, ".").strip() for x in pieces if x.strip()]
+        if pieces:
+            # Each original source line stays a separate visual line.
+            # The final sentence in a line carries the newline to the next unit.
+            pieces[-1] += "\n"
+            units.extend(pieces)
+    if units:
+        units[-1] = units[-1].rstrip("\n")
+    return units
+
+def _slide_join_units(units):
+    result = ""
+    for unit in units:
+        if result and not result.endswith("\n"):
+            result += " "
+        result += unit
+    return result.strip()
+
+def _slideshow_page_count(photo_count):
+    """1-5 photos: 5 slides; 6-10 photos: 10 slides. Exactly 5 -> 5."""
+    return 10 if photo_count >= 6 else 5
+
+def _slide_clean_text(value):
+    """Remove decorative emoji/control characters, preserve punctuation and words."""
+    value = html.unescape(re.sub(r"<[^>]*>", "", value or ""))
+    value = remove_emojis(value)
+    value = re.sub(r"[\u200b-\u200f\u202a-\u202e\ufe0e\ufe0f\u2060\u20e3]", "", value)
+    value = re.sub(r"[\u0000-\u0008\u000b-\u001f\u007f]", " ", value)
+    value = re.sub(r"[▪●■◆★☆✨🔥👉☑✔✅❗❕📌📍🔴🟡🔵]+", " ", value)
+    value = re.sub(r"[ \t]+", " ", value)
+    return value.strip()
+
+
+def _slide_paginate(title, body, fmt, page_count=5):
+    """Paginate complete sentences only, with no truncation or split sentences."""
+    title = _slide_clean_text(title)
+    cleaned = _slide_clean_text(_slide_remove_trailing_source(body))
+    sentences = [_slide_clean_text(u) for u in _slide_sentences(cleaned)]
+    sentences = [u for u in sentences if u.strip()]
+    if not sentences:
+        raise ValueError("В посте отсутствует текст статьи. Добавьте текст после заголовка.")
+    w, h = SLIDE_FORMATS[fmt]
+    margin = 76 if fmt == "square" else 86
+    max_w = w - 2 * margin
+    draw = ImageDraw.Draw(Image.new("RGB", (4, 4)))
+    # Use the largest legible font that can accommodate ALL sentences.
+    for body_size in range(56, 17, -1):
+        title_size = min(78, max(40, round(body_size * 1.7)))
+        title_lines = _slide_wrap(draw, title.upper(), _slide_font(title_size, True), max_w)
+        title_h = _slide_lines_height(title_lines, title_size, .20)
+        if title_h > h * .40:
+            continue
+        capacities = [h - 115 - (156 + title_h + 32)] + [h - 115 - (156 + 56)] * (page_count - 1)
+        font = _slide_font(body_size)
+        def fits(txt, i):
+            return _slide_lines_height(_slide_wrap(draw, txt, font, max_w), body_size) <= capacities[i]
+        # Dynamic programming: choose page boundaries on complete sentences.
+        # Minimize uneven page lengths and empty pages, preferring fewer pages for short texts.
+        n = len(sentences)
+        if n > 350:
+            raise ValueError("Слишком много предложений для слайд-шоу.")
+        from functools import lru_cache
+        @lru_cache(None)
+        def solve(pos, page):
+            if pos == n:
+                return (0, ())
+            if page >= page_count:
+                return None
+            best = None
+            for end in range(pos + 1, n + 1):
+                chunk = _slide_join_units(sentences[pos:end])
+                if not fits(chunk, page):
+                    break
+                rest = solve(end, page + 1)
+                if rest is None:
+                    continue
+                # Prefer pages of roughly 14-30 words; don't create needless pages.
+                words = len(chunk.split())
+                cost = rest[0] + 10 + max(0, words - 30)**2 * .08 + max(0, 12 - words)**2 * .08
+                if best is None or cost < best[0]:
+                    best = (cost, (chunk,) + rest[1])
+            return best
+        result = solve(0, 0)
+        if result:
+            pages = list(result[1])
+            return pages + [""] * (page_count - len(pages)), body_size, title_size
+    raise ValueError(f"Полные предложения не помещаются на {page_count} слайдах. Сократите текст или выберите другой формат.")
+
+def make_news_slideshow(photos, title, body, fmt, add_final_cta=False, template="VM"):
+    if not photos:
+        raise ValueError("Для слайд-шоу нужна хотя бы одна фотография.")
+    if not title.strip():
+        raise ValueError("Не найден заголовок поста.")
+    page_count = _slideshow_page_count(len(photos))
+    if template == "MN":
+        # Первый кадр выделен под заголовок; статья начинается со второго.
+        content_slots = page_count - 1 - int(bool(add_final_cta))
+        pages_body, body_size, title_size = _slide_paginate(title, body, fmt, content_slots)
+        pages = [""] + pages_body
+    else:
+        pages, body_size, title_size = _slide_paginate(title, body, fmt, page_count - 1 if add_final_cta else page_count)
+    if add_final_cta:
+        pages.append("")  # Резервируем последний кадр под призыв подписаться.
+    title = _slide_clean_text(title)
+    w, h = SLIDE_FORMATS[fmt]
+    margin = 76 if fmt == "square" else 86
+    results = []
+    for i, page in enumerate(pages):
+        source = photos[i % len(photos)] if len(photos) > 1 else photos[0]
+        with Image.open(BytesIO(source)) as source_img:
+            image = crop_to_ratio(source_img.convert("RGB"), w, h).resize((w, h), Image.Resampling.LANCZOS)
+        # Последний слайд фотоальбома: призыв подписаться, без номера.
+        if add_final_cta and i == page_count - 1:
+            image = Image.blend(image, Image.new("RGB", (w, h), (7, 12, 20)), .72)
+            draw = ImageDraw.Draw(image)
+            cta = "Подпишись, у нас в профиле много интересных новостей."
+            max_width = w - margin * 2
+            for font_size in range(72, 29, -1):
+                font = _slide_font(font_size, True)
+                lines = _slide_wrap(draw, cta, font, max_width)
+                line_height = font_size + round(font_size * .25)
+                if len(lines) * line_height <= h * .65:
+                    break
+            y = (h - len(lines) * line_height) // 2
+            for line in lines:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_width = bbox[2] - bbox[0]
+                x = margin if template == "MN" else (w - line_width) // 2
+                draw.text((x, y), line, font=font, fill=(255, 255, 255))
+                y += line_height
+            out = BytesIO()
+            image.save(out, format="JPEG", quality=94, optimize=True)
+            out.seek(0)
+            out.name = f"news_slide_{i+1}.jpg"
+            results.append(out)
+            continue
+        # When the article is short, remaining slides are clean original photos:
+        # no darkening, no title, no label, no footer, no page counter.
+        if not page.strip() and not (template == "MN" and i == 0):
+            out = BytesIO()
+            image.save(out, format="JPEG", quality=94, optimize=True)
+            out.seek(0)
+            out.name = f"news_slide_{i+1}.jpg"
+            results.append(out)
+            continue
+        # Darken only slides that actually contain text.
+        image = Image.blend(image, Image.new("RGB", (w, h), (7, 12, 20)), .74)
+        draw = ImageDraw.Draw(image)
+        if template == "MN":
+            # MN: весь текст по левому краю; первый слайд только заголовок.
+            ensure_fonts()
+            mn_font_path = FONT_MN
+            brand_font = load_font(mn_font_path, 30)
+            small_font = load_font(mn_font_path, 30)
+            brand = FOOTER_TEXT
+            draw.text((margin, h - 95), brand, font=brand_font, fill="white")
+            if i == 0:
+                # Заголовок крупнее текста статьи; автоматически уменьшаем
+                # только если он не помещается на первом слайде.
+                max_title_height = h - 156 - 150
+                for fs in range(min(100, max(72, title_size + 18)), 29, -1):
+                    tf = load_font(mn_font_path, fs)
+                    lines = _slide_wrap(draw, title.upper(), tf, w - 2 * margin)
+                    step = fs + round(fs * .20)
+                    if len(lines) * step <= max_title_height:
+                        break
+                y = 156
+                for line in lines:
+                    draw.text((margin, y), line, font=tf, fill="white")
+                    y += step
+            else:
+                count_text = f"{i:02d} / {sum(bool(p.strip()) for p in pages):02d}"
+                cb = draw.textbbox((0, 0), count_text, font=small_font)
+                draw.text((w - margin - (cb[2] - cb[0]), h - 94),
+                          count_text, font=small_font, fill="white")
+                bf = load_font(mn_font_path, body_size)
+                y = 156
+                for line in _slide_wrap(draw, page, bf, w - 2 * margin):
+                    if line:
+                        draw.text((margin, y), line, font=bf, fill="white")
+                    y += body_size + round(body_size * .34)
+                if y > h - 115:
+                    raise ValueError("Текст не помещается в границы слайда.")
+            out = BytesIO()
+            image.save(out, format="JPEG", quality=91, optimize=True)
+            out.seek(0)
+            out.name = f"news_slide_{i+1}.jpg"
+            results.append(out)
+            continue
+        # Слайд-шоу без верхней плашки «НОВОСТИ» и нижнего брендинга.
+        footer_font = _slide_font(26, True)
+        count_text = f"{i+1:02d} / {sum(bool(p.strip()) for p in pages):02d}"
+        bb = draw.textbbox((0, 0), count_text, font=footer_font)
+        draw.text((w - margin - (bb[2]-bb[0]), h - 91), count_text, font=footer_font, fill=(240, 240, 240))
+        y = 156
+        if i == 0:
+            tf = _slide_font(title_size, True)
+            for line in _slide_wrap(draw, title.upper(), tf, w - margin * 2):
+                draw.text((margin, y), line, font=tf, fill=(255, 255, 255))
+                y += title_size + round(title_size * .20)
+            y += 32
+        else:
+            sf = _slide_font(26, True)
+            draw.text((margin, y), "ПРОДОЛЖЕНИЕ", font=sf, fill=(245, 210, 70))
+            y += 56
+        bf = _slide_font(body_size)
+        for line in _slide_wrap(draw, page, bf, w - margin * 2):
+            if line:
+                draw.text((margin, y), line, font=bf, fill=(255, 255, 255))
+            y += body_size + round(body_size * .34)
+        if y > h - 115:
+            raise ValueError("Текст не помещается в границы слайда.")
+        out = BytesIO()
+        image.save(out, format="JPEG", quality=91, optimize=True)
+        out.seek(0)
+        out.name = f"news_slide_{i+1}.jpg"
+        results.append(out)
+    return results
+
+_slideshow_encoding_lock = threading.Lock()
+
+def _openai_tts_speech(text, output_path, voice=None):
+    """Generate Russian narration for one slide using OpenAI Speech API."""
+    if not OPENAI_API_KEY:
+        raise RuntimeError("Для озвучки добавьте OPENAI_API_KEY в Environment на Render.")
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Нельзя озвучить пустой текст.")
+    # One slide at a time, so the narration and picture stay synchronized.
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/audio/speech",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "gpt-4o-mini-tts", "voice": voice or OPENAI_TTS_VOICE,
+                  "input": text[:4000], "response_format": "mp3",
+                  "instructions": "Читай исключительно на естественном литературном русском языке, с произношением носителя русского языка, без иностранного акцента. Подача профессионального диктора новостей: спокойная, уверенная, чёткая, без театральности. Соблюдай естественные паузы, корректно произноси русские имена, географические названия и числа."},
+            timeout=(15, 120), stream=True,
+        )
+        if not response.ok:
+            try:
+                detail = response.json().get("error", {}).get("message", "")
+            except (ValueError, AttributeError):
+                detail = ""
+            raise RuntimeError(f"OpenAI TTS: HTTP {response.status_code}. {detail[:250]}")
+        with open(output_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=65536):
+                if chunk:
+                    f.write(chunk)
+        if os.path.getsize(output_path) < 1000:
+            raise RuntimeError("OpenAI TTS вернул пустую аудиозапись.")
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Не удалось получить озвучку OpenAI: {exc}") from exc
+
+
+def _yandex_tts_speech(text, output_path, voice="marina"):
+    """Yandex SpeechKit v1: API key or IAM token; MP3 for ffmpeg and Telegram."""
+    if not YANDEX_SPEECHKIT_API_KEY and not YANDEX_SPEECHKIT_IAM_TOKEN:
+        raise RuntimeError("Добавьте YANDEX_SPEECHKIT_API_KEY в Environment на Render.")
+    if voice not in SLIDESHOW_TTS_VOICES["yandex"]:
+        raise ValueError("Неизвестный голос Яндекса.")
+    auth = ("Api-Key " + YANDEX_SPEECHKIT_API_KEY if YANDEX_SPEECHKIT_API_KEY
+            else "Bearer " + YANDEX_SPEECHKIT_IAM_TOKEN)
+    data = {"text": (text or "").strip()[:4500], "lang": "ru-RU", "voice": voice,
+            "format": "mp3", "speed": "1.0"}
+    if not data["text"]:
+        raise ValueError("Нельзя озвучить пустой текст.")
+    # Folder ID is required with IAM, but must not be passed for service-account API key.
+    if not YANDEX_SPEECHKIT_API_KEY:
+        if not YANDEX_FOLDER_ID:
+            raise RuntimeError("Для IAM-токена добавьте YANDEX_FOLDER_ID на Render.")
+        data["folderId"] = YANDEX_FOLDER_ID
+    try:
+        with requests.post("https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize",
+                           headers={"Authorization": auth}, data=data,
+                           timeout=(12, 100), stream=True) as response:
+            if not response.ok:
+                raise RuntimeError(f"SpeechKit HTTP {response.status_code}: {response.text[:350]}")
+            with open(output_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+        if os.path.getsize(output_path) < 500:
+            raise RuntimeError("SpeechKit вернул пустой аудиофайл.")
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Ошибка соединения со SpeechKit: {exc}") from exc
+
+
+def _slideshow_preview_worker(chat_id, uid, provider, voice):
+    try:
+        with tempfile.TemporaryDirectory(prefix="tts_preview_") as tmp:
+            audio_path = os.path.join(tmp, "preview.mp3")
+            if provider == "yandex":
+                _yandex_tts_speech(SLIDESHOW_TTS_PREVIEW_TEXT, audio_path, voice)
+            else:
+                _openai_tts_speech(SLIDESHOW_TTS_PREVIEW_TEXT, audio_path, voice)
+            with open(audio_path, "rb") as f:
+                payload = BytesIO(f.read())
+            payload.name = "preview.mp3"
+            bot.send_audio(chat_id, payload,
+                           caption=f"🔊 Пример: {SLIDESHOW_TTS_VOICES[provider][voice]}\n"
+                                   "Для выбора нажмите кнопку с именем диктора выше.",
+                           timeout=90)
+    except Exception as exc:
+        logger.exception("TTS preview failed: %s", exc)
+        send_message_with_retry(chat_id, f"❌ Не удалось прослушать голос: {str(exc)[:300]}")
+
+
+def _slideshow_audio_duration(path):
+    """Duration in seconds as reported by ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            check=True, capture_output=True, text=True, timeout=20)
+        duration = float(result.stdout.strip())
+        if not (0 < duration < 3600):
+            raise ValueError("Invalid duration")
+        return duration
+    except (FileNotFoundError, subprocess.CalledProcessError, ValueError) as exc:
+        raise RuntimeError("Не удалось определить длительность озвучки (нужен ffprobe).") from exc
+
+
+def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None, provider="openai", motion=False):
+    """Narrate each populated slide, use its actual audio length as display duration.
+
+    Empty slides are retained for 5 seconds without narration. Each populated slide
+    gets its own voice segment and a short natural pause at the end.
+    """
+    import math
+    if not slides:
+        raise ValueError("Нет слайдов для видео.")
+    page_texts, _, _ = _slide_paginate(title, body, fmt, len(slides))
+    title = _slide_clean_text(title)
+    # First slide displays both the title and its first paragraph.
+    narrations = [((title.strip() + ". " if i == 0 else "") + page.strip()).strip()
+                  if page.strip() else "" for i, page in enumerate(page_texts)]
+    with tempfile.TemporaryDirectory(prefix="news_tts_slides_") as tmp:
+        segments = []
+        durations = []
+        for i, (slide, narration) in enumerate(zip(slides, narrations)):
+            slide_path = os.path.join(tmp, f"slide_{i:02d}.jpg")
+            with open(slide_path, "wb") as f:
+                f.write(slide.getvalue())
+            if narration:
+                audio_path = os.path.join(tmp, f"voice_{i:02d}.mp3")
+                logger.info("SLIDESHOW TTS: synthesizing slide %d/%d (%d chars)", i + 1, len(slides), len(narration))
+                if provider == "yandex":
+                    _yandex_tts_speech(narration, audio_path, voice=voice or "marina")
+                else:
+                    _openai_tts_speech(narration, audio_path, voice=voice)
+                voice_duration = _slideshow_audio_duration(audio_path)
+                duration = max(2.0, voice_duration + 0.45)
+            else:
+                audio_path = None
+                duration = 5.0
+            durations.append(duration)
+            segment_path = os.path.join(tmp, f"segment_{i:02d}.mp4")
+            # Render one slide at a time. Single-thread 720px encoding is Render-friendly.
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                   "-loop", "1", "-framerate", "25" if motion else "12", "-i", slide_path]
+            if audio_path:
+                cmd += ["-i", audio_path]
+            else:
+                cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+            video_filter = (_slideshow_motion_filter_for_format(i, duration, fmt)
+                            if motion else "scale=720:-2:flags=fast_bilinear,setsar=1,format=yuv420p")
+            cmd += ["-t", f"{duration:.3f}",
+                    "-vf", video_filter,
+                    "-r", "25" if motion else "12", "-threads", "1", "-c:v", "libx264", "-preset", "veryfast",
+                    "-crf", "21", "-x264-params", "threads=1:lookahead-threads=1",
+                    "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "96k",
+                    "-af", "apad", "-movflags", "+faststart", segment_path]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180)
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError("FFmpeg (озвученный слайд): " + (exc.stderr or "")[-500:]) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("FFmpeg слишком долго кодирует озвученный слайд.") from exc
+            segments.append(segment_path)
+        concat_path = os.path.join(tmp, "segments.txt")
+        with open(concat_path, "w", encoding="utf-8") as f:
+            for segment in segments:
+                f.write("file '" + os.path.basename(segment) + "'\n")
+        output_path = os.path.join(tmp, "news_slideshow_tts.mp4")
+        # Concat with stream copy: no costly second full-video encode.
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+               "-f", "concat", "-safe", "0", "-i", concat_path,
+               "-c", "copy", "-movflags", "+faststart", output_path]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=90)
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError("FFmpeg (объединение слайдов): " + (exc.stderr or "")[-500:]) from exc
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 1024:
+            raise RuntimeError("FFmpeg не создал итоговое видео.")
+        size = os.path.getsize(output_path)
+        if size > 49 * 1024 * 1024:
+            raise RuntimeError("Озвученное видео больше 49 МБ. Уменьшите объём текста.")
+        logger.info("SLIDESHOW TTS: MP4 ready, slides=%d, duration=%.1fs, size=%.1fMB",
+                    len(slides), sum(durations), size / (1024 * 1024))
+        with open(output_path, "rb") as f:
+            video = BytesIO(f.read())
+        video.name = "news_slideshow_tts.mp4"
+        return video, sum(durations)
+
+
+def make_news_slideshow_video_motion(slides, fmt, audio_type="silent", seconds_per_slide=5):
+    """Animate slides individually to avoid large filter graphs on small Render instances."""
+    if not slides:
+        raise ValueError("Нет слайдов для видео.")
+    with tempfile.TemporaryDirectory(prefix="news_motion_") as tmp:
+        segments = []
+        for i, slide in enumerate(slides):
+            image_path = os.path.join(tmp, f"slide_{i:02d}.jpg")
+            segment_path = os.path.join(tmp, f"segment_{i:02d}.mp4")
+            with open(image_path, "wb") as f:
+                f.write(slide.getvalue())
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                   "-loop", "1", "-framerate", "25", "-i", image_path,
+                   "-t", str(seconds_per_slide),
+                   "-vf", _slideshow_motion_filter_for_format(i, seconds_per_slide, fmt),
+                   "-r", "25", "-threads", "1", "-c:v", "libx264", "-preset", "veryfast",
+                   "-crf", "21", "-x264-params", "threads=1:lookahead-threads=1",
+                   "-pix_fmt", "yuv420p", "-an", segment_path]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180)
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError("FFmpeg (динамичный слайд): " + (exc.stderr or "")[-600:]) from exc
+            segments.append(segment_path)
+        concat_path = os.path.join(tmp, "segments.txt")
+        with open(concat_path, "w", encoding="utf-8") as f:
+            for segment in segments:
+                f.write("file '" + os.path.basename(segment) + "'\n")
+        joined = os.path.join(tmp, "joined.mp4")
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                        "-f", "concat", "-safe", "0", "-i", concat_path,
+                        "-c", "copy", joined], check=True, capture_output=True, text=True, timeout=90)
+        output_path = joined
+        if audio_type != "silent":
+            music = download_audio_from_github(audio_type)
+            if not music:
+                raise ValueError("Не удалось загрузить выбранную музыку.")
+            audio_path = os.path.join(tmp, "music.mp3")
+            with open(audio_path, "wb") as f:
+                f.write(music)
+            output_path = os.path.join(tmp, "news_motion.mp4")
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                   "-i", joined, "-stream_loop", "-1", "-i", audio_path,
+                   "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
+                   "-c:a", "aac", "-b:a", "128k", "-t", str(len(slides)*seconds_per_slide),
+                   "-movflags", "+faststart", output_path]
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=90)
+        if os.path.getsize(output_path) > 49 * 1024 * 1024:
+            raise RuntimeError("Видео больше 49 МБ. Уменьшите количество слайдов.")
+        with open(output_path, "rb") as f:
+            video = BytesIO(f.read())
+        video.name = "news_slideshow_motion.mp4"
+        return video
+
+
+def make_news_slideshow_video(slides, audio_type="silent", seconds_per_slide=5):
+    """Encode the exact same designed JPEG slides as a Telegram-friendly MP4."""
+    import tempfile
+    import subprocess
+    with tempfile.TemporaryDirectory(prefix="news_slides_") as tmp:
+        for i, slide in enumerate(slides):
+            with open(os.path.join(tmp, f"slide_{i:02d}.jpg"), "wb") as out:
+                out.write(slide.getvalue())
+        concat_file = os.path.join(tmp, "slides.txt")
+        with open(concat_file, "w", encoding="utf-8") as out:
+            for i in range(len(slides)):
+                out.write(f"file 'slide_{i:02d}.jpg'\n")
+                out.write(f"duration {seconds_per_slide}\n")
+            out.write(f"file 'slide_{len(slides)-1:02d}.jpg'\n")
+        command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                   "-safe", "0", "-f", "concat", "-i", concat_file]
+        if audio_type != "silent":
+            data = download_audio_from_github(audio_type)
+            if not data:
+                raise ValueError("Не удалось загрузить выбранную музыку.")
+            audio_path = os.path.join(tmp, "music.mp3")
+            with open(audio_path, "wb") as out:
+                out.write(data)
+            command += ["-stream_loop", "-1", "-i", audio_path]
+        # Keep video encoding within the RAM budget of a small Render instance.
+        # The designed JPEG slides remain 1080px; only the MP4 is downscaled.
+        # 12 fps is enough for still-image slides and greatly reduces encoder load.
+        command += ["-t", str(len(slides) * seconds_per_slide),
+                    "-vf", "scale=720:-2:flags=fast_bilinear,setsar=1",
+                    "-r", "12", "-threads", "1",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "27",
+                    "-x264-params", "threads=1:lookahead-threads=1",
+                    "-pix_fmt", "yuv420p"]
+        if audio_type != "silent":
+            command += ["-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-b:a", "128k"]
+        else:
+            command += ["-an"]
+        output_path = os.path.join(tmp, "news_slideshow.mp4")
+        command += ["-movflags", "+faststart", output_path]
+        logger.info("SLIDESHOW: FFmpeg started (low RAM 720px/12fps/1 thread); slides=%d, duration=%ds, audio=%s", len(slides), len(slides) * seconds_per_slide, audio_type)
+        started = time.monotonic()
+        try:
+            result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=240)
+            logger.info("SLIDESHOW: FFmpeg completed in %.1fs", time.monotonic() - started)
+        except subprocess.TimeoutExpired as exc:
+            logger.exception("SLIDESHOW: FFmpeg exceeded 240 seconds")
+            raise RuntimeError("Обработка видео превысила 4 минуты. Попробуйте меньше фотографий или другой формат.") from exc
+        except FileNotFoundError as exc:
+            raise RuntimeError("На сервере не установлен FFmpeg.") from exc
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError("FFmpeg: " + (exc.stderr or "Ошибка кодирования")[-700:]) from exc
+        size_mb = os.path.getsize(output_path) / (1024 * 1024)
+        logger.info("SLIDESHOW: MP4 ready; size=%.1f MB", size_mb)
+        if size_mb > 49:
+            raise RuntimeError("Видео получилось больше 49 МБ. Нужна дополнительная компрессия.")
+        with open(output_path, "rb") as out:
+            video = BytesIO(out.read())
+        video.name = "news_slideshow.mp4"
+        return video
+
+def _slideshow_video_preview(video_info):
+    """Extract a current video's first frame for slideshow image slides."""
+    file_id = video_info.get("file_id")
+    if not file_id:
+        raise ValueError("Не найден идентификатор видео")
+    with tempfile.TemporaryDirectory(prefix="slideshow_frame_") as tmp:
+        source = os.path.join(tmp, "input_video")
+        frame = os.path.join(tmp, "frame.jpg")
+        with open(source, "wb") as f:
+            f.write(tg_file_bytes(file_id))
+        proc = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                               "-ss", "0.5", "-i", source, "-frames:v", "1", frame],
+                              capture_output=True, timeout=90)
+        if proc.returncode != 0 or not os.path.exists(frame):
+            raise RuntimeError("Не удалось получить кадр из видео: " + proc.stderr.decode(errors="replace")[-250:])
+        with open(frame, "rb") as f:
+            return f.read()
+
+
+def _start_slideshow(chat_id, uid, video_tts_direct=False):
+    st = user_state.get(uid) or {}
+    batch = st.get("media_group") or {}
+    photos = list(batch.get("photos") or [])
+    videos = list(batch.get("videos") or [])
+    # Standalone forwarded media is also stored in media_group. No fallback
+    # to album_photos or saved_photo_bytes, which may belong to an old post.
+    if not photos and not videos:
+        send_message_with_retry(chat_id, "❌ Сначала отправьте НОВЫЙ пост с фото или видео, затем выберите «Слайд-шоу».")
+        return
+    title = st.get("title") or ""
+    body = st.get("body_raw") or ""
+    if not body and st.get("original_text"):
+        title, body = split_title_and_body(st["original_text"])
+    # Snapshot the new batch so later messages cannot mutate this slideshow.
+    st["slideshow_photos"] = photos
+    st["slideshow_videos"] = videos
+    st["slideshow_title"] = title
+    st["slideshow_body"] = body
+    st["slideshow_tts_direct"] = bool(video_tts_direct)
+    st["slideshow_motion"] = False
+    st["step"] = "slideshow_mode"
+    user_state[uid] = st
+    if not body.strip():
+        st["step"] = "slideshow_wait_text"
+        send_message_with_retry(chat_id, "📝 Отправьте полный текст статьи (заголовок первой строкой, далее текст).")
+    else:
+        if video_tts_direct:
+            st["slideshow_mode"] = "video"
+            st["step"] = "slideshow_format"
+            count = _slideshow_page_count(len(photos) + len(videos))
+            send_message_with_retry(chat_id, f"🎙 Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
+        else:
+            send_message_with_retry(chat_id, "🖼 Выберите тип слайд-шоу:", reply_markup=slideshow_mode_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("slideshow:"))
+def on_slideshow_callback(c):
+    uid = c.from_user.id
+    choice = c.data.split(":", 1)[1]
+    bot.answer_callback_query(c.id)
+    chat_id = c.message.chat.id
+    if choice == "cancel":
+        clear_state(uid)
+        send_message_with_retry(chat_id, "❌ Создание слайд-шоу отменено.")
+        return
+    st = user_state.get(uid) or {}
+    if choice in ("mode_photo", "mode_video"):
+        if st.get("step") != "slideshow_mode":
+            send_message_with_retry(chat_id, "⚠️ Сначала отправьте пост и выберите создание слайд-шоу.")
+            return
+        st["slideshow_mode"] = "video" if choice == "mode_video" else "photo"
+        if choice == "mode_photo":
+            st["step"] = "slideshow_photo_template"
+            send_message_with_retry(chat_id, "🎨 Выберите шаблон фото-слайд-шоу:",
+                                    reply_markup=slideshow_photo_template_kb())
+            return
+        st["step"] = "slideshow_format"
+        count = _slideshow_page_count((len(st.get("slideshow_photos") or []) + len(st.get("slideshow_videos") or [])))
+        send_message_with_retry(chat_id, f"📐 Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
+        return
+    if choice in ("template_vm", "template_mn"):
+        if st.get("step") != "slideshow_photo_template":
+            return
+        st["slideshow_photo_template"] = "MN" if choice == "template_mn" else "VM"
+        st["step"] = "slideshow_format"
+        count = _slideshow_page_count(len(st.get("slideshow_photos") or []) + len(st.get("slideshow_videos") or []))
+        send_message_with_retry(chat_id, f"📐 Выберите размер для {count} слайдов:",
+                                reply_markup=slideshow_format_kb())
+        return
+    if choice in SLIDE_FORMATS:
+        if st.get("step") != "slideshow_format":
+            send_message_with_retry(chat_id, "⚠️ Сначала выберите тип слайд-шоу.")
+            return
+        st["slideshow_format"] = choice
+        if st.get("slideshow_mode") == "video":
+            st["step"] = "slideshow_motion"
+            send_message_with_retry(chat_id, "🎞 Добавить плавную динамику в видео?", reply_markup=slideshow_motion_kb())
+            return
+        audio_type = "silent"
+    elif choice in ("motion_on", "motion_off"):
+        if st.get("step") != "slideshow_motion":
+            return
+        st["slideshow_motion"] = (choice == "motion_on")
+        if st.get("slideshow_tts_direct"):
+            st["step"] = "slideshow_provider"
+            send_message_with_retry(chat_id, "🎙 Выберите сервис озвучки:", reply_markup=slideshow_provider_kb())
+            return
+        else:
+            st["step"] = "slideshow_audio"
+            send_message_with_retry(chat_id, "🎵 Выберите музыку для видео:", reply_markup=slideshow_audio_kb())
+            return
+    elif choice.startswith("audio_"):
+        if st.get("step") != "slideshow_audio":
+            return
+        audio_type = choice[len("audio_"):]
+        if audio_type not in ("silent", "важная", "обычная", "openai_tts"):
+            return
+        if audio_type == "openai_tts":
+            st["step"] = "slideshow_provider"
+            send_message_with_retry(chat_id, "🎙 Выберите сервис озвучки:", reply_markup=slideshow_provider_kb())
+            return
+    elif choice == "back_provider":
+        if st.get("step") != "slideshow_voice":
+            return
+        st["step"] = "slideshow_provider"
+        send_message_with_retry(chat_id, "🎙 Выберите сервис озвучки:", reply_markup=slideshow_provider_kb())
+        return
+    elif choice.startswith("provider_"):
+        if st.get("step") != "slideshow_provider":
+            return
+        provider = choice[len("provider_"):]
+        if provider not in SLIDESHOW_TTS_VOICES:
+            return
+        st["slideshow_tts_provider"] = provider
+        st["step"] = "slideshow_voice"
+        send_message_with_retry(chat_id,
+            "🎙 Выберите диктора. Кнопка ▶️ позволяет прослушать русский пример перед выбором:",
+            reply_markup=slideshow_voice_kb(provider))
+        return
+    elif choice.startswith("preview_"):
+        if st.get("step") != "slideshow_voice":
+            return
+        provider = st.get("slideshow_tts_provider", "openai")
+        voice_id = choice[len("preview_"):]
+        if voice_id not in SLIDESHOW_TTS_VOICES.get(provider, {}):
+            return
+        with _slideshow_preview_lock:
+            now = time.monotonic()
+            if now - _slideshow_preview_last.get(uid, 0) < 4:
+                send_message_with_retry(chat_id, "⏳ Подождите несколько секунд перед следующим примером.")
+                return
+            _slideshow_preview_last[uid] = now
+        threading.Thread(target=_slideshow_preview_worker,
+                         args=(chat_id, uid, provider, voice_id), daemon=True).start()
+        return
+    elif choice.startswith("voice_"):
+        if st.get("step") != "slideshow_voice":
+            return
+        provider = st.get("slideshow_tts_provider", "openai")
+        voice_id = choice[len("voice_"):]
+        if voice_id not in SLIDESHOW_TTS_VOICES.get(provider, {}):
+            return
+        st["slideshow_tts_voice"] = voice_id
+        audio_type = "openai_tts"
+        send_message_with_retry(chat_id,
+            f"🎙 Выбран диктор: {SLIDESHOW_TTS_VOICES[provider][voice_id]} "
+            f"({'Яндекс SpeechKit' if provider == 'yandex' else 'GPT OpenAI'}). Запускаю озвучку.")
+    else:
+        return
+    if st.get("step") == "slideshow_processing":
+        return
+    st["step"] = "slideshow_processing"
+    fmt = st["slideshow_format"]
+    mode = st.get("slideshow_mode", "photo")
+    count = _slideshow_page_count((len(st.get("slideshow_photos") or []) + len(st.get("slideshow_videos") or [])))
+    send_message_with_retry(chat_id, f"⏳ Принято {len(st.get('slideshow_photos') or [])} фото. Создаю {count} слайдов...")
+    threading.Thread(target=_slideshow_worker, args=(chat_id, uid, st, fmt, mode, count, audio_type), daemon=True).start()
+    return
+
+def _slideshow_worker(chat_id, uid, st, fmt, mode, count, audio_type):
+    logger.info("SLIDESHOW: start user=%s count=%s format=%s mode=%s", uid, count, fmt, mode)
+    try:
+        current_photos = list(st.get("slideshow_photos") or [])
+        for video_info in st.get("slideshow_videos") or []:
+            current_photos.append(_slideshow_video_preview(video_info))
+        slides = make_news_slideshow(
+            current_photos, st["slideshow_title"], st["slideshow_body"], fmt,
+            add_final_cta=(mode == "photo"),
+            template=st.get("slideshow_photo_template", "VM") if mode == "photo" else "VM")
+        logger.info("SLIDESHOW: images rendered: %d", len(slides))
+        if mode == "video":
+            send_message_with_retry(chat_id, "🎙 Слайды готовы. Создаю озвучку и собираю MP4, это может занять несколько минут..." if audio_type == "openai_tts" else "🎞 Слайды готовы. Кодирую MP4, это может занять 1–3 минуты...")
+            if not _slideshow_encoding_lock.acquire(blocking=False):
+                raise RuntimeError("Другое слайд-шоу уже кодируется. Повторите запрос после завершения.")
+            try:
+                if audio_type == "openai_tts":
+                    video, video_duration = make_news_slideshow_tts_video(
+                        slides, st["slideshow_title"], st["slideshow_body"], fmt,
+                        voice=st.get("slideshow_tts_voice") or OPENAI_TTS_VOICE,
+                        provider=st.get("slideshow_tts_provider", "openai"),
+                        motion=st.get("slideshow_motion", False))
+                else:
+                    if st.get("slideshow_motion", False):
+                        video = make_news_slideshow_video_motion(slides, fmt, audio_type, seconds_per_slide=5)
+                    else:
+                        video = make_news_slideshow_video(slides, audio_type, seconds_per_slide=5)
+                    video_duration = len(slides) * 5
+            finally:
+                _slideshow_encoding_lock.release()
+            logger.info("SLIDESHOW: uploading MP4 to Telegram")
+            w, h = SLIDE_FORMATS[fmt]
+            w, h = 720, round(h * 720 / w)
+            sent = send_video_with_retry(chat_id, video, caption=(f"🎙 Новостное слайд-шоу с озвучкой · {len(slides)} слайдов · {round(video_duration)} сек." if audio_type == "openai_tts" else f"🎬 Новостное слайд-шоу · {len(slides)} слайдов по 5 секунд"), width=w, height=h)
+            if sent is None:
+                raise RuntimeError("Telegram не принял готовое MP4-видео. Проверьте размер файла и логи Render.")
+            send_message_with_retry(chat_id, "✅ Готово! MP4-видео отправлено.", reply_markup=main_menu_kb())
+        else:
+            media = [InputMediaPhoto(media=slide) for slide in slides]
+            bot.send_media_group(chat_id, media)
+            send_message_with_retry(chat_id, f"✅ Готово! Все {len(slides)} слайдов отправлены как фотографии в одном альбоме.", reply_markup=main_menu_kb())
+        st["step"] = "idle"
+        # Do not allow replaying old media after a completed slideshow.
+        for stale in ("slideshow_photos", "slideshow_videos"):
+            st.pop(stale, None)
+    except Exception as exc:
+        logger.exception("Slideshow generation failed user=%s", uid)
+        st["step"] = "slideshow_format"
+        send_message_with_retry(chat_id, f"❌ Не удалось создать слайд-шоу: {exc}", reply_markup=slideshow_format_kb())
+
+# =========================
 # ОСНОВНЫЕ CALLBACK ОБРАБОТЧИКИ
 # =========================
+
+# =========================
+# ОБРЕЗКА МЕДИА ПО ФОРМАТУ
+# =========================
+CROP_FORMATS = {"4x5": (720, 900), "9x16": (720, 1280), "square": (720, 720)}
+
+def crop_format_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    for label, key in (("📱 4:5", "4x5"), ("📱 9:16", "9x16"), ("⬜ Квадрат 1:1", "square")):
+        kb.add(InlineKeyboardButton(label, callback_data=f"crop:{key}"))
+    kb.add(InlineKeyboardButton("❌ Отмена", callback_data="crop:cancel"))
+    return kb
+
+def _start_crop(chat_id, uid):
+    st = user_state.get(uid) or {}
+    photos = st.get("album_photos") or st.get("media_group", {}).get("photos") or []
+    if not photos and st.get("photo_bytes"):
+        photos = [st["photo_bytes"]]
+    videos = st.get("album_videos") or st.get("media_group", {}).get("videos") or []
+    if not videos and st.get("video_info"):
+        videos = [st["video_info"]]
+    if not photos and not videos:
+        send_message_with_retry(chat_id, "❌ Сначала отправьте пост с фото или видео.")
+        return
+    st["crop_photos"] = list(photos)
+    st["crop_videos"] = list(videos)
+    st["step"] = "crop_format"
+    user_state[uid] = st
+    send_message_with_retry(chat_id, f"✂️ Найдено фото: {len(photos)}, видео: {len(videos)}. Выберите формат обрезки:", reply_markup=crop_format_kb())
+
+def _crop_photo_bytes(data, w, h):
+    with Image.open(BytesIO(data)) as im:
+        im = crop_to_ratio(im.convert("RGB"), w, h).resize((w, h), Image.Resampling.LANCZOS)
+        out = BytesIO()
+        im.save(out, format="JPEG", quality=92)
+        out.seek(0)
+        out.name = "cropped.jpg"
+        return out
+
+def _crop_video_bytes(data, w, h):
+    """Crop and compress input to a Telegram-friendly MP4, preserving full duration."""
+    with tempfile.TemporaryDirectory(prefix="crop_media_") as tmp:
+        source = os.path.join(tmp, "input.mp4")
+        target = os.path.join(tmp, "cropped.mp4")
+        with open(source, "wb") as f:
+            f.write(data)
+        # Lower bitrate if necessary, while preserving the full original clip.
+        for rate in ("2200k", "1300k", "750k", "450k"):
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", source,
+                   "-t", "120", "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1",
+                   "-c:v", "libx264", "-threads", "1", "-preset", "ultrafast", "-b:v", rate,
+                   "-maxrate", rate, "-bufsize", "2500k", "-pix_fmt", "yuv420p",
+                   "-c:a", "aac", "-b:a", "80k", "-movflags", "+faststart", target]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError((exc.stderr or "FFmpeg error")[-500:]) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("Превышено время обработки видео FFmpeg.") from exc
+            if os.path.getsize(target) <= 49 * 1024 * 1024:
+                with open(target, "rb") as f:
+                    out = BytesIO(f.read())
+                out.name = "cropped.mp4"
+                return out
+        raise ValueError("Не удалось уменьшить видео до 50 МБ. Пришлите файл меньшего размера.")
+
+def _run_crop(uid, chat_id, fmt):
+    st = user_state.get(uid) or {}
+    w, h = CROP_FORMATS[fmt]
+    photos = st.get("crop_photos", [])
+    videos = st.get("crop_videos", [])
+    success, failures = 0, []
+    # Each media is sent separately to support mixed albums and Telegram size limits.
+    for i, photo in enumerate(photos, 1):
+        try:
+            result = _crop_photo_bytes(photo, w, h)
+            if not send_photo_with_retry(chat_id, result, caption=f"✂️ Фото {i} · {fmt}"):
+                raise RuntimeError("Telegram не принял фото")
+            success += 1
+        except Exception as exc:
+            logger.exception("Crop photo failed")
+            failures.append(f"Фото {i}: {exc}")
+    for i, info in enumerate(videos, 1):
+        try:
+            file_id = info.get("file_id") if isinstance(info, dict) else info
+            if not file_id:
+                raise ValueError("Нет file_id")
+            if isinstance(info, dict):
+                if info.get("file_size", 0) > MAX_FILE_SIZE:
+                    raise ValueError("Видео больше 50 МБ. Пришлите файл меньше 50 МБ.")
+                if info.get("duration", 0) > 120:
+                    raise ValueError("Видео длиннее 2 минут. Пришлите ролик до 2 минут.")
+            data = tg_file_bytes(file_id)
+            if len(data) > MAX_FILE_SIZE:
+                raise ValueError("Видео больше 50 МБ. Пришлите файл меньше 50 МБ.")
+            # Check actual duration, not only Telegram metadata.
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as probe_file:
+                probe_file.write(data)
+                probe_path = probe_file.name
+            try:
+                probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                        "-of", "default=noprint_wrappers=1:nokey=1", probe_path],
+                                       capture_output=True, text=True, timeout=25, check=True)
+                if float(probe.stdout.strip()) > 120:
+                    raise ValueError("Видео длиннее 2 минут. Пришлите ролик до 2 минут.")
+            finally:
+                os.unlink(probe_path)
+            result = _crop_video_bytes(data, w, h)
+            if len(result.getvalue()) > MAX_FILE_SIZE:
+                raise ValueError("Готовый MP4 превышает лимит отправки 50 МБ")
+            if not send_video_with_retry(chat_id, result, caption=f"✂️ Видео {i} · {fmt}", width=w, height=h):
+                raise RuntimeError("Telegram не принял видео")
+            success += 1
+        except Exception as exc:
+            logger.exception("Crop video failed")
+            failures.append(f"Видео {i}: {exc}")
+    st["step"] = "idle"
+    message = f"✅ Готово: {success} медиа в формате {fmt}." if success else "❌ Не удалось обрезать медиа."
+    if failures:
+        message += "\n" + "\n".join(failures[:5])
+    send_message_with_retry(chat_id, message, reply_markup=main_menu_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("crop:"))
+def on_crop_callback(c):
+    bot.answer_callback_query(c.id)
+    uid = c.from_user.id
+    choice = c.data.split(":", 1)[1]
+    if choice == "cancel":
+        (user_state.get(uid) or {}).update(step="idle")
+        send_message_with_retry(c.message.chat.id, "✂️ Обрезка отменена.")
+        return
+    if choice not in CROP_FORMATS or (user_state.get(uid) or {}).get("step") != "crop_format":
+        send_message_with_retry(c.message.chat.id, "⚠️ Сначала отправьте пост и выберите «Обрезать».")
+        return
+    for info in (user_state[uid].get("crop_videos") or []):
+        if isinstance(info, dict) and info.get("file_size", 0) > MAX_FILE_SIZE:
+            send_message_with_retry(c.message.chat.id, "❌ Видео больше 50 МБ. Пришлите файл меньше 50 МБ.")
+            return
+        if isinstance(info, dict) and info.get("duration", 0) > 120:
+            send_message_with_retry(c.message.chat.id, "❌ Видео длиннее 2 минут. Пришлите ролик до 2 минут.")
+            return
+    user_state[uid]["step"] = "crop_processing"
+    send_message_with_retry(c.message.chat.id, "⏳ Обрезаю все фото и видео, подождите...")
+    threading.Thread(target=_run_crop, args=(uid, c.message.chat.id, choice), daemon=True).start()
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("repost:"))
 def on_repost_action(c):
@@ -3354,6 +4545,16 @@ def on_repost_action(c):
     action = c.data.split(":")[1]
     st = user_state.get(uid) or {}
     
+    if action == "crop":
+        bot.answer_callback_query(c.id)
+        _start_crop(c.message.chat.id, uid)
+        return
+
+    if action == "slideshow":
+        bot.answer_callback_query(c.id)
+        _start_slideshow(c.message.chat.id, uid)
+        return
+
     if action == "make_album_video":
         if st.get("album_photos") or st.get("media_group", {}).get("photos"):
             photos = st.get("album_photos") or st.get("media_group", {}).get("photos")
@@ -4962,11 +6163,158 @@ def on_article_action(c):
 
 
 # =========================
+# ВИДЕО ИЗ ОТДЕЛЬНОГО РОЛИКА
+# =========================
+def direct_video_title_kb(has_title):
+    kb = InlineKeyboardMarkup(row_width=2)
+    if has_title:
+        kb.add(InlineKeyboardButton("📝 Из подписи", callback_data="dv:title_keep"))
+    kb.add(InlineKeyboardButton("✏️ Свой", callback_data="dv:title_custom"),
+           InlineKeyboardButton("⏭ Без текста", callback_data="dv:title_none"),
+           InlineKeyboardButton("❌ Отмена", callback_data="dv:cancel"))
+    return kb
+
+def direct_video_audio_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("🎵 Оригинал", callback_data="dv:audio_original"),
+           InlineKeyboardButton("📢 Важное", callback_data="dv:audio_важная"),
+           InlineKeyboardButton("🎵 Обычное", callback_data="dv:audio_обычная"),
+           InlineKeyboardButton("🔇 Без звука", callback_data="dv:audio_silent"))
+    return kb
+
+def direct_video_format_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("📱 4:5", callback_data="dv:format_4x5"),
+           InlineKeyboardButton("📱 9:16", callback_data="dv:format_9x16"))
+    return kb
+
+def direct_video_mode_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("🎬 На всё видео", callback_data="dv:mode_full"),
+           InlineKeyboardButton("📌 Первые 5 секунд", callback_data="dv:mode_5sec"))
+    return kb
+
+def render_direct_video(uid, chat_id):
+    st = user_state.get(uid, {})
+    import tempfile
+    from pathlib import Path
+    status = bot.send_message(chat_id, "⏳ Обрабатываю видео, подождите...")
+    try:
+        with tempfile.TemporaryDirectory(prefix="video_bot_") as folder:
+            folder = Path(folder)
+            src = folder / "input.mp4"
+            src.write_bytes(tg_file_bytes(st["direct_video_file_id"]))
+            dest = folder / "output.mp4"
+            fmt = VIDEO_FORMATS[st.get("direct_video_format", "4x5")]
+            w, h = fmt["width"], fmt["height"]
+            title = st.get("direct_video_title", "")
+            no_text = st.get("direct_video_no_text", False)
+            overlay = folder / "overlay.png"
+            if not no_text and title:
+                layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+                alpha = Image.new("L", (1, int(h * CHP_GRADIENT_PCT)))
+                for y in range(alpha.height):
+                    alpha.putpixel((0, y), int(220 * y / max(1, alpha.height - 1)))
+                alpha = alpha.resize((w, alpha.height))
+                black = Image.new("RGBA", (w, alpha.height), (0, 0, 0, 0))
+                black.putalpha(alpha)
+                layer.alpha_composite(black, (0, h - alpha.height))
+                draw = ImageDraw.Draw(layer)
+                clean = clean_title_for_card(title).upper()
+                font, lines, heights, spacing, total_h = fit_text_block(
+                    draw, clean, FONT_CHP, int(w * .88), int(h * MN_TITLE_ZONE_PCT),
+                    max_lines=6, start_size=int(h * .11), min_size=16, line_spacing_ratio=.22)
+                line_h = font.size
+                y = h - int(h * .08) - len(lines)*line_h - max(0,len(lines)-1)*2
+                for line in lines:
+                    draw.text((int(w * .06), y), line, font=font, fill="white")
+                    y += line_h + 2
+                layer.save(overlay)
+            vf = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,eq=brightness=-0.035"
+            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src)]
+            if overlay.exists():
+                cmd += ["-loop", "1", "-i", str(overlay)]
+            audio_type = st.get("direct_video_audio", "original")
+            audio_path = folder / "music.mp3"
+            if audio_type in ("важная", "обычная"):
+                response = requests.get(AUDIO_URLS[audio_type], timeout=30)
+                response.raise_for_status()
+                audio_path.write_bytes(response.content)
+                cmd += ["-stream_loop", "-1", "-i", str(audio_path)]
+            if overlay.exists():
+                duration = st.get("direct_video_mode", "full")
+                enabled = "" if duration == "full" else ":enable='lt(t,5)'"
+                cmd += ["-filter_complex", f"[0:v]{vf}[base];[base][1:v]overlay=0:0:shortest=1{enabled}[v]", "-map", "[v]"]
+            else:
+                cmd += ["-vf", vf, "-map", "0:v:0"]
+            if audio_type in ("важная", "обычная"):
+                audio_idx = 2 if overlay.exists() else 1
+                cmd += ["-map", f"{audio_idx}:a:0", "-shortest"]
+            elif audio_type == "original":
+                cmd += ["-map", "0:a?", "-shortest"]
+            else:
+                cmd += ["-an"]
+            cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
+                    "-r", "25", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(dest)]
+            subprocess.run(cmd, check=True, capture_output=True, timeout=600)
+            if not dest.exists() or dest.stat().st_size == 0:
+                raise RuntimeError("FFmpeg не создал файл")
+            with dest.open("rb") as video:
+                bot.send_video(chat_id, video, caption=st.get("direct_video_caption", "")[:950],
+                               supports_streaming=True, width=w, height=h, timeout=180)
+        bot.edit_message_text("✅ Видео готово!", chat_id, status.message_id)
+        clear_state(uid)
+    except Exception as exc:
+        logger.exception("Direct video processing failed")
+        bot.edit_message_text(f"❌ Не удалось обработать видео: {str(exc)[:350]}", chat_id, status.message_id)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("dv:"))
+def on_direct_video_callback(c):
+    bot.answer_callback_query(c.id)
+    uid = c.from_user.id
+    st = user_state.get(uid, {})
+    if c.data == "dv:cancel":
+        clear_state(uid)
+        bot.send_message(c.message.chat.id, "❌ Отменено")
+        return
+    if not st.get("direct_video_file_id"):
+        bot.send_message(c.message.chat.id, "Сначала нажмите 🎬 Сделать видео и отправьте ролик.")
+        return
+    action, value = c.data[3:].split("_", 1) if "_" in c.data[3:] else (c.data[3:], "")
+    if action == "title":
+        if value == "custom":
+            st["step"] = "direct_video_title_input"
+            bot.send_message(c.message.chat.id, "✏️ Пришлите заголовок одним сообщением:")
+            return
+        if value == "none":
+            st["direct_video_title"] = ""
+            st["direct_video_no_text"] = True
+        else:
+            st["direct_video_no_text"] = False
+        st["step"] = "direct_video_audio"
+        bot.send_message(c.message.chat.id, "🎵 Выберите звук:", reply_markup=direct_video_audio_kb())
+    elif action == "audio":
+        st["direct_video_audio"] = value
+        st["step"] = "direct_video_format"
+        bot.send_message(c.message.chat.id, "📱 Выберите формат:", reply_markup=direct_video_format_kb())
+    elif action == "format":
+        st["direct_video_format"] = value
+        st["step"] = "direct_video_mode"
+        bot.send_message(c.message.chat.id, "🎬 Где показывать заголовок?", reply_markup=direct_video_mode_kb())
+    elif action == "mode":
+        st["direct_video_mode"] = value
+        st["step"] = "direct_video_processing"
+        threading.Thread(target=render_direct_video, args=(uid, c.message.chat.id), daemon=True).start()
+    user_state[uid] = st
+
+# =========================
 # ОБРАБОТЧИКИ СООБЩЕНИЙ
 # =========================
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
                      func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
 def handle_forwarded_message(message):
+    # Как в прежней стабильной версии: обрабатываем медиа полностью,
+    # и только затем показываем кнопки действий.
     uid = message.from_user.id
     
     original_text = ""
@@ -4975,32 +6323,8 @@ def handle_forwarded_message(message):
     elif message.text:
         original_text = message.text
     
-    if hasattr(message, 'media_group_id') and message.media_group_id:
-        media_group_id = message.media_group_id
-        
-        if media_group_id not in user_album_cache:
-            user_album_cache[media_group_id] = {
-                "photos": [], "videos": [], "caption": original_text,
-                "start_time": time.time(), "message_id": message.message_id, "chat_id": message.chat.id
-            }
-        
-        if message.photo:
-            try:
-                file_id = message.photo[-1].file_id
-                photo_bytes = tg_file_bytes(file_id)
-                if check_file_size(photo_bytes):
-                    user_album_cache[media_group_id]["photos"].append(photo_bytes)
-            except Exception as e:
-                logger.error(f"Error extracting photo from album: {e}")
-        
-        if message.video:
-            try:
-                video_info = get_video_info(message.video.file_id, message.video)
-                user_album_cache[media_group_id]["videos"].append(video_info)
-            except Exception as e:
-                logger.error(f"Error extracting video from album: {e}")
-        
-        threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, True), daemon=True).start()
+    if getattr(message, "media_group_id", None):
+        _receive_album_item(message, uid, is_repost=True)
         return
     
     source_info = ""
@@ -5028,6 +6352,11 @@ def handle_forwarded_message(message):
     
     st["original_url"] = source_url
     st["step"] = "waiting_repost_action"
+    for stale in ("album_photos", "album_videos", "slideshow_photos", "slideshow_videos",
+                  "saved_photo_bytes", "body_raw", "title"):
+        st.pop(stale, None)
+    if original_text:
+        st["title"], st["body_raw"] = split_title_and_body(original_text)
     st["photo_bytes"] = None
     st["video_info"] = None
     st["video_file_id"] = None
@@ -5077,8 +6406,9 @@ def handle_forwarded_message(message):
     if st.get("title"):
         title_display = f"\n📌 <b>Заголовок:</b> {st['title']}"
     
+    media_status_text = "\n".join(media_status)
     send_message_with_retry(message.chat.id,
-        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{'<br>'.join(media_status)}"
+        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{media_status_text}"
         f"{title_display}\n📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
         parse_mode="HTML", reply_markup=repost_action_kb())
 
@@ -5239,6 +6569,36 @@ def on_text(message):
     text = message.text.strip() if message.text else ""
     st = user_state.get(uid) or {"template": "MN", "step": "idle"}
     
+    if text == BTN_SLIDESHOW:
+        _start_slideshow(message.chat.id, uid)
+        return
+    if text == BTN_SLIDESHOW_TTS:
+        _start_slideshow(message.chat.id, uid, video_tts_direct=True)
+        return
+    if st.get("step") == "slideshow_wait_text":
+        title, body = split_title_and_body(text)
+        st["slideshow_title"] = title
+        st["slideshow_body"] = body
+        st["step"] = "slideshow_mode"
+        user_state[uid] = st
+        if st.get("slideshow_tts_direct"):
+            st["slideshow_mode"] = "video"
+            st["step"] = "slideshow_format"
+            count = _slideshow_page_count(len(st.get("slideshow_photos") or []) + len(st.get("slideshow_videos") or []))
+            bot.reply_to(message, f"🎙 Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
+        else:
+            bot.reply_to(message, "🖼 Выберите тип слайд-шоу:", reply_markup=slideshow_mode_kb())
+        return
+    if text == BTN_MAKE_VIDEO:
+        user_state[uid] = {"step": "direct_video_wait", "template": "MN"}
+        bot.reply_to(message, "🎬 Пришлите видео, одно фото или пост с несколькими фото. Из фотографий соберу MP4-слайд-шоу, затем предложу заголовок, звук и формат.")
+        return
+    if st.get("step") == "direct_video_title_input":
+        st["direct_video_title"] = text
+        st["step"] = "direct_video_audio"
+        user_state[uid] = st
+        bot.reply_to(message, "🎵 Выберите звук:", reply_markup=direct_video_audio_kb())
+        return
     if text == BTN_POST:
         cmd_post(message)
         return
@@ -5589,32 +6949,25 @@ def on_photo_or_document(message):
     if message.forward_from_chat or message.forward_from:
         return
     
-    if hasattr(message, 'media_group_id') and message.media_group_id:
-        media_group_id = message.media_group_id
-        if media_group_id not in user_album_cache:
-            user_album_cache[media_group_id] = {
-                "photos": [], "videos": [], "caption": message.caption or "",
-                "start_time": time.time(), "message_id": message.message_id, "chat_id": message.chat.id
-            }
-        if message.photo:
-            try:
-                file_id = message.photo[-1].file_id
-                photo_bytes = tg_file_bytes(file_id)
-                if check_file_size(photo_bytes):
-                    user_album_cache[media_group_id]["photos"].append(photo_bytes)
-            except Exception as e:
-                logger.error(f"Error extracting photo from album: {e}")
-        if message.video:
-            try:
-                video_info = get_video_info(message.video.file_id, message.video)
-                user_album_cache[media_group_id]["videos"].append(video_info)
-            except Exception as e:
-                logger.error(f"Error extracting video from album: {e}")
-        if message.caption and not user_album_cache[media_group_id]["caption"]:
-            user_album_cache[media_group_id]["caption"] = message.caption
-        threading.Thread(target=process_album_with_media, args=(uid, media_group_id, message.chat.id, False), daemon=True).start()
+    if getattr(message, "media_group_id", None):
+        _receive_album_item(message, uid, is_repost=False)
         return
     
+    if st.get("step") == "direct_video_wait" and message.photo:
+        try:
+            photo = tg_file_bytes(message.photo[-1].file_id)
+            st["album_photos"] = [photo]
+            st["photo_bytes"] = photo
+            st["original_caption"] = message.caption or ""
+            st["title"] = extract_title_from_text(message.caption or "")
+            st["step"] = "video_from_album"
+            user_state[uid] = st
+            bot.reply_to(message, "🎬 Создадим MP4 из фотографии. Выберите заголовок:", reply_markup=album_video_title_kb())
+        except Exception as exc:
+            logger.exception("Failed to load photo for video")
+            bot.reply_to(message, f"❌ Не удалось загрузить фото: {exc}")
+        return
+
     if st.get("step") == "waiting_enhance_photo":
         try:
             file_id = message.photo[-1].file_id if message.content_type == "photo" else message.document.file_id
@@ -5657,6 +7010,17 @@ def on_photo_or_document(message):
             bot.reply_to(message, f"❌ Ошибка: {e}")
             return
     
+    if st.get("step") == "direct_video_wait" and message.video:
+        if getattr(message.video, "file_size", 0) > MAX_FILE_SIZE:
+            bot.reply_to(message, "❌ Видео превышает лимит 50 МБ.")
+            return
+        st.update(direct_video_file_id=message.video.file_id,
+                  direct_video_caption=message.caption or "",
+                  direct_video_title=extract_title_from_text(message.caption or ""),
+                  step="direct_video_title")
+        user_state[uid] = st
+        bot.reply_to(message, "📝 Выберите заголовок для видео:", reply_markup=direct_video_title_kb(bool(st["direct_video_title"])))
+        return
     step = st.get("step")
     
     if step == "waiting_photo_first" or step == "waiting_photo" or step == "waiting_photo_am2" or step == "waiting_photo_fdr_post" or step == "waiting_photo_fdr_story":
@@ -5727,6 +7091,11 @@ def on_photo_or_document(message):
     
     try:
         if message.photo:
+            # Each standalone photo starts a fresh media batch.
+            for stale in ("album_photos", "album_videos", "slideshow_photos", "slideshow_videos",
+                          "video_info", "video_file_id", "title", "body_raw", "original_text"):
+                st.pop(stale, None)
+            st["media_group"] = {"photos": [], "videos": []}
             file_id = message.photo[-1].file_id
             photo_bytes = tg_file_bytes(file_id)
             if not check_file_size(photo_bytes):
@@ -5746,6 +7115,10 @@ def on_photo_or_document(message):
                 st["body_raw"] = body
         
         if message.video:
+            for stale in ("album_photos", "album_videos", "slideshow_photos", "slideshow_videos",
+                          "photo_bytes", "saved_photo_bytes", "title", "body_raw", "original_text"):
+                st.pop(stale, None)
+            st["media_group"] = {"photos": [], "videos": []}
             video_info = get_video_info(message.video.file_id, message.video)
             st["video_info"] = video_info
             st["video_file_id"] = message.video.file_id
@@ -5949,13 +7322,9 @@ if __name__ == "__main__":
                 bot.infinity_polling(timeout=60, long_polling_timeout=60)
             except Exception as e:
                 logger.error(f"Polling error: {e}")
-                if "409" in str(e):
-                    logger.error("Conflict detected! Waiting 30 seconds...")
-                    try:
-                        bot.remove_webhook()
-                    except:
-                        pass
-                    time.sleep(30)
+                if "409" in str(e) or "Conflict" in str(e):
+                    logger.error("Telegram 409: another process is polling this token. Stop duplicate Render services/workers or local copies. Waiting 90 seconds before retry.")
+                    time.sleep(90 + random.uniform(0, 10))
                 else:
                     time.sleep(10)
                 continue
