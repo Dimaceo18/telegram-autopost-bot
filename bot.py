@@ -3738,7 +3738,13 @@ def make_news_slideshow(photos, title, body, fmt, add_final_cta=False, template=
     if not title.strip():
         raise ValueError("Не найден заголовок поста.")
     page_count = _slideshow_page_count(len(photos))
-    pages, body_size, title_size = _slide_paginate(title, body, fmt, page_count - 1 if add_final_cta else page_count)
+    if template == "MN":
+        # Первый кадр выделен под заголовок; статья начинается со второго.
+        content_slots = page_count - 1 - int(bool(add_final_cta))
+        pages_body, body_size, title_size = _slide_paginate(title, body, fmt, content_slots)
+        pages = [""] + pages_body
+    else:
+        pages, body_size, title_size = _slide_paginate(title, body, fmt, page_count - 1 if add_final_cta else page_count)
     if add_final_cta:
         pages.append("")  # Резервируем последний кадр под призыв подписаться.
     title = _slide_clean_text(title)
@@ -3765,7 +3771,8 @@ def make_news_slideshow(photos, title, body, fmt, add_final_cta=False, template=
             for line in lines:
                 bbox = draw.textbbox((0, 0), line, font=font)
                 line_width = bbox[2] - bbox[0]
-                draw.text(((w - line_width) // 2, y), line, font=font, fill=(255, 255, 255))
+                x = margin if template == "MN" else (w - line_width) // 2
+                draw.text((x, y), line, font=font, fill=(255, 255, 255))
                 y += line_height
             out = BytesIO()
             image.save(out, format="JPEG", quality=94, optimize=True)
@@ -3775,7 +3782,7 @@ def make_news_slideshow(photos, title, body, fmt, add_final_cta=False, template=
             continue
         # When the article is short, remaining slides are clean original photos:
         # no darkening, no title, no label, no footer, no page counter.
-        if not page.strip():
+        if not page.strip() and not (template == "MN" and i == 0):
             out = BytesIO()
             image.save(out, format="JPEG", quality=94, optimize=True)
             out.seek(0)
@@ -3786,41 +3793,40 @@ def make_news_slideshow(photos, title, body, fmt, add_final_cta=False, template=
         image = Image.blend(image, Image.new("RGB", (w, h), (7, 12, 20)), .74)
         draw = ImageDraw.Draw(image)
         if template == "MN":
-            # МН: фирменный Caviar Dreams, заголовок сверху, подпись MINSK NEWS
-            # снизу. Текст статьи остаётся полностью читаемым и не обрезается.
+            # MN: весь текст по левому краю; первый слайд только заголовок.
             ensure_fonts()
             mn_font_path = FONT_MN
-            title_font = load_font(mn_font_path, title_size)
-            body_font = load_font(mn_font_path, body_size)
-            small_font = load_font(mn_font_path, 30)
             brand_font = load_font(mn_font_path, 30)
-            count_text = f"{i+1:02d} / {sum(bool(p.strip()) for p in pages):02d}"
-            cb = draw.textbbox((0, 0), count_text, font=small_font)
-            draw.text((w - margin - (cb[2] - cb[0]), h - 94), count_text,
-                      font=small_font, fill="white")
+            small_font = load_font(mn_font_path, 30)
             brand = FOOTER_TEXT
-            fb = draw.textbbox((0, 0), brand, font=brand_font)
-            draw.text(((w - (fb[2] - fb[0])) // 2, h - 95), brand,
-                      font=brand_font, fill="white")
-            y = 156
+            draw.text((margin, h - 95), brand, font=brand_font, fill="white")
             if i == 0:
-                # Like the MN post template: centered, white, uppercase title.
-                title_lines = _slide_wrap(draw, title.upper(), title_font, w - 2 * margin)
-                for line in title_lines:
-                    tb = draw.textbbox((0, 0), line, font=title_font)
-                    draw.text(((w - (tb[2] - tb[0])) // 2, y), line,
-                              font=title_font, fill="white")
-                    y += title_size + round(title_size * .20)
-                y += 32
+                # Заголовок крупнее текста статьи; автоматически уменьшаем
+                # только если он не помещается на первом слайде.
+                max_title_height = h - 156 - 150
+                for fs in range(min(100, max(72, title_size + 18)), 29, -1):
+                    tf = load_font(mn_font_path, fs)
+                    lines = _slide_wrap(draw, title.upper(), tf, w - 2 * margin)
+                    step = fs + round(fs * .20)
+                    if len(lines) * step <= max_title_height:
+                        break
+                y = 156
+                for line in lines:
+                    draw.text((margin, y), line, font=tf, fill="white")
+                    y += step
             else:
-                draw.text((margin, y), "ПРОДОЛЖЕНИЕ", font=small_font, fill="white")
-                y += 56
-            for line in _slide_wrap(draw, page, body_font, w - 2 * margin):
-                if line:
-                    draw.text((margin, y), line, font=body_font, fill="white")
-                y += body_size + round(body_size * .34)
-            if y > h - 115:
-                raise ValueError("Текст не помещается в границы слайда.")
+                count_text = f"{i:02d} / {sum(bool(p.strip()) for p in pages):02d}"
+                cb = draw.textbbox((0, 0), count_text, font=small_font)
+                draw.text((w - margin - (cb[2] - cb[0]), h - 94),
+                          count_text, font=small_font, fill="white")
+                bf = load_font(mn_font_path, body_size)
+                y = 156
+                for line in _slide_wrap(draw, page, bf, w - 2 * margin):
+                    if line:
+                        draw.text((margin, y), line, font=bf, fill="white")
+                    y += body_size + round(body_size * .34)
+                if y > h - 115:
+                    raise ValueError("Текст не помещается в границы слайда.")
             out = BytesIO()
             image.save(out, format="JPEG", quality=91, optimize=True)
             out.seek(0)
