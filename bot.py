@@ -523,16 +523,27 @@ def send_media_group_with_retry(chat_id, media_list, max_retries=3):
 def check_file_size(file_bytes: bytes) -> bool:
     return len(file_bytes) <= MAX_FILE_SIZE
 
+# Повторно используем соединения HTTP для скачивания медиа.
+_tg_download_session = requests.Session()
+_tg_download_adapter = HTTPAdapter(pool_connections=16, pool_maxsize=32)
+_tg_download_session.mount("https://", _tg_download_adapter)
+
 def tg_file_bytes(file_id: str) -> bytes:
-    try:
-        file_info = bot.get_file(file_id)
-        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-        r = requests.get(file_url, timeout=30)
-        r.raise_for_status()
-        return r.content
-    except Exception as e:
-        logger.error(f"Failed to download file: {e}")
-        raise
+    """Скачивание с быстрым обнаружением сетевых проблем и одной повторной попыткой."""
+    last_error = None
+    for attempt in range(2):
+        try:
+            file_info = bot.get_file(file_id)
+            file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+            response = _tg_download_session.get(file_url, timeout=(5, 15))
+            response.raise_for_status()
+            return response.content
+        except (requests.exceptions.RequestException, Exception) as exc:
+            last_error = exc
+            logger.warning("Telegram download attempt %s/2 failed: %s", attempt + 1, exc)
+            if attempt == 0:
+                time.sleep(0.5)
+    raise last_error
 
 def get_video_info(file_id: str, video_obj) -> Dict:
     return {
@@ -2730,7 +2741,7 @@ def run_http_server():
 # =========================
 _album_lock = threading.RLock()
 _album_timers = {}
-ALBUM_QUIET_SECONDS = 5.0
+ALBUM_QUIET_SECONDS = 2.5
 
 def _receive_album_item(message, uid, is_repost=False):
     """Collect an album safely: concurrent Telegram handlers cannot pop each other's data."""
@@ -5943,6 +5954,17 @@ def on_direct_video_callback(c):
 @bot.message_handler(content_types=["text", "photo", "video", "document", "audio", "animation", "voice", "video_note"], 
                      func=lambda message: message.forward_from_chat is not None or (message.forward_from is not None))
 def handle_forwarded_message(message):
+    # Telegram handler returns immediately; downloading the photo can take seconds.
+    # The user gets a receipt before media processing starts.
+    if not getattr(message, "media_group_id", None):
+        try:
+            bot.send_chat_action(message.chat.id, "typing")
+        except Exception:
+            pass
+    threading.Thread(target=_process_forwarded_message, args=(message,), daemon=True).start()
+
+
+def _process_forwarded_message(message):
     uid = message.from_user.id
     
     original_text = ""
@@ -5993,6 +6015,10 @@ def handle_forwarded_message(message):
     
     if message.photo:
         try:
+            send_message_with_retry(message.chat.id, "⏳ Репост получен. Загружаю фотографию…")
+        except Exception:
+            pass
+        try:
             file_id = message.photo[-1].file_id
             photo_bytes = tg_file_bytes(file_id)
             if check_file_size(photo_bytes):
@@ -6034,8 +6060,9 @@ def handle_forwarded_message(message):
     if st.get("title"):
         title_display = f"\n📌 <b>Заголовок:</b> {st['title']}"
     
+    media_status_text = "\n".join(media_status)
     send_message_with_retry(message.chat.id,
-        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{'<br>'.join(media_status)}"
+        f"📎 <b>Пересланный пост обнаружен!</b>\n\n{source_text}{media_status_text}"
         f"{title_display}\n📝 <b>Текст:</b> {text_preview}...\n\n<b>Что сделать с этим постом?</b>",
         parse_mode="HTML", reply_markup=repost_action_kb())
 
