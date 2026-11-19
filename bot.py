@@ -3491,6 +3491,49 @@ def slideshow_voice_kb(provider="openai"):
     kb.row(InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
     return kb
 
+def slideshow_motion_kb():
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("✨ Плавная динамика (приближение, движение, появление)", callback_data="slideshow:motion_on"),
+           InlineKeyboardButton("🖼 Без эффектов (как раньше)", callback_data="slideshow:motion_off"),
+           InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
+
+def _slideshow_motion_filter(index, duration, fps=12):
+    """Render-friendly Ken Burns effect on an already designed slide.
+
+    Keep the whole text visible: zoom is limited to 5%, with slow alternating
+    horizontal/vertical drift and a brief fade from black.
+    """
+    frames = max(1, int(round(duration * fps)))
+    zoom = f"min(1.05,1+0.05*on/{max(1, frames-1)})"
+    if index % 4 == 0:
+        x, y = "0", "(ih-ih/zoom)/2"
+    elif index % 4 == 1:
+        x, y = "iw-iw/zoom", "(ih-ih/zoom)/2"
+    elif index % 4 == 2:
+        x, y = "(iw-iw/zoom)/2", "0"
+    else:
+        x, y = "(iw-iw/zoom)/2", "ih-ih/zoom"
+    return (f"scale=760:-2:flags=fast_bilinear,"
+            f"zoompan=z='{zoom}':x='{x}':y='{y}':d={frames}:s=720x900:fps={fps},"
+            f"setsar=1,format=yuv420p,fade=t=in:st=0:d=0.3")
+
+
+def _slideshow_motion_filter_for_format(index, duration, fmt, fps=12):
+    width, height = SLIDE_FORMATS[fmt]
+    output_h = int(round(height * 720 / width))
+    output_h += output_h % 2
+    frames = max(1, int(round(duration * fps)))
+    zoom = f"min(1.05,1+0.05*on/{max(1, frames-1)})"
+    # Alternate the origin of the slow movement between slides.
+    x = ("0", "iw-iw/zoom", "(iw-iw/zoom)/2", "(iw-iw/zoom)/2")[index % 4]
+    y = ("(ih-ih/zoom)/2", "(ih-ih/zoom)/2", "0", "ih-ih/zoom")[index % 4]
+    return (f"scale=760:{int(round(output_h * 760 / 720))}:flags=fast_bilinear,"
+            f"zoompan=z='{zoom}':x='{x}':y='{y}':d={frames}:s=720x{output_h}:fps={fps},"
+            "setsar=1,format=yuv420p,fade=t=in:st=0:d=0.3")
+
+
 def slideshow_audio_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(InlineKeyboardButton("🔇 Без звука", callback_data="slideshow:audio_silent"),
@@ -3866,7 +3909,7 @@ def _slideshow_audio_duration(path):
         raise RuntimeError("Не удалось определить длительность озвучки (нужен ffprobe).") from exc
 
 
-def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None, provider="openai"):
+def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None, provider="openai", motion=False):
     """Narrate each populated slide, use its actual audio length as display duration.
 
     Empty slides are retained for 5 seconds without narration. Each populated slide
@@ -3908,8 +3951,10 @@ def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None, provider
                 cmd += ["-i", audio_path]
             else:
                 cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+            video_filter = (_slideshow_motion_filter_for_format(i, duration, fmt)
+                            if motion else "scale=720:-2:flags=fast_bilinear,setsar=1,format=yuv420p")
             cmd += ["-t", f"{duration:.3f}",
-                    "-vf", "scale=720:-2:flags=fast_bilinear,setsar=1,format=yuv420p",
+                    "-vf", video_filter,
                     "-r", "12", "-threads", "1", "-c:v", "libx264", "-preset", "ultrafast",
                     "-crf", "27", "-x264-params", "threads=1:lookahead-threads=1",
                     "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "96k",
@@ -3945,6 +3990,60 @@ def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None, provider
             video = BytesIO(f.read())
         video.name = "news_slideshow_tts.mp4"
         return video, sum(durations)
+
+
+def make_news_slideshow_video_motion(slides, fmt, audio_type="silent", seconds_per_slide=5):
+    """Animate slides individually to avoid large filter graphs on small Render instances."""
+    if not slides:
+        raise ValueError("Нет слайдов для видео.")
+    with tempfile.TemporaryDirectory(prefix="news_motion_") as tmp:
+        segments = []
+        for i, slide in enumerate(slides):
+            image_path = os.path.join(tmp, f"slide_{i:02d}.jpg")
+            segment_path = os.path.join(tmp, f"segment_{i:02d}.mp4")
+            with open(image_path, "wb") as f:
+                f.write(slide.getvalue())
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                   "-loop", "1", "-framerate", "12", "-i", image_path,
+                   "-t", str(seconds_per_slide),
+                   "-vf", _slideshow_motion_filter_for_format(i, seconds_per_slide, fmt),
+                   "-r", "12", "-threads", "1", "-c:v", "libx264", "-preset", "ultrafast",
+                   "-crf", "27", "-x264-params", "threads=1:lookahead-threads=1",
+                   "-pix_fmt", "yuv420p", "-an", segment_path]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180)
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError("FFmpeg (динамичный слайд): " + (exc.stderr or "")[-600:]) from exc
+            segments.append(segment_path)
+        concat_path = os.path.join(tmp, "segments.txt")
+        with open(concat_path, "w", encoding="utf-8") as f:
+            for segment in segments:
+                f.write("file '" + os.path.basename(segment) + "'\n")
+        joined = os.path.join(tmp, "joined.mp4")
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                        "-f", "concat", "-safe", "0", "-i", concat_path,
+                        "-c", "copy", joined], check=True, capture_output=True, text=True, timeout=90)
+        output_path = joined
+        if audio_type != "silent":
+            music = download_audio_from_github(audio_type)
+            if not music:
+                raise ValueError("Не удалось загрузить выбранную музыку.")
+            audio_path = os.path.join(tmp, "music.mp3")
+            with open(audio_path, "wb") as f:
+                f.write(music)
+            output_path = os.path.join(tmp, "news_motion.mp4")
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                   "-i", joined, "-stream_loop", "-1", "-i", audio_path,
+                   "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
+                   "-c:a", "aac", "-b:a", "128k", "-t", str(len(slides)*seconds_per_slide),
+                   "-movflags", "+faststart", output_path]
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=90)
+        if os.path.getsize(output_path) > 49 * 1024 * 1024:
+            raise RuntimeError("Видео больше 49 МБ. Уменьшите количество слайдов.")
+        with open(output_path, "rb") as f:
+            video = BytesIO(f.read())
+        video.name = "news_slideshow_motion.mp4"
+        return video
 
 
 def make_news_slideshow_video(slides, audio_type="silent", seconds_per_slide=5):
@@ -4046,6 +4145,7 @@ def _start_slideshow(chat_id, uid, video_tts_direct=False):
     st["slideshow_title"] = title
     st["slideshow_body"] = body
     st["slideshow_tts_direct"] = bool(video_tts_direct)
+    st["slideshow_motion"] = False
     st["step"] = "slideshow_mode"
     user_state[uid] = st
     if not body.strip():
@@ -4085,15 +4185,23 @@ def on_slideshow_callback(c):
             send_message_with_retry(chat_id, "⚠️ Сначала выберите тип слайд-шоу.")
             return
         st["slideshow_format"] = choice
-        if st.get("slideshow_mode") == "video" and st.get("slideshow_tts_direct"):
+        if st.get("slideshow_mode") == "video":
+            st["step"] = "slideshow_motion"
+            send_message_with_retry(chat_id, "🎞 Добавить плавную динамику в видео?", reply_markup=slideshow_motion_kb())
+            return
+        audio_type = "silent"
+    elif choice in ("motion_on", "motion_off"):
+        if st.get("step") != "slideshow_motion":
+            return
+        st["slideshow_motion"] = (choice == "motion_on")
+        if st.get("slideshow_tts_direct"):
             st["step"] = "slideshow_provider"
             send_message_with_retry(chat_id, "🎙 Выберите сервис озвучки:", reply_markup=slideshow_provider_kb())
             return
-        elif st.get("slideshow_mode") == "video":
+        else:
             st["step"] = "slideshow_audio"
             send_message_with_retry(chat_id, "🎵 Выберите музыку для видео:", reply_markup=slideshow_audio_kb())
             return
-        audio_type = "silent"
     elif choice.startswith("audio_"):
         if st.get("step") != "slideshow_audio":
             return
@@ -4179,9 +4287,13 @@ def _slideshow_worker(chat_id, uid, st, fmt, mode, count, audio_type):
                     video, video_duration = make_news_slideshow_tts_video(
                         slides, st["slideshow_title"], st["slideshow_body"], fmt,
                         voice=st.get("slideshow_tts_voice") or OPENAI_TTS_VOICE,
-                        provider=st.get("slideshow_tts_provider", "openai"))
+                        provider=st.get("slideshow_tts_provider", "openai"),
+                        motion=st.get("slideshow_motion", False))
                 else:
-                    video = make_news_slideshow_video(slides, audio_type, seconds_per_slide=5)
+                    if st.get("slideshow_motion", False):
+                        video = make_news_slideshow_video_motion(slides, fmt, audio_type, seconds_per_slide=5)
+                    else:
+                        video = make_news_slideshow_video(slides, audio_type, seconds_per_slide=5)
                     video_duration = len(slides) * 5
             finally:
                 _slideshow_encoding_lock.release()
