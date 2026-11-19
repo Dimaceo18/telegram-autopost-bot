@@ -85,6 +85,9 @@ TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 DEEPSEEK_API_KEY = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
 OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 OPENAI_TTS_VOICE = (os.getenv("OPENAI_TTS_VOICE") or "onyx").strip()
+YANDEX_SPEECHKIT_API_KEY = (os.getenv("YANDEX_SPEECHKIT_API_KEY") or os.getenv("YANDEX_API_KEY") or "").strip()
+YANDEX_SPEECHKIT_IAM_TOKEN = (os.getenv("YANDEX_SPEECHKIT_IAM_TOKEN") or "").strip()
+YANDEX_FOLDER_ID = (os.getenv("YANDEX_FOLDER_ID") or "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
 CHANNEL_MN = (os.getenv("CHANNEL_MN") or "").strip()
@@ -523,6 +526,7 @@ def send_media_group_with_retry(chat_id, media_list, max_retries=3):
 def check_file_size(file_bytes: bytes) -> bool:
     return len(file_bytes) <= MAX_FILE_SIZE
 
+# Повторно используем соединения HTTP для скачивания медиа.
 def tg_file_bytes(file_id: str) -> bytes:
     try:
         file_info = bot.get_file(file_id)
@@ -3443,21 +3447,48 @@ def slideshow_format_kb():
            InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
     return kb
 
-# Дикторы OpenAI: выбор для каждого ролика, без изменения Render ENV.
+# Русскоязычные дикторы: по 3 мужских и 3 женских на каждого провайдера.
+# SpeechKit: только голоса ru-RU, доступные в REST API v1.
 SLIDESHOW_TTS_VOICES = {
-    "onyx": "🎙 Мужской · Onyx (низкий)",
-    "echo": "🎙 Мужской · Echo (мягкий)",
-    "alloy": "🎙 Нейтральный · Alloy",
-    "nova": "🎙 Женский · Nova (энергичный)",
-    "shimmer": "🎙 Женский · Shimmer (мягкий)",
-    "fable": "🎙 Выразительный · Fable",
+    "openai": {
+        "onyx": "👨 Onyx · низкий мужской",
+        "echo": "👨 Echo · мягкий мужской",
+        "ash": "👨 Ash · мужской",
+        "nova": "👩 Nova · женский",
+        "shimmer": "👩 Shimmer · мягкий женский",
+        "coral": "👩 Coral · женский",
+    },
+    "yandex": {
+        "filipp": "👨 Филипп · мужской",
+        "ermil": "👨 Ермил · мужской",
+        "zahar": "👨 Захар · мужской",
+        "jane": "👩 Джейн · женский",
+        "marina": "👩 Марина · женский",
+        "omazh": "👩 Омаж · женский",
+    },
 }
+SLIDESHOW_TTS_PREVIEW_TEXT = (
+    "Добрый день! Это пример новостной озвучки. "
+    "Сегодня в Минске обсуждают главные события города. "
+    "Послушайте мой голос и выберите подходящего диктора для вашего видео."
+)
+_slideshow_preview_last = {}
+_slideshow_preview_lock = threading.Lock()
 
-def slideshow_voice_kb():
+def slideshow_provider_kb():
     kb = InlineKeyboardMarkup(row_width=1)
-    for voice_id, label in SLIDESHOW_TTS_VOICES.items():
-        kb.add(InlineKeyboardButton(label, callback_data=f"slideshow:voice_{voice_id}"))
-    kb.add(InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    kb.add(InlineKeyboardButton("🤖 GPT · OpenAI", callback_data="slideshow:provider_openai"),
+           InlineKeyboardButton("🇷🇺 Яндекс · SpeechKit", callback_data="slideshow:provider_yandex"),
+           InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
+    return kb
+
+def slideshow_voice_kb(provider="openai"):
+    kb = InlineKeyboardMarkup(row_width=2)
+    for voice_id, label in SLIDESHOW_TTS_VOICES[provider].items():
+        kb.row(InlineKeyboardButton(label, callback_data=f"slideshow:voice_{voice_id}"),
+               InlineKeyboardButton("▶️ Послушать", callback_data=f"slideshow:preview_{voice_id}"))
+    kb.row(InlineKeyboardButton("⬅️ Выбрать сервис", callback_data="slideshow:back_provider"))
+    kb.row(InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
     return kb
 
 def slideshow_audio_kb():
@@ -3465,7 +3496,7 @@ def slideshow_audio_kb():
     kb.add(InlineKeyboardButton("🔇 Без звука", callback_data="slideshow:audio_silent"),
            InlineKeyboardButton("📢 Важное", callback_data="slideshow:audio_важная"),
            InlineKeyboardButton("🎵 Обычное", callback_data="slideshow:audio_обычная"),
-           InlineKeyboardButton("🎙 Озвучка ИИ (OpenAI)", callback_data="slideshow:audio_openai_tts"),
+           InlineKeyboardButton("🎙 Озвучка ИИ (GPT / Яндекс)", callback_data="slideshow:audio_openai_tts"),
            InlineKeyboardButton("❌ Отмена", callback_data="slideshow:cancel"))
     return kb
 
@@ -3649,13 +3680,15 @@ def _slide_paginate(title, body, fmt, page_count=5):
             return pages + [""] * (page_count - len(pages)), body_size, title_size
     raise ValueError(f"Полные предложения не помещаются на {page_count} слайдах. Сократите текст или выберите другой формат.")
 
-def make_news_slideshow(photos, title, body, fmt):
+def make_news_slideshow(photos, title, body, fmt, add_final_cta=False):
     if not photos:
         raise ValueError("Для слайд-шоу нужна хотя бы одна фотография.")
     if not title.strip():
         raise ValueError("Не найден заголовок поста.")
     page_count = _slideshow_page_count(len(photos))
-    pages, body_size, title_size = _slide_paginate(title, body, fmt, page_count)
+    pages, body_size, title_size = _slide_paginate(title, body, fmt, page_count - 1 if add_final_cta else page_count)
+    if add_final_cta:
+        pages.append("")  # Резервируем последний кадр под призыв подписаться.
     title = _slide_clean_text(title)
     w, h = SLIDE_FORMATS[fmt]
     margin = 76 if fmt == "square" else 86
@@ -3664,6 +3697,30 @@ def make_news_slideshow(photos, title, body, fmt):
         source = photos[i % len(photos)] if len(photos) > 1 else photos[0]
         with Image.open(BytesIO(source)) as source_img:
             image = crop_to_ratio(source_img.convert("RGB"), w, h).resize((w, h), Image.Resampling.LANCZOS)
+        # Последний слайд фотоальбома: призыв подписаться, без номера.
+        if add_final_cta and i == page_count - 1:
+            image = Image.blend(image, Image.new("RGB", (w, h), (7, 12, 20)), .72)
+            draw = ImageDraw.Draw(image)
+            cta = "Подпишись, у нас в профиле много интересных новостей."
+            max_width = w - margin * 2
+            for font_size in range(72, 29, -1):
+                font = _slide_font(font_size, True)
+                lines = _slide_wrap(draw, cta, font, max_width)
+                line_height = font_size + round(font_size * .25)
+                if len(lines) * line_height <= h * .65:
+                    break
+            y = (h - len(lines) * line_height) // 2
+            for line in lines:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_width = bbox[2] - bbox[0]
+                draw.text(((w - line_width) // 2, y), line, font=font, fill=(255, 255, 255))
+                y += line_height
+            out = BytesIO()
+            image.save(out, format="JPEG", quality=94, optimize=True)
+            out.seek(0)
+            out.name = f"news_slide_{i+1}.jpg"
+            results.append(out)
+            continue
         # When the article is short, remaining slides are clean original photos:
         # no darkening, no title, no label, no footer, no page counter.
         if not page.strip():
@@ -3741,6 +3798,59 @@ def _openai_tts_speech(text, output_path, voice=None):
         raise RuntimeError(f"Не удалось получить озвучку OpenAI: {exc}") from exc
 
 
+def _yandex_tts_speech(text, output_path, voice="marina"):
+    """Yandex SpeechKit v1: API key or IAM token; MP3 for ffmpeg and Telegram."""
+    if not YANDEX_SPEECHKIT_API_KEY and not YANDEX_SPEECHKIT_IAM_TOKEN:
+        raise RuntimeError("Добавьте YANDEX_SPEECHKIT_API_KEY в Environment на Render.")
+    if voice not in SLIDESHOW_TTS_VOICES["yandex"]:
+        raise ValueError("Неизвестный голос Яндекса.")
+    auth = ("Api-Key " + YANDEX_SPEECHKIT_API_KEY if YANDEX_SPEECHKIT_API_KEY
+            else "Bearer " + YANDEX_SPEECHKIT_IAM_TOKEN)
+    data = {"text": (text or "").strip()[:4500], "lang": "ru-RU", "voice": voice,
+            "format": "mp3", "speed": "1.0"}
+    if not data["text"]:
+        raise ValueError("Нельзя озвучить пустой текст.")
+    # Folder ID is required with IAM, but must not be passed for service-account API key.
+    if not YANDEX_SPEECHKIT_API_KEY:
+        if not YANDEX_FOLDER_ID:
+            raise RuntimeError("Для IAM-токена добавьте YANDEX_FOLDER_ID на Render.")
+        data["folderId"] = YANDEX_FOLDER_ID
+    try:
+        with requests.post("https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize",
+                           headers={"Authorization": auth}, data=data,
+                           timeout=(12, 100), stream=True) as response:
+            if not response.ok:
+                raise RuntimeError(f"SpeechKit HTTP {response.status_code}: {response.text[:350]}")
+            with open(output_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+        if os.path.getsize(output_path) < 500:
+            raise RuntimeError("SpeechKit вернул пустой аудиофайл.")
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Ошибка соединения со SpeechKit: {exc}") from exc
+
+
+def _slideshow_preview_worker(chat_id, uid, provider, voice):
+    try:
+        with tempfile.TemporaryDirectory(prefix="tts_preview_") as tmp:
+            audio_path = os.path.join(tmp, "preview.mp3")
+            if provider == "yandex":
+                _yandex_tts_speech(SLIDESHOW_TTS_PREVIEW_TEXT, audio_path, voice)
+            else:
+                _openai_tts_speech(SLIDESHOW_TTS_PREVIEW_TEXT, audio_path, voice)
+            with open(audio_path, "rb") as f:
+                payload = BytesIO(f.read())
+            payload.name = "preview.mp3"
+            bot.send_audio(chat_id, payload,
+                           caption=f"🔊 Пример: {SLIDESHOW_TTS_VOICES[provider][voice]}\n"
+                                   "Для выбора нажмите кнопку с именем диктора выше.",
+                           timeout=90)
+    except Exception as exc:
+        logger.exception("TTS preview failed: %s", exc)
+        send_message_with_retry(chat_id, f"❌ Не удалось прослушать голос: {str(exc)[:300]}")
+
+
 def _slideshow_audio_duration(path):
     """Duration in seconds as reported by ffprobe."""
     try:
@@ -3756,7 +3866,7 @@ def _slideshow_audio_duration(path):
         raise RuntimeError("Не удалось определить длительность озвучки (нужен ffprobe).") from exc
 
 
-def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None):
+def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None, provider="openai"):
     """Narrate each populated slide, use its actual audio length as display duration.
 
     Empty slides are retained for 5 seconds without narration. Each populated slide
@@ -3780,7 +3890,10 @@ def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None):
             if narration:
                 audio_path = os.path.join(tmp, f"voice_{i:02d}.mp3")
                 logger.info("SLIDESHOW TTS: synthesizing slide %d/%d (%d chars)", i + 1, len(slides), len(narration))
-                _openai_tts_speech(narration, audio_path, voice=voice)
+                if provider == "yandex":
+                    _yandex_tts_speech(narration, audio_path, voice=voice or "marina")
+                else:
+                    _openai_tts_speech(narration, audio_path, voice=voice)
                 voice_duration = _slideshow_audio_duration(audio_path)
                 duration = max(2.0, voice_duration + 0.45)
             else:
@@ -3943,7 +4056,7 @@ def _start_slideshow(chat_id, uid, video_tts_direct=False):
             st["slideshow_mode"] = "video"
             st["step"] = "slideshow_format"
             count = _slideshow_page_count(len(photos) + len(videos))
-            send_message_with_retry(chat_id, f"🎙 Озвучка OpenAI выбрана. Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
+            send_message_with_retry(chat_id, f"🎙 Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
         else:
             send_message_with_retry(chat_id, "🖼 Выберите тип слайд-шоу:", reply_markup=slideshow_mode_kb())
 
@@ -3973,8 +4086,8 @@ def on_slideshow_callback(c):
             return
         st["slideshow_format"] = choice
         if st.get("slideshow_mode") == "video" and st.get("slideshow_tts_direct"):
-            st["step"] = "slideshow_voice"
-            send_message_with_retry(chat_id, "🎙 Выберите диктора для русской озвучки:", reply_markup=slideshow_voice_kb())
+            st["step"] = "slideshow_provider"
+            send_message_with_retry(chat_id, "🎙 Выберите сервис озвучки:", reply_markup=slideshow_provider_kb())
             return
         elif st.get("slideshow_mode") == "video":
             st["step"] = "slideshow_audio"
@@ -3988,18 +4101,55 @@ def on_slideshow_callback(c):
         if audio_type not in ("silent", "важная", "обычная", "openai_tts"):
             return
         if audio_type == "openai_tts":
-            st["step"] = "slideshow_voice"
-            send_message_with_retry(chat_id, "🎙 Выберите диктора для русской озвучки:", reply_markup=slideshow_voice_kb())
+            st["step"] = "slideshow_provider"
+            send_message_with_retry(chat_id, "🎙 Выберите сервис озвучки:", reply_markup=slideshow_provider_kb())
             return
+    elif choice == "back_provider":
+        if st.get("step") != "slideshow_voice":
+            return
+        st["step"] = "slideshow_provider"
+        send_message_with_retry(chat_id, "🎙 Выберите сервис озвучки:", reply_markup=slideshow_provider_kb())
+        return
+    elif choice.startswith("provider_"):
+        if st.get("step") != "slideshow_provider":
+            return
+        provider = choice[len("provider_"):]
+        if provider not in SLIDESHOW_TTS_VOICES:
+            return
+        st["slideshow_tts_provider"] = provider
+        st["step"] = "slideshow_voice"
+        send_message_with_retry(chat_id,
+            "🎙 Выберите диктора. Кнопка ▶️ позволяет прослушать русский пример перед выбором:",
+            reply_markup=slideshow_voice_kb(provider))
+        return
+    elif choice.startswith("preview_"):
+        if st.get("step") != "slideshow_voice":
+            return
+        provider = st.get("slideshow_tts_provider", "openai")
+        voice_id = choice[len("preview_"):]
+        if voice_id not in SLIDESHOW_TTS_VOICES.get(provider, {}):
+            return
+        with _slideshow_preview_lock:
+            now = time.monotonic()
+            if now - _slideshow_preview_last.get(uid, 0) < 4:
+                send_message_with_retry(chat_id, "⏳ Подождите несколько секунд перед следующим примером.")
+                return
+            _slideshow_preview_last[uid] = now
+        threading.Thread(target=_slideshow_preview_worker,
+                         args=(chat_id, uid, provider, voice_id), daemon=True).start()
+        return
     elif choice.startswith("voice_"):
         if st.get("step") != "slideshow_voice":
             return
+        provider = st.get("slideshow_tts_provider", "openai")
         voice_id = choice[len("voice_"):]
-        if voice_id not in SLIDESHOW_TTS_VOICES:
+        if voice_id not in SLIDESHOW_TTS_VOICES.get(provider, {}):
             return
         st["slideshow_tts_voice"] = voice_id
         audio_type = "openai_tts"
-        send_message_with_retry(chat_id, f"🎙 Выбран диктор: {SLIDESHOW_TTS_VOICES[voice_id]}. Запускаю озвучку.")
+        send_message_with_retry(chat_id,
+            f"🎙 Выбран диктор: {SLIDESHOW_TTS_VOICES[provider][voice_id]} "
+            f"({'Яндекс SpeechKit' if provider == 'yandex' else 'GPT OpenAI'}). Запускаю озвучку.")
     else:
         return
     if st.get("step") == "slideshow_processing":
@@ -4018,17 +4168,18 @@ def _slideshow_worker(chat_id, uid, st, fmt, mode, count, audio_type):
         current_photos = list(st.get("slideshow_photos") or [])
         for video_info in st.get("slideshow_videos") or []:
             current_photos.append(_slideshow_video_preview(video_info))
-        slides = make_news_slideshow(current_photos, st["slideshow_title"], st["slideshow_body"], fmt)
+        slides = make_news_slideshow(current_photos, st["slideshow_title"], st["slideshow_body"], fmt, add_final_cta=(mode == "photo"))
         logger.info("SLIDESHOW: images rendered: %d", len(slides))
         if mode == "video":
-            send_message_with_retry(chat_id, "🎙 Слайды готовы. Создаю озвучку OpenAI и собираю MP4, это может занять несколько минут..." if audio_type == "openai_tts" else "🎞 Слайды готовы. Кодирую MP4, это может занять 1–3 минуты...")
+            send_message_with_retry(chat_id, "🎙 Слайды готовы. Создаю озвучку и собираю MP4, это может занять несколько минут..." if audio_type == "openai_tts" else "🎞 Слайды готовы. Кодирую MP4, это может занять 1–3 минуты...")
             if not _slideshow_encoding_lock.acquire(blocking=False):
                 raise RuntimeError("Другое слайд-шоу уже кодируется. Повторите запрос после завершения.")
             try:
                 if audio_type == "openai_tts":
                     video, video_duration = make_news_slideshow_tts_video(
                         slides, st["slideshow_title"], st["slideshow_body"], fmt,
-                        voice=st.get("slideshow_tts_voice") or OPENAI_TTS_VOICE)
+                        voice=st.get("slideshow_tts_voice") or OPENAI_TTS_VOICE,
+                        provider=st.get("slideshow_tts_provider", "openai"))
                 else:
                     video = make_news_slideshow_video(slides, audio_type, seconds_per_slide=5)
                     video_duration = len(slides) * 5
@@ -6248,7 +6399,7 @@ def on_text(message):
             st["slideshow_mode"] = "video"
             st["step"] = "slideshow_format"
             count = _slideshow_page_count(len(st.get("slideshow_photos") or []) + len(st.get("slideshow_videos") or []))
-            bot.reply_to(message, f"🎙 Озвучка OpenAI выбрана. Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
+            bot.reply_to(message, f"🎙 Выберите размер для {count} слайдов:", reply_markup=slideshow_format_kb())
         else:
             bot.reply_to(message, "🖼 Выберите тип слайд-шоу:", reply_markup=slideshow_mode_kb())
         return
