@@ -3510,39 +3510,37 @@ def slideshow_motion_kb():
     return kb
 
 
-def _slideshow_motion_filter(index, duration, fps=12):
-    """Render-friendly Ken Burns effect on an already designed slide.
+def _slideshow_motion_filter(index, duration, fps=25):
+    return _slideshow_motion_filter_for_format(index, duration, "4:5", fps=fps)
 
-    Keep the whole text visible: zoom is limited to 5%, with slow alternating
-    horizontal/vertical drift and a brief fade from black.
+
+def _slideshow_motion_filter_for_format(index, duration, fmt, fps=25):
+    """Stable Ken Burns motion: one output frame per input frame.
+
+    Previous zoompan used d=frames on every looped input frame, restarting
+    the zoom and causing visible flicker/jumps. d=1 fixes this; 25 fps and
+    Lanczos oversampling eliminate the coarse 12-fps/bilinear shimmer.
     """
-    frames = max(1, int(round(duration * fps)))
-    zoom = f"min(1.05,1+0.05*on/{max(1, frames-1)})"
-    if index % 4 == 0:
-        x, y = "0", "(ih-ih/zoom)/2"
-    elif index % 4 == 1:
-        x, y = "iw-iw/zoom", "(ih-ih/zoom)/2"
-    elif index % 4 == 2:
-        x, y = "(iw-iw/zoom)/2", "0"
-    else:
-        x, y = "(iw-iw/zoom)/2", "ih-ih/zoom"
-    return (f"scale=760:-2:flags=fast_bilinear,"
-            f"zoompan=z='{zoom}':x='{x}':y='{y}':d={frames}:s=720x900:fps={fps},"
-            f"setsar=1,format=yuv420p,fade=t=in:st=0:d=0.3")
-
-
-def _slideshow_motion_filter_for_format(index, duration, fmt, fps=12):
     width, height = SLIDE_FORMATS[fmt]
-    output_h = int(round(height * 720 / width))
-    output_h += output_h % 2
-    frames = max(1, int(round(duration * fps)))
-    zoom = f"min(1.05,1+0.05*on/{max(1, frames-1)})"
-    # Alternate the origin of the slow movement between slides.
-    x = ("0", "iw-iw/zoom", "(iw-iw/zoom)/2", "(iw-iw/zoom)/2")[index % 4]
-    y = ("(ih-ih/zoom)/2", "(ih-ih/zoom)/2", "0", "ih-ih/zoom")[index % 4]
-    return (f"scale=760:{int(round(output_h * 760 / 720))}:flags=fast_bilinear,"
-            f"zoompan=z='{zoom}':x='{x}':y='{y}':d={frames}:s=720x{output_h}:fps={fps},"
-            "setsar=1,format=yuv420p,fade=t=in:st=0:d=0.3")
+    out_w = 720
+    out_h = int(round(height * out_w / width))
+    if out_h % 2:
+        out_h += 1
+    frames = max(2, int(round(duration * fps)))
+    # 3.5% movement is enough for a gentle newsroom effect.
+    # Use the actual input-frame index rather than the output-frame counter.
+    zoom = f"1+0.035*min(1,in/{frames - 1})"
+    # Keep camera near the centre: prevents cropped headline/footer.
+    dx = ("0.42", "0.58", "0.50", "0.50")[index % 4]
+    dy = ("0.50", "0.50", "0.42", "0.58")[index % 4]
+    x = f"(iw-iw/zoom)*{dx}"
+    y = f"(ih-ih/zoom)*{dy}"
+    return (
+        f"scale={out_w * 2}:{out_h * 2}:flags=lanczos,"
+        f"zoompan=z='{zoom}':x='{x}':y='{y}':d=1:"
+        f"s={out_w}x{out_h}:fps={fps},"
+        "setsar=1,format=yuv420p"
+    )
 
 
 def slideshow_audio_kb():
@@ -3999,7 +3997,7 @@ def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None, provider
             segment_path = os.path.join(tmp, f"segment_{i:02d}.mp4")
             # Render one slide at a time. Single-thread 720px encoding is Render-friendly.
             cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                   "-loop", "1", "-framerate", "12", "-i", slide_path]
+                   "-loop", "1", "-framerate", "25" if motion else "12", "-i", slide_path]
             if audio_path:
                 cmd += ["-i", audio_path]
             else:
@@ -4008,8 +4006,8 @@ def make_news_slideshow_tts_video(slides, title, body, fmt, voice=None, provider
                             if motion else "scale=720:-2:flags=fast_bilinear,setsar=1,format=yuv420p")
             cmd += ["-t", f"{duration:.3f}",
                     "-vf", video_filter,
-                    "-r", "12", "-threads", "1", "-c:v", "libx264", "-preset", "ultrafast",
-                    "-crf", "27", "-x264-params", "threads=1:lookahead-threads=1",
+                    "-r", "25" if motion else "12", "-threads", "1", "-c:v", "libx264", "-preset", "veryfast",
+                    "-crf", "21", "-x264-params", "threads=1:lookahead-threads=1",
                     "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "96k",
                     "-af", "apad", "-movflags", "+faststart", segment_path]
             try:
@@ -4057,11 +4055,11 @@ def make_news_slideshow_video_motion(slides, fmt, audio_type="silent", seconds_p
             with open(image_path, "wb") as f:
                 f.write(slide.getvalue())
             cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                   "-loop", "1", "-framerate", "12", "-i", image_path,
+                   "-loop", "1", "-framerate", "25", "-i", image_path,
                    "-t", str(seconds_per_slide),
                    "-vf", _slideshow_motion_filter_for_format(i, seconds_per_slide, fmt),
-                   "-r", "12", "-threads", "1", "-c:v", "libx264", "-preset", "ultrafast",
-                   "-crf", "27", "-x264-params", "threads=1:lookahead-threads=1",
+                   "-r", "25", "-threads", "1", "-c:v", "libx264", "-preset", "veryfast",
+                   "-crf", "21", "-x264-params", "threads=1:lookahead-threads=1",
                    "-pix_fmt", "yuv420p", "-an", segment_path]
             try:
                 subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180)
